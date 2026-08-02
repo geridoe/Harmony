@@ -9,7 +9,7 @@ import Foundation
 import SwiftUI
 
 enum MusicProvider: String, CaseIterable, Hashable, Identifiable { case appleMusic, spotify; var id: String { rawValue }; var name: String { self == .appleMusic ? "Apple Music" : "Spotify" } }
-enum ProviderConnectionState: Equatable {
+enum ProviderAccountStatus: Equatable {
     case setupRequired, notConnected, connected
 
     var label: String {
@@ -57,7 +57,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published var queue: [QueueItem]
     @Published var queueRevision = 12
     @Published var playbackState: PlaybackState = .playing
-    @Published private(set) var providerStates: [MusicProvider: ProviderConnectionState] = [.appleMusic: .setupRequired, .spotify: .setupRequired]
+    @Published private(set) var providerStates: [MusicProvider: ProviderAccountStatus] = [.appleMusic: .setupRequired, .spotify: .setupRequired]
     @Published private(set) var events: [QueueEvent] = []
     @Published var sessionName = "Friday Night Finds"
     @Published var inviteCode = "HARMONY-8Q4"
@@ -77,7 +77,7 @@ final class HarmonySessionStore: ObservableObject {
     }
     var nowPlaying: QueueItem? { queue.first }
     var isLiveSession: Bool { remoteSessionID != nil }
-    func providerState(for provider: MusicProvider) -> ProviderConnectionState { providerStates[provider] ?? .notConnected }
+    func providerState(for provider: MusicProvider) -> ProviderAccountStatus { providerStates[provider] ?? .notConnected }
 
     func refreshProviderConnections() async {
         do {

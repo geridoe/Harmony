@@ -43,7 +43,7 @@ struct ConnectionsView: View {
         }
     }
 
-    private func detail(for provider: MusicProvider, state: ProviderConnectionState) -> String {
+    private func detail(for provider: MusicProvider, state: ProviderAccountStatus) -> String {
         switch state {
         case .connected: return "Connected to your Harmony account"
         case .notConnected: return "Not connected"
