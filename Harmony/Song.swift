@@ -41,14 +41,17 @@ struct QueueEvent: Identifiable, Hashable {
     }
 }
 
+@MainActor
 final class HarmonySessionStore: ObservableObject {
     @Published var queue: [QueueItem]
     @Published var queueRevision = 12
     @Published var playbackState: PlaybackState = .playing
     @Published var connectedProviders: Set<MusicProvider> = [.appleMusic, .spotify]
     @Published private(set) var events: [QueueEvent] = []
-    let sessionName = "Friday Night Finds"
-    let inviteCode = "HARMONY-8Q4"
+    @Published var sessionName = "Friday Night Finds"
+    @Published var inviteCode = "HARMONY-8Q4"
+    @Published var collaborationMessage = "Local prototype"
+    private let collaborationRepository = HarmonyCollaborationRepository()
     let currentMember: SessionMember
     let members: [SessionMember]
     let catalog: [HarmonyTrack]
@@ -81,6 +84,32 @@ final class HarmonySessionStore: ObservableObject {
         guard currentMember.role == .conductor else { return }
         playbackState = playbackState == .playing ? .paused : .playing
         record(playbackState == .playing ? .play : .pause)
+    }
+
+    func createLiveSession() async {
+        collaborationMessage = "Connecting…"
+        do {
+            let remoteSession = try await collaborationRepository.createSession(title: sessionName)
+            sessionName = remoteSession.title
+            inviteCode = remoteSession.inviteCode
+            queueRevision = remoteSession.queueRevision
+            collaborationMessage = "Live Supabase session"
+        } catch {
+            collaborationMessage = "Connection failed: \(error.localizedDescription)"
+        }
+    }
+
+    func joinLiveSession(inviteCode: String) async {
+        collaborationMessage = "Joining…"
+        do {
+            let remoteSession = try await collaborationRepository.joinSession(inviteCode: inviteCode)
+            sessionName = remoteSession.title
+            self.inviteCode = remoteSession.inviteCode
+            queueRevision = remoteSession.queueRevision
+            collaborationMessage = "Joined live Supabase session"
+        } catch {
+            collaborationMessage = "Join failed: \(error.localizedDescription)"
+        }
     }
 
     private func record(_ type: QueueCommandType) {

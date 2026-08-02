@@ -11,6 +11,7 @@ struct SessionView: View {
                         Text("LIVE SESSION").font(.caption.weight(.bold)).foregroundColor(.secondary)
                         Text(store.sessionName).font(.title2.bold())
                         Text("\(store.members.count) people are curating together").foregroundColor(.secondary)
+						Text(store.collaborationMessage).font(.caption).foregroundColor(.secondary)
                         HStack {
                             ForEach(store.members) { member in
                                 Text(member.initials).font(.caption.bold()).frame(width: 30, height: 30).background(Color.indigo.opacity(0.15)).clipShape(Circle())
@@ -18,6 +19,8 @@ struct SessionView: View {
                             Spacer()
                             Text(store.inviteCode).font(.caption.monospaced().bold()).padding(8).background(Color.indigo.opacity(0.12)).cornerRadius(8)
                         }
+						Button("Start live session") { Task { await store.createLiveSession() } }
+							.buttonStyle(.borderedProminent)
                     }
                     .padding(.vertical, 8)
                 }

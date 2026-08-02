@@ -22,6 +22,7 @@
 		F1000001289E162C00624552 /* HarmonyMusicProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000289E162C00624552 /* HarmonyMusicProvider.swift */; };
 		F2000001289E162C00624552 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = F2000000289E162C00624552 /* Supabase */; };
 		F2000004289E162C00624552 /* SupabaseConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2000005289E162C00624552 /* SupabaseConfiguration.swift */; };
+		F2000006289E162C00624552 /* HarmonyCollaborationRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2000007289E162C00624552 /* HarmonyCollaborationRepository.swift */; };
 		EBDD9631289E166100624552 /* Song.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBDD9630289E166100624552 /* Song.swift */; };
 		EBDD9633289E22ED00624552 /* SwiftyJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBDD9632289E22ED00624552 /* SwiftyJSON.swift */; };
 /* End PBXBuildFile section */
@@ -61,6 +62,7 @@
 		EBDD962E289E162C00624552 /* AppleMusicAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMusicAPI.swift; sourceTree = "<group>"; };
 		F1000000289E162C00624552 /* HarmonyMusicProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../HarmonyMusicProvider.swift; sourceTree = "<group>"; };
 		F2000005289E162C00624552 /* SupabaseConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseConfiguration.swift; sourceTree = "<group>"; };
+		F2000007289E162C00624552 /* HarmonyCollaborationRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarmonyCollaborationRepository.swift; sourceTree = "<group>"; };
 		EBDD9630289E166100624552 /* Song.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Song.swift; sourceTree = "<group>"; };
 		EBDD9632289E22ED00624552 /* SwiftyJSON.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SwiftyJSON.swift; sourceTree = "<group>"; };
 		EBDD9634289E3E7400624552 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -123,6 +125,7 @@
 				EBDD962E289E162C00624552 /* AppleMusicAPI.swift */,
 				F1000000289E162C00624552 /* HarmonyMusicProvider.swift */,
 				F2000005289E162C00624552 /* SupabaseConfiguration.swift */,
+				F2000007289E162C00624552 /* HarmonyCollaborationRepository.swift */,
 				EBDD9630289E166100624552 /* Song.swift */,
 				EB2DE734289A2B0200B7B028 /* PlayerView.swift */,
 				EB79A8B5295238600068A036 /* AppleLibraryView.swift */,
@@ -313,6 +316,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F2000006289E162C00624552 /* HarmonyCollaborationRepository.swift in Sources */,
 				F2000004289E162C00624552 /* SupabaseConfiguration.swift in Sources */,
 				EBDD9631289E166100624552 /* Song.swift in Sources */,
 				EBDD962F289E162C00624552 /* AppleMusicAPI.swift in Sources */,
