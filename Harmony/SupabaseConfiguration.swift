@@ -4,6 +4,8 @@ import Supabase
 enum HarmonySupabaseConfiguration {
     static let projectURL: URL = requiredURL(for: "SupabaseURL")
     static let publishableKey: String = requiredString(for: "SupabasePublishableKey")
+    static let spotifyClientID: String = requiredString(for: "SpotifyClientID")
+    static let spotifyRedirectURI: URL = requiredURL(for: "SpotifyRedirectURI")
 
     private static func requiredURL(for key: String) -> URL {
         guard let url = URL(string: requiredString(for: key)) else {

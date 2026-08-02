@@ -7,6 +7,39 @@
 //
 
 import Foundation
+import CryptoKit
+
+struct SpotifyPKCEChallenge: Equatable {
+    let verifier: String
+    let challenge: String
+
+    static func make() -> SpotifyPKCEChallenge {
+        let bytes = (0..<64).map { _ in UInt8.random(in: .min ... .max) }
+        let verifier = base64URL(Data(bytes))
+        let digest = SHA256.hash(data: Data(verifier.utf8))
+        return SpotifyPKCEChallenge(verifier: verifier, challenge: base64URL(Data(digest)))
+    }
+
+    private static func base64URL(_ data: Data) -> String {
+        data.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+}
+
+enum SpotifyAuthorizationRequest {
+    static func url(challenge: SpotifyPKCEChallenge, state: String = UUID().uuidString) -> URL {
+        var components = URLComponents(string: "https://accounts.spotify.com/authorize")!
+        components.queryItems = [
+            URLQueryItem(name: "client_id", value: HarmonySupabaseConfiguration.spotifyClientID),
+            URLQueryItem(name: "response_type", value: "code"),
+            URLQueryItem(name: "redirect_uri", value: HarmonySupabaseConfiguration.spotifyRedirectURI.absoluteString),
+            URLQueryItem(name: "code_challenge_method", value: "S256"),
+            URLQueryItem(name: "code_challenge", value: challenge.challenge),
+            URLQueryItem(name: "state", value: state),
+            URLQueryItem(name: "scope", value: "user-read-private user-read-email user-read-playback-state user-modify-playback-state app-remote-control")
+        ]
+        return components.url!
+    }
+}
 
 /// The state of a user's provider account on this device.
 ///
