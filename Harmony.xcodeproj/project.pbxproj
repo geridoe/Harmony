@@ -21,6 +21,7 @@
 		EBDD962F289E162C00624552 /* AppleMusicAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBDD962E289E162C00624552 /* AppleMusicAPI.swift */; };
 		F1000001289E162C00624552 /* HarmonyMusicProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000289E162C00624552 /* HarmonyMusicProvider.swift */; };
 		F2000001289E162C00624552 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = F2000000289E162C00624552 /* Supabase */; };
+		F3000002289E162C00624552 /* SpotifyiOS in Frameworks */ = {isa = PBXBuildFile; productRef = F3000000289E162C00624552 /* SpotifyiOS */; };
 		F2000004289E162C00624552 /* SupabaseConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2000005289E162C00624552 /* SupabaseConfiguration.swift */; };
 		F2000006289E162C00624552 /* HarmonyCollaborationRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2000007289E162C00624552 /* HarmonyCollaborationRepository.swift */; };
 		EBDD9631289E166100624552 /* Song.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBDD9630289E166100624552 /* Song.swift */; };
@@ -74,6 +75,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				F2000001289E162C00624552 /* Supabase in Frameworks */,
+				F3000002289E162C00624552 /* SpotifyiOS in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -178,6 +180,7 @@
 			);
 			packageProductDependencies = (
 				F2000000289E162C00624552 /* Supabase */,
+				F3000000289E162C00624552 /* SpotifyiOS */,
 			);
 			name = Harmony;
 			productName = Harmony;
@@ -255,6 +258,7 @@
 			productRefGroup = EB708AFE288F4ACB007B6E1A /* Products */;
 			packageReferences = (
 				F2000003289E162C00624552 /* XCRemoteSwiftPackageReference \"supabase-swift\" */,
+				F3000001289E162C00624552 /* XCRemoteSwiftPackageReference \"ios-sdk\" */,
 			);
 			projectDirPath = "";
 			projectRoot = "";
@@ -275,6 +279,14 @@
 				minimumVersion = 2.0.0;
 			};
 		};
+		F3000001289E162C00624552 /* XCRemoteSwiftPackageReference "ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/spotify/ios-sdk.git";
+			requirement = {
+				kind = exactVersion;
+				version = 5.0.1;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -282,6 +294,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = F2000003289E162C00624552 /* XCRemoteSwiftPackageReference "supabase-swift" */;
 			productName = Supabase;
+		};
+		F3000000289E162C00624552 /* SpotifyiOS */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F3000001289E162C00624552 /* XCRemoteSwiftPackageReference "ios-sdk" */;
+			productName = SpotifyiOS;
 		};
 /* End XCSwiftPackageProductDependency section */
 
@@ -502,6 +519,10 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ObjC",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.gwd.Harmony;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -534,6 +555,10 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ObjC",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.gwd.Harmony;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

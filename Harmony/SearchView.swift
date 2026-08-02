@@ -26,12 +26,22 @@ struct ConnectionsView: View {
                                     .foregroundColor(.secondary)
                             }
                             Spacer()
-                            if provider == .spotify && state != .connected {
-                                Button(store.isConnectingSpotify ? "Connecting…" : "Connect") {
-                                    Task { await store.connectSpotify() }
+                            if provider == .spotify {
+                                if state != .connected {
+                                    Button(store.isConnectingSpotify ? "Connecting…" : "Connect") {
+                                        Task { await store.connectSpotify() }
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .disabled(store.isConnectingSpotify)
+                                } else if !store.spotifyPlaybackConnection.isConnected {
+                                    Button(store.isConnectingSpotifyPlayback ? "Enabling…" : "Enable playback") {
+                                        Task { await store.enableSpotifyPlayback() }
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(store.isConnectingSpotifyPlayback)
+                                } else {
+                                    Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
                                 }
-                                .buttonStyle(.borderedProminent)
-                                .disabled(store.isConnectingSpotify)
                             } else {
                                 Image(systemName: state == .connected ? "checkmark.circle.fill" : "circle")
                                     .foregroundColor(state == .connected ? .green : .secondary)
@@ -53,7 +63,13 @@ struct ConnectionsView: View {
 
     private func detail(for provider: MusicProvider, state: ProviderAccountStatus) -> String {
         switch state {
-        case .connected: return "Connected to your Harmony account"
+        case .connected:
+            if provider == .spotify {
+                return store.spotifyPlaybackConnection.isConnected
+                    ? "Account connected · device playback ready"
+                    : "Account connected · enable device playback"
+            }
+            return "Connected to your Harmony account"
         case .notConnected: return "Not connected"
         case .setupRequired:
             return provider == .spotify

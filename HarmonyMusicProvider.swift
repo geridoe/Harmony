@@ -10,6 +10,7 @@ import Foundation
 import CryptoKit
 import AuthenticationServices
 import UIKit
+@preconcurrency import SpotifyiOS
 
 struct SpotifyPKCEChallenge: Equatable {
     let verifier: String
@@ -228,6 +229,7 @@ enum ProviderAdapterError: LocalizedError, Hashable {
 
 /// A provider-specific implementation boundary. Do not place OAuth secrets or
 /// developer tokens in implementations of this protocol on the device.
+@MainActor
 protocol HarmonyMusicProvider: AnyObject {
     var provider: MusicProvider { get }
     var connectionState: ProviderConnectionState { get }
@@ -324,12 +326,138 @@ final class MockSpotifyProvider: HarmonyMusicProvider {
     }
 }
 
+@MainActor
+final class SpotifyAppRemoteProvider: NSObject, HarmonyMusicProvider, @preconcurrency SPTAppRemoteDelegate, @preconcurrency SPTAppRemotePlayerStateDelegate {
+    let provider: MusicProvider = .spotify
+    private(set) var connectionState: ProviderConnectionState = .disconnected
+    let capabilities = ProviderCapabilities.spotifyMock
+    private var connectionContinuation: CheckedContinuation<Void, Error>?
+    private var connectionTimeoutTask: Task<Void, Never>?
+
+    private lazy var configuration = SPTConfiguration(
+        clientID: HarmonySupabaseConfiguration.spotifyClientID,
+        redirectURL: HarmonySupabaseConfiguration.spotifyRedirectURI
+    )
+
+    private lazy var appRemote: SPTAppRemote = {
+        let remote = SPTAppRemote(configuration: configuration, logLevel: .error)
+        remote.delegate = self
+        return remote
+    }()
+
+    func connect(accessToken: String) async throws {
+        appRemote.connectionParameters.accessToken = accessToken
+        if appRemote.isConnected {
+            connectionState = .connected(accountName: nil)
+            return
+        }
+        guard connectionContinuation == nil else { return }
+        connectionState = .authorizing
+        try await withCheckedThrowingContinuation { continuation in
+            connectionContinuation = continuation
+            appRemote.connect()
+            connectionTimeoutTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                guard !Task.isCancelled else { return }
+                self?.finishConnection(with: .failure(SpotifyAppRemoteError.connectionFailed))
+            }
+        }
+    }
+
+    func disconnect() {
+        if appRemote.isConnected { appRemote.disconnect() }
+        connectionState = .disconnected
+    }
+
+    func search(query: String) async throws -> [HarmonyTrack] {
+        throw ProviderAdapterError.unsupportedPlayback(provider)
+    }
+
+    func resolve(track: HarmonyTrack) async throws -> ResolvedProviderTrack {
+        guard let mapping = track.mappings.first(where: { $0.provider == provider }), !mapping.providerID.isEmpty else {
+            throw ProviderAdapterError.trackUnavailable(provider)
+        }
+        return ResolvedProviderTrack(
+            provider: provider,
+            providerID: mapping.providerID,
+            title: track.title,
+            artist: track.artist,
+            playbackCapability: mapping.availability == .playable ? .queuePlayback : .openInProvider
+        )
+    }
+
+    func perform(_ command: ProviderPlaybackCommand) async throws -> ProviderPlaybackResult {
+        guard appRemote.isConnected, let playerAPI = appRemote.playerAPI else {
+            throw ProviderAdapterError.notConnected(provider)
+        }
+        switch command {
+        case let .play(track):
+            guard track.playbackCapability == .queuePlayback else { return .requiresOpenInProvider }
+            try await invoke { callback in playerAPI.play(track.providerID, callback: callback) }
+        case .pause:
+            try await invoke { callback in playerAPI.pause(callback) }
+        case .resume:
+            try await invoke { callback in playerAPI.resume(callback) }
+        case .skip:
+            try await invoke { callback in playerAPI.skip(toNext: callback) }
+        }
+        return .applied
+    }
+
+    func appRemoteDidEstablishConnection(_ appRemote: SPTAppRemote) {
+        connectionState = .connected(accountName: nil)
+        appRemote.playerAPI?.delegate = self
+        appRemote.playerAPI?.subscribe(toPlayerState: nil)
+        finishConnection(with: .success(()))
+    }
+
+    func appRemote(_ appRemote: SPTAppRemote, didFailConnectionAttemptWithError error: Error?) {
+        let failure = error ?? SpotifyAppRemoteError.connectionFailed
+        connectionState = .unavailable(reason: failure.localizedDescription)
+        finishConnection(with: .failure(failure))
+    }
+
+    func appRemote(_ appRemote: SPTAppRemote, didDisconnectWithError error: Error?) {
+        connectionState = .disconnected
+        if let error { finishConnection(with: .failure(error)) }
+    }
+
+    func playerStateDidChange(_ playerState: SPTAppRemotePlayerState) {}
+
+    private func finishConnection(with result: Result<Void, Error>) {
+        guard let continuation = connectionContinuation else { return }
+        connectionTimeoutTask?.cancel()
+        connectionTimeoutTask = nil
+        connectionContinuation = nil
+        continuation.resume(with: result)
+    }
+
+    private func invoke(_ operation: (@escaping SPTAppRemoteCallback) -> Void) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            operation { _, error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume(returning: ()) }
+            }
+        }
+    }
+}
+
+enum SpotifyAppRemoteError: LocalizedError {
+    case connectionFailed
+    var errorDescription: String? { "Could not connect to the Spotify app. Open Spotify and try again." }
+}
+
 /// One injection point for feature code. It makes the local prototype and
 /// future production adapters interchangeable.
+@MainActor
 final class MusicProviderRegistry {
     private let adapters: [MusicProvider: HarmonyMusicProvider]
 
-    init(adapters: [HarmonyMusicProvider] = [MockAppleMusicProvider(), MockSpotifyProvider()]) {
+    convenience init() {
+        self.init(adapters: [MockAppleMusicProvider(), MockSpotifyProvider()])
+    }
+
+    init(adapters: [HarmonyMusicProvider]) {
         self.adapters = Dictionary(uniqueKeysWithValues: adapters.map { ($0.provider, $0) })
     }
 

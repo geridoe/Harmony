@@ -63,11 +63,14 @@ final class HarmonySessionStore: ObservableObject {
     @Published var inviteCode = "HARMONY-8Q4"
     @Published var collaborationMessage = "Local prototype"
     @Published private(set) var isConnectingSpotify = false
+    @Published private(set) var isConnectingSpotifyPlayback = false
+    @Published private(set) var spotifyPlaybackConnection: ProviderConnectionState = .disconnected
     @Published private(set) var activeMemberIDs: Set<UUID> = []
     private var remoteSessionID: UUID?
     private var liveQueueSubscription: LiveQueueSubscription?
     private var livePresenceSubscription: LivePresenceSubscription?
     private let collaborationRepository = HarmonyCollaborationRepository()
+    private let spotifyRemote = SpotifyAppRemoteProvider()
     @Published private(set) var currentMember: SessionMember
     @Published private(set) var members: [SessionMember]
     let catalog: [HarmonyTrack]
@@ -112,6 +115,22 @@ final class HarmonySessionStore: ObservableObject {
             collaborationMessage = "Spotify connected"
         } catch {
             collaborationMessage = "Spotify connection failed: \(error.localizedDescription)"
+        }
+    }
+
+    func enableSpotifyPlayback() async {
+        guard providerState(for: .spotify) == .connected, !isConnectingSpotifyPlayback else { return }
+        isConnectingSpotifyPlayback = true
+        spotifyPlaybackConnection = .authorizing
+        defer { isConnectingSpotifyPlayback = false }
+        do {
+            let credential = try await collaborationRepository.spotifyAccessCredential()
+            try await spotifyRemote.connect(accessToken: credential.accessToken)
+            spotifyPlaybackConnection = spotifyRemote.connectionState
+            collaborationMessage = "Spotify playback ready"
+        } catch {
+            spotifyPlaybackConnection = .unavailable(reason: error.localizedDescription)
+            collaborationMessage = "Spotify playback connection failed: \(error.localizedDescription)"
         }
     }
 

@@ -88,6 +88,12 @@ struct RemoteProviderConnection: Decodable {
     }
 }
 
+struct SpotifyAccessCredential: Decodable {
+    let accessToken: String
+    let expiresAt: String
+    let scopes: [String]
+}
+
 @MainActor
 final class HarmonyCollaborationRepository {
     // Defer plist-dependent client creation until a live backend operation is
@@ -149,6 +155,11 @@ final class HarmonyCollaborationRepository {
                 redirectURI: HarmonySupabaseConfiguration.spotifyRedirectURI.absoluteString
             ))
         )
+    }
+
+    func spotifyAccessCredential() async throws -> SpotifyAccessCredential {
+        try await authenticate()
+        return try await client.functions.invoke("spotify-access-token")
     }
 
     func members(for sessionID: UUID) async throws -> [RemoteSessionMember] {
