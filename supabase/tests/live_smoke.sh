@@ -114,6 +114,16 @@ rest_get "$collaborator_token" \
 jq -e --arg actor "$conductor_id" '.[] | select(.profile_id == $actor and .role == "conductor")' "$smoke_tmp/members.json" >/dev/null
 jq -e --arg actor "$collaborator_id" '.[] | select(.profile_id == $actor and .role == "collaborator")' "$smoke_tmp/members.json" >/dev/null
 
+stage="invite permission enforcement"
+collaborator_invite_permission_status="$(rpc_status "$collaborator_token" set_harmony_collaborator_invites \
+  "{\"p_session_id\":\"$session_id\",\"p_allow_collaborator_invites\":false}" \
+  "$smoke_tmp/collaborator-invite-permission.json")"
+[[ "$collaborator_invite_permission_status" == "400" || "$collaborator_invite_permission_status" == "403" ]]
+rpc "$conductor_token" set_harmony_collaborator_invites \
+  "{\"p_session_id\":\"$session_id\",\"p_allow_collaborator_invites\":false}" \
+  "$smoke_tmp/conductor-invite-permission.json"
+jq -e 'if type == "array" then .[0].allow_collaborator_invites == false else .allow_collaborator_invites == false end' "$smoke_tmp/conductor-invite-permission.json" >/dev/null
+
 stage="catalog lookup"
 rest_get "$conductor_token" \
   'canonical_tracks?select=id&order=created_at.asc&limit=2' \
@@ -205,4 +215,4 @@ collaborator_token=""
 cleanup_account "$conductor_token"
 conductor_token=""
 
-printf 'Harmony live smoke passed: auth, collaboration roles, queue ownership, conflicts, idempotency, end, cleanup\n'
+printf 'Harmony live smoke passed: auth, invite permissions, collaboration roles, queue ownership, conflicts, idempotency, end, cleanup\n'

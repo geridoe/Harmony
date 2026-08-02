@@ -20,9 +20,11 @@ struct SessionView: View {
                                 Text(member.initials).font(.caption.bold()).frame(width: 30, height: 30).background(Color.indigo.opacity(store.activeMemberIDs.contains(member.id) ? 0.28 : 0.10)).overlay(Circle().stroke(store.activeMemberIDs.contains(member.id) ? Color.green : .clear, lineWidth: 2)).clipShape(Circle()).accessibilityLabel("\(member.name), \(store.activeMemberIDs.contains(member.id) ? "active now" : "not active")")
                             }
                             Spacer()
-                            Text(store.inviteCode).font(.caption.monospaced().bold()).padding(8).background(Color.indigo.opacity(0.12)).cornerRadius(8)
+                            if store.canShareInvite {
+                                Text(store.inviteCode).font(.caption.monospaced().bold()).padding(8).background(Color.indigo.opacity(0.12)).cornerRadius(8)
+                            }
                         }
-                        if let inviteURL = store.inviteURL {
+                        if store.canShareInvite, let inviteURL = store.inviteURL {
                             ShareLink(
                                 item: inviteURL,
                                 subject: Text("Join my Harmony session"),
@@ -30,6 +32,10 @@ struct SessionView: View {
                             ) {
                                 Label("Share invite", systemImage: "square.and.arrow.up")
                             }
+                        } else if store.isLiveSession {
+                            Label("Only the Conductor can share invites", systemImage: "lock.fill")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
                         if store.isLiveSession {
                             Label("Live session active", systemImage: "dot.radiowaves.left.and.right")
@@ -42,6 +48,16 @@ struct SessionView: View {
                                 Button("Join session") { showingJoinSession = true }
                                     .buttonStyle(.bordered)
                             }
+                        }
+                        if store.isLiveSession, store.currentMember.role == .conductor {
+                            Toggle(
+                                "Collaborators can share invites",
+                                isOn: Binding(
+                                    get: { store.allowsCollaboratorInvites },
+                                    set: { allowed in Task { await store.setCollaboratorInvitesAllowed(allowed) } }
+                                )
+                            )
+                            .disabled(store.isUpdatingInvitePermissions)
                         }
                     }
                     .padding(.vertical, 8)

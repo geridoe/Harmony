@@ -8,6 +8,7 @@ struct RemoteHarmonySession: Decodable {
     let queueRevision: Int
     let playbackState: RemotePlaybackState?
     let endedAt: Date?
+    let allowCollaboratorInvites: Bool
 
     enum CodingKeys: String, CodingKey {
         case id, title
@@ -15,6 +16,7 @@ struct RemoteHarmonySession: Decodable {
         case queueRevision = "queue_revision"
         case playbackState = "playback_state"
         case endedAt = "ended_at"
+        case allowCollaboratorInvites = "allow_collaborator_invites"
     }
 }
 
@@ -26,7 +28,12 @@ private struct CreateSessionParameters: Encodable {
     let p_title: String
     let p_invite_code: String
     let p_playback_mode = "conductor_playback"
-    let p_allow_collaborator_invites = true
+    let p_allow_collaborator_invites: Bool
+}
+
+private struct UpdateInvitePermissionParameters: Encodable {
+    let p_session_id: UUID
+    let p_allow_collaborator_invites: Bool
 }
 
 private struct QueueCommandParameters<Payload: Encodable>: Encodable {
@@ -157,13 +164,14 @@ final class HarmonyCollaborationRepository {
         }
     }
 
-    func createSession(title: String) async throws -> RemoteHarmonySession {
+    func createSession(title: String, allowCollaboratorInvites: Bool) async throws -> RemoteHarmonySession {
         try await authenticate()
         for attempt in 1...3 {
             do {
                 let parameters = CreateSessionParameters(
                     p_title: title,
-                    p_invite_code: Self.makeInviteCode()
+                    p_invite_code: Self.makeInviteCode(),
+                    p_allow_collaborator_invites: allowCollaboratorInvites
                 )
                 return try await client.rpc("create_session", params: parameters).execute().value
             } catch let error as PostgrestError where error.code == "23505" && attempt < 3 {
@@ -192,11 +200,21 @@ final class HarmonyCollaborationRepository {
     func session(id: UUID) async throws -> RemoteHarmonySession {
         try await client
             .from("sessions")
-            .select("id,title,invite_code,queue_revision,playback_state,ended_at")
+            .select("id,title,invite_code,queue_revision,playback_state,ended_at,allow_collaborator_invites")
             .eq("id", value: id.uuidString)
             .single()
             .execute()
             .value
+    }
+
+    func setCollaboratorInvitesAllowed(in sessionID: UUID, allowed: Bool) async throws -> RemoteHarmonySession {
+        try await client.rpc(
+            "set_harmony_collaborator_invites",
+            params: UpdateInvitePermissionParameters(
+                p_session_id: sessionID,
+                p_allow_collaborator_invites: allowed
+            )
+        ).execute().value
     }
 
     func providerConnections() async throws -> [RemoteProviderConnection] {

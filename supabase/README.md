@@ -81,7 +81,7 @@ Run the disposable-user smoke test against the configured project with:
 ./supabase/tests/live_smoke.sh
 ```
 
-It exercises anonymous authentication, session creation/joining, member-role reads, collaborator add/remove ownership, Conductor-only reorder/playback/lifecycle enforcement, revision conflicts, command idempotency, session ending, and account cleanup. It reads the public project URL/key from the app plist and never prints access tokens.
+It exercises anonymous authentication, session creation/joining, member-role reads, Conductor-only invite-permission updates, collaborator add/remove ownership, Conductor-only reorder/playback/lifecycle enforcement, revision conflicts, command idempotency, session ending, and account cleanup. It reads the public project URL/key from the app plist and never prints access tokens.
 
 ## Important notes
 

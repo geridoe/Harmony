@@ -105,6 +105,8 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var isSearchingCatalog = false
     @Published private(set) var catalogSearchMessage: String?
     @Published private(set) var isClosingSession = false
+    @Published private(set) var isUpdatingInvitePermissions = false
+    @Published var allowsCollaboratorInvites = true
     private var remoteSessionID: UUID?
     private var liveQueueSubscription: LiveQueueSubscription?
     private var liveSessionSubscription: LiveSessionSubscription?
@@ -130,6 +132,7 @@ final class HarmonySessionStore: ObservableObject {
     }
     var nowPlaying: QueueItem? { queue.first }
     var isLiveSession: Bool { remoteSessionID != nil }
+    var canShareInvite: Bool { isLiveSession && (currentMember.role == .conductor || allowsCollaboratorInvites) }
     func providerState(for provider: MusicProvider) -> ProviderAccountStatus { providerStates[provider] ?? .notConnected }
     func canRemove(_ item: QueueItem) -> Bool { currentMember.role == .conductor || item.addedBy.id == currentMember.id }
     func contains(_ track: HarmonyTrack) -> Bool { queue.contains { Self.representsSameRecording($0.track, track) } }
@@ -399,10 +402,14 @@ final class HarmonySessionStore: ObservableObject {
     func createLiveSession() async {
         collaborationMessage = "Connecting…"
         do {
-            let remoteSession = try await collaborationRepository.createSession(title: sessionName)
+            let remoteSession = try await collaborationRepository.createSession(
+                title: sessionName,
+                allowCollaboratorInvites: allowsCollaboratorInvites
+            )
             sessionName = remoteSession.title
             inviteCode = remoteSession.inviteCode
             queueRevision = remoteSession.queueRevision
+            allowsCollaboratorInvites = remoteSession.allowCollaboratorInvites
             remoteSessionID = remoteSession.id
             collaborationMessage = "Live Supabase session"
             await refreshRemoteQueue()
@@ -422,6 +429,7 @@ final class HarmonySessionStore: ObservableObject {
             sessionName = remoteSession.title
             self.inviteCode = remoteSession.inviteCode
             queueRevision = remoteSession.queueRevision
+            allowsCollaboratorInvites = remoteSession.allowCollaboratorInvites
             remoteSessionID = remoteSession.id
             collaborationMessage = "Joined live Supabase session"
             await refreshRemoteQueue()
@@ -451,6 +459,19 @@ final class HarmonySessionStore: ObservableObject {
         }
     }
 
+    func setCollaboratorInvitesAllowed(_ allowed: Bool) async {
+        guard let remoteSessionID, currentMember.role == .conductor, !isUpdatingInvitePermissions else { return }
+        isUpdatingInvitePermissions = true
+        defer { isUpdatingInvitePermissions = false }
+        do {
+            let session = try await collaborationRepository.setCollaboratorInvitesAllowed(in: remoteSessionID, allowed: allowed)
+            allowsCollaboratorInvites = session.allowCollaboratorInvites
+            collaborationMessage = allowed ? "Collaborators can share invites" : "Only the Conductor can share invites"
+        } catch {
+            collaborationMessage = "Could not update invite permissions: \(error.localizedDescription)"
+        }
+    }
+
     private func applyRemoteAdd(_ track: HarmonyTrack, sessionID: UUID, expectedRevision: Int) async {
         do {
             queueRevision = try await collaborationRepository.add(track: track, to: sessionID, expectedRevision: expectedRevision)
@@ -473,6 +494,7 @@ final class HarmonySessionStore: ObservableObject {
             sessionName = session.title
             inviteCode = session.inviteCode
             queueRevision = session.queueRevision
+            allowsCollaboratorInvites = session.allowCollaboratorInvites
             if session.playbackState?.status == "playing" { playbackState = .playing }
             if session.playbackState?.status == "paused" { playbackState = .paused }
             members = remoteMemberRecords.map { member in
@@ -598,6 +620,7 @@ final class HarmonySessionStore: ObservableObject {
         currentMember = localOwner
         members = [localOwner]
         inviteCode = ""
+        allowsCollaboratorInvites = true
         sessionName = "No active session"
         collaborationMessage = message
     }
