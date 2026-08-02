@@ -48,6 +48,8 @@ struct SessionView: View {
                                 Button("Join session") { showingJoinSession = true }
                                     .buttonStyle(.bordered)
                             }
+                            Toggle("Collaborators can share invites", isOn: $store.allowsCollaboratorInvites)
+                                .font(.subheadline)
                         }
                         if store.isLiveSession, store.currentMember.role == .conductor {
                             Toggle(
