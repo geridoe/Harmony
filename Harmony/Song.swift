@@ -68,11 +68,15 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var spotifyPlaybackConnection: ProviderConnectionState = .disconnected
     @Published private(set) var spotifyPlaybackErrorMessage: String?
     @Published private(set) var activeMemberIDs: Set<UUID> = []
+    @Published private(set) var catalogSearchResults: [HarmonyTrack]?
+    @Published private(set) var isSearchingCatalog = false
+    @Published private(set) var catalogSearchMessage: String?
     private var remoteSessionID: UUID?
     private var liveQueueSubscription: LiveQueueSubscription?
     private var livePresenceSubscription: LivePresenceSubscription?
     private let collaborationRepository = HarmonyCollaborationRepository()
     private let spotifyRemote: any SpotifyPlaybackProviding
+    private var spotifyLoadedProviderID: String?
     @Published private(set) var currentMember: SessionMember
     @Published private(set) var members: [SessionMember]
     let catalog: [HarmonyTrack]
@@ -139,7 +143,11 @@ final class HarmonySessionStore: ObservableObject {
             }
             try await spotifyRemote.authorizeAndConnect()
             spotifyPlaybackConnection = spotifyRemote.connectionState
-            collaborationMessage = "Spotify playback ready"
+            if try await playCurrentSpotifyTrackIfAvailable() {
+                collaborationMessage = "Playing the Harmony queue on Spotify"
+            } else {
+                collaborationMessage = "Spotify playback ready"
+            }
         } catch {
             let nsError = error as NSError
             let details = nsError.userInfo.isEmpty ? "" : " \(nsError.userInfo)"
@@ -169,6 +177,45 @@ final class HarmonySessionStore: ObservableObject {
             collaborationMessage = "Could not disconnect Spotify: \(error.localizedDescription)"
             spotifyPlaybackErrorMessage = error.localizedDescription
         }
+    }
+
+    func searchCatalog(query: String) async {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else {
+            catalogSearchResults = nil
+            catalogSearchMessage = nil
+            isSearchingCatalog = false
+            return
+        }
+        guard providerState(for: .spotify) == .connected else {
+            catalogSearchResults = catalog.filter {
+                "\($0.title) \($0.artist) \($0.album)".localizedCaseInsensitiveContains(term)
+            }
+            catalogSearchMessage = "Connect Spotify to search its full catalog."
+            return
+        }
+        isSearchingCatalog = true
+        catalogSearchMessage = nil
+        do {
+            let results = try await collaborationRepository.searchSpotify(query: term)
+            guard !Task.isCancelled else { return }
+            catalogSearchResults = results.map { result in
+                HarmonyTrack(
+                    title: result.title,
+                    artist: result.artist,
+                    album: result.album,
+                    duration: TimeInterval(result.durationSeconds),
+                    symbol: "music.note",
+                    mappings: [ProviderTrackMapping(provider: .spotify, providerID: result.providerID, availability: .playable)]
+                )
+            }
+            catalogSearchMessage = results.isEmpty ? "No Spotify tracks found." : nil
+        } catch {
+            guard !Task.isCancelled else { return }
+            catalogSearchResults = []
+            catalogSearchMessage = "Spotify search failed: \(error.localizedDescription)"
+        }
+        isSearchingCatalog = false
     }
 
     func handleSpotifyOpenURL(_ url: URL) {
@@ -214,8 +261,14 @@ final class HarmonySessionStore: ObservableObject {
         record(playbackState == .playing ? .play : .pause)
         if spotifyPlaybackConnection.isConnected {
             do {
-                let command: ProviderPlaybackCommand = playbackState == .playing ? .resume : .pause
-                _ = try await spotifyRemote.perform(command)
+                if playbackState == .playing {
+                    let didPlayCurrentTrack = try await playCurrentSpotifyTrackIfAvailable()
+                    if !didPlayCurrentTrack {
+                        _ = try await spotifyRemote.perform(.resume)
+                    }
+                } else {
+                    _ = try await spotifyRemote.perform(.pause)
+                }
                 collaborationMessage = playbackState == .playing ? "Playing on Spotify" : "Spotify paused"
             } catch {
                 collaborationMessage = "Spotify playback command failed: \(error.localizedDescription)"
@@ -290,7 +343,14 @@ final class HarmonySessionStore: ObservableObject {
             if let me = members.first(where: { $0.id == userID }) { currentMember = me }
             queue = snapshot.map { remote in
                 let track = catalog.first(where: { $0.title == remote.canonicalTrack.title && $0.artist == remote.canonicalTrack.artist })
-                    ?? HarmonyTrack(title: remote.canonicalTrack.title, artist: remote.canonicalTrack.artist, album: remote.canonicalTrack.album ?? "", duration: TimeInterval(remote.canonicalTrack.durationMilliseconds ?? 0) / 1000, symbol: "music.note", mappings: [])
+                    ?? HarmonyTrack(
+                        title: remote.canonicalTrack.title,
+                        artist: remote.canonicalTrack.artist,
+                        album: remote.canonicalTrack.album ?? "",
+                        duration: TimeInterval(remote.canonicalTrack.durationMilliseconds ?? 0) / 1000,
+                        symbol: "music.note",
+                        mappings: (remote.canonicalTrack.providerTracks ?? []).compactMap(Self.providerMapping)
+                    )
                 return QueueItem(id: remote.id, track: track, addedBy: members.first(where: { $0.id == remote.addedBy }) ?? currentMember)
             }
         } catch {
@@ -355,6 +415,42 @@ final class HarmonySessionStore: ObservableObject {
     private func record(_ type: QueueCommandType) {
         queueRevision += 1
         events.append(QueueEvent(revision: queueRevision, actorID: currentMember.id, type: type))
+    }
+
+    private static func providerMapping(_ remote: RemoteProviderTrack) -> ProviderTrackMapping? {
+        let provider: MusicProvider
+        switch remote.provider {
+        case "apple_music": provider = .appleMusic
+        case "spotify": provider = .spotify
+        default: return nil
+        }
+        let availability: ProviderAvailability
+        switch remote.availability {
+        case "playable": availability = .playable
+        case "open_in_provider": availability = .openInProvider
+        default: availability = .unavailable
+        }
+        return ProviderTrackMapping(provider: provider, providerID: remote.providerID, availability: availability)
+    }
+
+    private func playCurrentSpotifyTrackIfAvailable() async throws -> Bool {
+        guard let track = nowPlaying?.track,
+              let mapping = track.mappings.first(where: { $0.provider == .spotify && $0.availability == .playable }),
+              Self.isSpotifyTrackURI(mapping.providerID) else { return false }
+        if spotifyLoadedProviderID == mapping.providerID {
+            _ = try await spotifyRemote.perform(.resume)
+        } else {
+            let resolved = try await spotifyRemote.resolve(track: track)
+            _ = try await spotifyRemote.perform(.play(resolved))
+            spotifyLoadedProviderID = mapping.providerID
+        }
+        return true
+    }
+
+    private static func isSpotifyTrackURI(_ value: String) -> Bool {
+        let parts = value.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0] == "spotify", parts[1] == "track", parts[2].count == 22 else { return false }
+        return parts[2].allSatisfy { $0.isASCII && $0.isLetter || $0.isNumber }
     }
 }
 

@@ -3,8 +3,66 @@ import SwiftUI
 struct SearchView: View {
     @EnvironmentObject private var store: HarmonySessionStore
     @State private var query = ""
-    var tracks: [HarmonyTrack] { query.isEmpty ? store.catalog : store.catalog.filter { $0.title.localizedCaseInsensitiveContains(query) || $0.artist.localizedCaseInsensitiveContains(query) } }
-    var body: some View { NavigationView { List(tracks) { track in HStack { Image(systemName: track.symbol).foregroundColor(.indigo).frame(width: 36, height: 36).background(Color.indigo.opacity(0.12)).cornerRadius(8); VStack(alignment: .leading) { Text(track.title).font(.headline); Text("\(track.artist) · \(track.album)").font(.caption).foregroundColor(.secondary); HStack { ForEach(MusicProvider.allCases) { provider in Text("\(provider.name): \(track.availability(for: provider).label)").font(.caption2).foregroundColor(track.availability(for: provider) == .unavailable ? .secondary : .indigo) } } }; Spacer(); Button { store.add(track) } label: { Image(systemName: "plus.circle.fill").font(.title3) }.disabled(store.queue.contains { $0.track.title == track.title }) } }.searchable(text: $query, prompt: "Search connected catalogs").navigationTitle("Add music") } }
+
+    private var tracks: [HarmonyTrack] {
+        guard !query.isEmpty else { return store.catalog }
+        return store.catalogSearchResults ?? store.catalog.filter {
+            "\($0.title) \($0.artist) \($0.album)".localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    var body: some View {
+        NavigationView {
+            List {
+                if store.isSearchingCatalog {
+                    HStack {
+                        ProgressView()
+                        Text("Searching Spotify…").foregroundColor(.secondary)
+                    }
+                } else if let message = store.catalogSearchMessage {
+                    Text(message).font(.footnote).foregroundColor(.secondary)
+                }
+                ForEach(tracks) { track in
+                    HStack {
+                        Image(systemName: track.symbol)
+                            .foregroundColor(.indigo)
+                            .frame(width: 36, height: 36)
+                            .background(Color.indigo.opacity(0.12))
+                            .cornerRadius(8)
+                        VStack(alignment: .leading) {
+                            Text(track.title).font(.headline)
+                            Text("\(track.artist) · \(track.album)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            HStack {
+                                ForEach(MusicProvider.allCases) { provider in
+                                    Text("\(provider.name): \(track.availability(for: provider).label)")
+                                        .font(.caption2)
+                                        .foregroundColor(track.availability(for: provider) == .unavailable ? .secondary : .indigo)
+                                }
+                            }
+                        }
+                        Spacer()
+                        Button { store.add(track) } label: {
+                            Image(systemName: "plus.circle.fill").font(.title3)
+                        }
+                        .disabled(store.queue.contains { $0.track.title == track.title && $0.track.artist == track.artist })
+                    }
+                }
+            }
+            .searchable(text: $query, prompt: "Search connected catalogs")
+            .navigationTitle("Add music")
+            .task(id: query) {
+                guard !query.isEmpty else {
+                    await store.searchCatalog(query: "")
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                guard !Task.isCancelled else { return }
+                await store.searchCatalog(query: query)
+            }
+        }
+    }
 }
 
 struct ConnectionsView: View {

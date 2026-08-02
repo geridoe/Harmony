@@ -40,6 +40,10 @@ private struct RemovePayload: Encodable { let queue_item_id: UUID }
 private struct MovePayload: Encodable { let queue_item_id: UUID; let position: Double }
 private struct PlaybackPayload: Encodable { let status: String }
 private struct RemoteTrackID: Decodable { let id: UUID }
+private struct RemoteCanonicalTrackReference: Decodable {
+    let canonicalTrackID: UUID
+    enum CodingKeys: String, CodingKey { case canonicalTrackID = "canonical_track_id" }
+}
 private struct QueueCommandResult: Decodable { let status: String; let revision: Int }
 private struct SpotifyTokenExchangeParameters: Encodable { let code: String; let codeVerifier: String; let redirectURI: String }
 private struct RemotePresence: Codable { let profileID: UUID }
@@ -71,10 +75,22 @@ struct RemoteCatalogTrack: Decodable {
     let artist: String
     let album: String?
     let durationMilliseconds: Int?
+    let providerTracks: [RemoteProviderTrack]?
 
     enum CodingKeys: String, CodingKey {
         case title, artist, album
         case durationMilliseconds = "duration_ms"
+        case providerTracks = "provider_tracks"
+    }
+}
+
+struct RemoteProviderTrack: Decodable {
+    let provider: String
+    let providerID: String
+    let availability: String
+    enum CodingKeys: String, CodingKey {
+        case provider, availability
+        case providerID = "provider_id"
     }
 }
 
@@ -95,6 +111,16 @@ struct SpotifyAccessCredential: Decodable {
 }
 
 private struct SpotifyDisconnectResponse: Decodable { let disconnected: Bool }
+private struct SpotifySearchParameters: Encodable { let query: String }
+private struct SpotifySearchResponse: Decodable { let tracks: [SpotifySearchTrack] }
+struct SpotifySearchTrack: Decodable {
+    let title: String
+    let artist: String
+    let album: String
+    let durationSeconds: Int
+    let artworkURL: URL?
+    let providerID: String
+}
 
 @MainActor
 final class HarmonyCollaborationRepository {
@@ -170,6 +196,15 @@ final class HarmonyCollaborationRepository {
         guard response.disconnected else { throw CollaborationError.invalidResponse }
     }
 
+    func searchSpotify(query: String) async throws -> [SpotifySearchTrack] {
+        try await authenticate()
+        let response: SpotifySearchResponse = try await client.functions.invoke(
+            "spotify-search",
+            options: FunctionInvokeOptions(body: SpotifySearchParameters(query: query))
+        )
+        return response.tracks
+    }
+
     func members(for sessionID: UUID) async throws -> [RemoteSessionMember] {
         try await client.from("session_members").select("profile_id,role,profiles(display_name)").eq("session_id", value: sessionID.uuidString).execute().value
     }
@@ -180,20 +215,34 @@ final class HarmonyCollaborationRepository {
     }
 
     func add(track: HarmonyTrack, to sessionID: UUID, expectedRevision: Int) async throws -> Int {
-        let trackID: RemoteTrackID = try await client
-            .from("canonical_tracks")
-            .select("id")
-            .eq("title", value: track.title)
-            .eq("artist", value: track.artist)
-            .single()
-            .execute()
-            .value
+        let canonicalTrackID: UUID
+        if let spotify = track.mappings.first(where: { $0.provider == .spotify && !$0.providerID.isEmpty }) {
+            let mapping: RemoteCanonicalTrackReference = try await client
+                .from("provider_tracks")
+                .select("canonical_track_id")
+                .eq("provider", value: "spotify")
+                .eq("provider_id", value: spotify.providerID)
+                .single()
+                .execute()
+                .value
+            canonicalTrackID = mapping.canonicalTrackID
+        } else {
+            let trackID: RemoteTrackID = try await client
+                .from("canonical_tracks")
+                .select("id")
+                .eq("title", value: track.title)
+                .eq("artist", value: track.artist)
+                .single()
+                .execute()
+                .value
+            canonicalTrackID = trackID.id
+        }
         return try await executeCommand(QueueCommandParameters(
             p_session_id: sessionID,
             p_command_id: UUID(),
             p_expected_revision: expectedRevision,
             p_type: "add",
-            p_payload: AddPayload(canonical_track_id: trackID.id)
+            p_payload: AddPayload(canonical_track_id: canonicalTrackID)
         ))
     }
 
@@ -219,7 +268,7 @@ final class HarmonyCollaborationRepository {
     func queue(for sessionID: UUID) async throws -> [RemoteQueueSnapshot] {
         try await client
             .from("queue_items")
-            .select("id,position,added_by,canonical_tracks(title,artist,album,duration_ms)")
+            .select("id,position,added_by,canonical_tracks(title,artist,album,duration_ms,provider_tracks(provider,provider_id,availability))")
             .eq("session_id", value: sessionID.uuidString)
             .order("position", ascending: true)
             .execute()
