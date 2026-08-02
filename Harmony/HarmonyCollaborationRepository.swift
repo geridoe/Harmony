@@ -9,6 +9,7 @@ struct RemoteHarmonySession: Decodable {
     let playbackState: RemotePlaybackState?
     let endedAt: Date?
     let allowCollaboratorInvites: Bool
+    let playbackMode: SessionPlaybackMode
 
     enum CodingKeys: String, CodingKey {
         case id, title
@@ -17,6 +18,7 @@ struct RemoteHarmonySession: Decodable {
         case playbackState = "playback_state"
         case endedAt = "ended_at"
         case allowCollaboratorInvites = "allow_collaborator_invites"
+        case playbackMode = "playback_mode"
     }
 }
 
@@ -27,7 +29,7 @@ struct RemotePlaybackState: Decodable {
 private struct CreateSessionParameters: Encodable {
     let p_title: String
     let p_invite_code: String
-    let p_playback_mode = "conductor_playback"
+    let p_playback_mode: String
     let p_allow_collaborator_invites: Bool
 }
 
@@ -164,13 +166,14 @@ final class HarmonyCollaborationRepository {
         }
     }
 
-    func createSession(title: String, allowCollaboratorInvites: Bool) async throws -> RemoteHarmonySession {
+    func createSession(title: String, allowCollaboratorInvites: Bool, playbackMode: SessionPlaybackMode) async throws -> RemoteHarmonySession {
         try await authenticate()
         for attempt in 1...3 {
             do {
                 let parameters = CreateSessionParameters(
                     p_title: title,
                     p_invite_code: Self.makeInviteCode(),
+                    p_playback_mode: playbackMode.rawValue,
                     p_allow_collaborator_invites: allowCollaboratorInvites
                 )
                 return try await client.rpc("create_session", params: parameters).execute().value
@@ -200,7 +203,7 @@ final class HarmonyCollaborationRepository {
     func session(id: UUID) async throws -> RemoteHarmonySession {
         try await client
             .from("sessions")
-            .select("id,title,invite_code,queue_revision,playback_state,ended_at,allow_collaborator_invites")
+            .select("id,title,invite_code,queue_revision,playback_state,ended_at,allow_collaborator_invites,playback_mode")
             .eq("id", value: id.uuidString)
             .single()
             .execute()

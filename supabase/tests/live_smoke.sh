@@ -100,6 +100,7 @@ rpc "$conductor_token" create_session \
   "{\"p_title\":\"Harmony live smoke\",\"p_invite_code\":\"$invite_code\",\"p_playback_mode\":\"queue_only\",\"p_allow_collaborator_invites\":true,\"p_expires_at\":null}" \
   "$smoke_tmp/session.json"
 session_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/session.json")"
+jq -e 'if type == "array" then .[0].playback_mode == "queue_only" else .playback_mode == "queue_only" end' "$smoke_tmp/session.json" >/dev/null
 
 rpc "$collaborator_token" join_session_by_invite \
   "{\"p_invite_code\":\"$invite_code\"}" \

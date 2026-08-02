@@ -64,6 +64,28 @@ struct SessionMember: Identifiable, Hashable { let id: UUID; let name: String; l
 struct QueueItem: Identifiable, Hashable { let id: UUID; let track: HarmonyTrack; let addedBy: SessionMember; init(id: UUID = UUID(), track: HarmonyTrack, addedBy: SessionMember) { self.id = id; self.track = track; self.addedBy = addedBy } }
 enum PlaybackState { case playing, paused }
 
+enum SessionPlaybackMode: String, CaseIterable, Identifiable, Codable {
+    case conductorPlayback = "conductor_playback"
+    case personalListenAlong = "personal_listen_along"
+    case queueOnly = "queue_only"
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .conductorPlayback: "Conductor plays"
+        case .personalListenAlong: "Listen along"
+        case .queueOnly: "Queue only"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .conductorPlayback: "The Conductor controls playback on their device."
+        case .personalListenAlong: "Each member plays the shared queue in their connected service."
+        case .queueOnly: "Share and arrange music without controlling playback."
+        }
+    }
+}
+
 enum QueueCommandType: String, Codable {
     case add, move, remove, play, pause, skip
 }
@@ -107,6 +129,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var isClosingSession = false
     @Published private(set) var isUpdatingInvitePermissions = false
     @Published var allowsCollaboratorInvites = true
+    @Published var selectedPlaybackMode: SessionPlaybackMode = .conductorPlayback
     private var remoteSessionID: UUID?
     private var liveQueueSubscription: LiveQueueSubscription?
     private var liveSessionSubscription: LiveSessionSubscription?
@@ -404,12 +427,14 @@ final class HarmonySessionStore: ObservableObject {
         do {
             let remoteSession = try await collaborationRepository.createSession(
                 title: sessionName,
-                allowCollaboratorInvites: allowsCollaboratorInvites
+                allowCollaboratorInvites: allowsCollaboratorInvites,
+                playbackMode: selectedPlaybackMode
             )
             sessionName = remoteSession.title
             inviteCode = remoteSession.inviteCode
             queueRevision = remoteSession.queueRevision
             allowsCollaboratorInvites = remoteSession.allowCollaboratorInvites
+            selectedPlaybackMode = remoteSession.playbackMode
             remoteSessionID = remoteSession.id
             collaborationMessage = "Live Supabase session"
             await refreshRemoteQueue()
@@ -430,6 +455,7 @@ final class HarmonySessionStore: ObservableObject {
             self.inviteCode = remoteSession.inviteCode
             queueRevision = remoteSession.queueRevision
             allowsCollaboratorInvites = remoteSession.allowCollaboratorInvites
+            selectedPlaybackMode = remoteSession.playbackMode
             remoteSessionID = remoteSession.id
             collaborationMessage = "Joined live Supabase session"
             await refreshRemoteQueue()
@@ -466,6 +492,7 @@ final class HarmonySessionStore: ObservableObject {
         do {
             let session = try await collaborationRepository.setCollaboratorInvitesAllowed(in: remoteSessionID, allowed: allowed)
             allowsCollaboratorInvites = session.allowCollaboratorInvites
+            selectedPlaybackMode = session.playbackMode
             collaborationMessage = allowed ? "Collaborators can share invites" : "Only the Conductor can share invites"
         } catch {
             collaborationMessage = "Could not update invite permissions: \(error.localizedDescription)"
@@ -621,6 +648,7 @@ final class HarmonySessionStore: ObservableObject {
         members = [localOwner]
         inviteCode = ""
         allowsCollaboratorInvites = true
+        selectedPlaybackMode = .conductorPlayback
         sessionName = "No active session"
         collaborationMessage = message
     }

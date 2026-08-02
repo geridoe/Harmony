@@ -53,6 +53,14 @@ struct SessionView: View {
                             }
                             Toggle("Collaborators can share invites", isOn: $store.allowsCollaboratorInvites)
                                 .font(.subheadline)
+                            Picker("Playback", selection: $store.selectedPlaybackMode) {
+                                ForEach(SessionPlaybackMode.allCases) { mode in
+                                    Text(mode.title).tag(mode)
+                                }
+                            }
+                            Text(store.selectedPlaybackMode.detail)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
                         if store.isLiveSession, store.currentMember.role == .conductor {
                             Toggle(
