@@ -3,6 +3,7 @@ import SwiftUI
 struct SessionView: View {
     @EnvironmentObject private var store: HarmonySessionStore
     @State private var showingJoinSession = false
+    @State private var showingCloseConfirmation = false
     @State private var inviteCode = ""
 
     var body: some View {
@@ -93,9 +94,36 @@ struct SessionView: View {
             }
             .navigationTitle("Harmony")
             .toolbar {
-                if store.currentMember.role == .conductor {
-                    EditButton()
+                ToolbarItemGroup(placement: .navigationBarTrailing) {
+                    if store.currentMember.role == .conductor {
+                        EditButton()
+                    }
+                    if store.isLiveSession {
+                        Menu {
+                            Button(store.currentMember.role == .conductor ? "End session" : "Leave session", role: .destructive) {
+                                showingCloseConfirmation = true
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                        .disabled(store.isClosingSession)
+                        .accessibilityLabel("Session options")
+                    }
                 }
+            }
+            .confirmationDialog(
+                store.currentMember.role == .conductor ? "End this Harmony session?" : "Leave this Harmony session?",
+                isPresented: $showingCloseConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button(store.currentMember.role == .conductor ? "End session" : "Leave session", role: .destructive) {
+                    Task { await store.closeLiveSession() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(store.currentMember.role == .conductor
+                    ? "Members will no longer be able to join or edit this queue."
+                    : "You can rejoin later with a valid invite code while the session remains active.")
             }
             .sheet(isPresented: $showingJoinSession) {
                 NavigationView {

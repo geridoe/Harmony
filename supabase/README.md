@@ -44,6 +44,8 @@ supabase functions deploy spotify-token-exchange
 
 `create_session(title, invite_code, playback_mode, allow_collaborator_invites, expires_at)` creates a room and makes the caller its Conductor. `join_session_by_invite(invite_code)` joins an active room as a Collaborator (and is idempotent). Generate invite codes client-side with six to eight uppercase letters/numbers, then show the unique-constraint error by generating a new code and retrying.
 
+`end_harmony_session(session_id)` is Conductor-only and marks the room ended. `leave_harmony_session(session_id)` removes a Collaborator; Conductors must explicitly end their room instead.
+
 ## Queue RPC contract
 
 Authenticated clients call `apply_queue_command` with:

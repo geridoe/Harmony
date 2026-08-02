@@ -89,6 +89,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var catalogSearchResults: [HarmonyTrack]?
     @Published private(set) var isSearchingCatalog = false
     @Published private(set) var catalogSearchMessage: String?
+    @Published private(set) var isClosingSession = false
     private var remoteSessionID: UUID?
     private var liveQueueSubscription: LiveQueueSubscription?
     private var livePresenceSubscription: LivePresenceSubscription?
@@ -358,6 +359,33 @@ final class HarmonySessionStore: ObservableObject {
             await subscribeToPresence(remoteSession.id)
         } catch {
             collaborationMessage = "Join failed: \(error.localizedDescription)"
+        }
+    }
+
+    func closeLiveSession() async {
+        guard let remoteSessionID, !isClosingSession else { return }
+        isClosingSession = true
+        defer { isClosingSession = false }
+        do {
+            if currentMember.role == .conductor {
+                try await collaborationRepository.endSession(id: remoteSessionID)
+            } else {
+                try await collaborationRepository.leaveSession(id: remoteSessionID)
+            }
+            await liveQueueSubscription?.channel.unsubscribe()
+            await livePresenceSubscription?.channel.unsubscribe()
+            liveQueueSubscription = nil
+            livePresenceSubscription = nil
+            self.remoteSessionID = nil
+            activeMemberIDs = []
+            queue = []
+            queueRevision = 0
+            members = [currentMember]
+            inviteCode = ""
+            sessionName = "No active session"
+            collaborationMessage = currentMember.role == .conductor ? "Session ended" : "You left the session"
+        } catch {
+            collaborationMessage = "Could not close session: \(error.localizedDescription)"
         }
     }
 

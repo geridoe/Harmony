@@ -161,6 +161,14 @@ final class HarmonyCollaborationRepository {
         ).execute().value
     }
 
+    func endSession(id: UUID) async throws {
+        try await client.rpc("end_harmony_session", params: ["p_session_id": id.uuidString]).execute()
+    }
+
+    func leaveSession(id: UUID) async throws {
+        try await client.rpc("leave_harmony_session", params: ["p_session_id": id.uuidString]).execute()
+    }
+
     func session(id: UUID) async throws -> RemoteHarmonySession {
         try await client
             .from("sessions")
