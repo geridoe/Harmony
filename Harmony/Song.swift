@@ -180,6 +180,10 @@ final class HarmonySessionStore: ObservableObject {
     var isLiveSession: Bool { remoteSessionID != nil }
     var canShareInvite: Bool { isLiveSession && (currentMember.role == .conductor || allowsCollaboratorInvites) }
     var canControlPlayback: Bool { selectedPlaybackMode != .queueOnly && currentMember.role == .conductor }
+    var canStartLiveSession: Bool {
+        let title = sessionName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (1...120).contains(title.count)
+    }
     func providerState(for provider: MusicProvider) -> ProviderAccountStatus { providerStates[provider] ?? .notConnected }
     func canRemove(_ item: QueueItem) -> Bool { currentMember.role == .conductor || item.addedBy.id == currentMember.id }
     func contains(_ track: HarmonyTrack) -> Bool { queue.contains { Self.representsSameRecording($0.track, track) } }
@@ -452,10 +456,16 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     func createLiveSession() async {
+        let title = sessionName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (1...120).contains(title.count) else {
+            collaborationMessage = "Give this session a name of up to 120 characters."
+            return
+        }
+        sessionName = title
         collaborationMessage = "Connecting…"
         do {
             let remoteSession = try await collaborationRepository.createSession(
-                title: sessionName,
+                title: title,
                 allowCollaboratorInvites: allowsCollaboratorInvites,
                 playbackMode: selectedPlaybackMode,
                 expiresAt: selectedSessionExpiry.date()

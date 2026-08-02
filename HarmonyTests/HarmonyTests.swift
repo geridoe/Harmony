@@ -177,6 +177,19 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(SessionPlaybackMode.queueOnly.rawValue, "queue_only")
     }
 
+    func testSessionTitleValidationTrimsWhitespaceAndHonorsDatabaseLimit() {
+        let store = HarmonySessionStore()
+
+        store.sessionName = "  Friday Night Finds  "
+        XCTAssertTrue(store.canStartLiveSession)
+
+        store.sessionName = " \n "
+        XCTAssertFalse(store.canStartLiveSession)
+
+        store.sessionName = String(repeating: "a", count: 121)
+        XCTAssertFalse(store.canStartLiveSession)
+    }
+
     func testClearingSessionRemovesRoomStateAndRestoresLocalOwnership() {
         let store = HarmonySessionStore()
 

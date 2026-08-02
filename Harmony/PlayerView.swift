@@ -48,6 +48,7 @@ struct SessionView: View {
                             HStack {
                                 Button("Start live session") { Task { await store.createLiveSession() } }
                                     .buttonStyle(.borderedProminent)
+                                    .disabled(!store.canStartLiveSession)
                                 Button("Join session") { showingJoinSession = true }
                                     .buttonStyle(.bordered)
                             }
