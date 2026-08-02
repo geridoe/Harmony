@@ -27,6 +27,47 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(store.queueRevision, initialRevision)
     }
 
+    func testDifferentArtistsWithSameTrackTitleCanBothBeQueued() {
+        let store = HarmonySessionStore()
+        let track = HarmonyTrack(
+            title: store.queue[0].track.title,
+            artist: "A Different Artist",
+            album: "Another Album",
+            duration: 180,
+            symbol: "music.note",
+            mappings: [ProviderTrackMapping(provider: .spotify, providerID: "spotify:track:different", availability: .playable)]
+        )
+
+        store.add(track)
+
+        XCTAssertTrue(store.contains(track))
+        XCTAssertEqual(store.queue.last?.track.artist, "A Different Artist")
+    }
+
+    func testProviderIDPreventsDuplicateRecordingWithChangedMetadata() {
+        let store = HarmonySessionStore()
+        let existing = store.queue[0].track
+        let duplicate = HarmonyTrack(
+            title: "Alternate display title",
+            artist: "Alternate display artist",
+            album: existing.album,
+            duration: existing.duration,
+            symbol: existing.symbol,
+            mappings: existing.mappings
+        )
+        let initialCount = store.queue.count
+
+        store.add(duplicate)
+
+        XCTAssertEqual(store.queue.count, initialCount)
+    }
+
+    func testSpotifyCatalogErrorsProvideRecoveryGuidance() {
+        XCTAssertTrue(SpotifyCatalogError.reconnectRequired.localizedDescription.contains("Reconnect Spotify"))
+        XCTAssertTrue(SpotifyCatalogError.rateLimited.localizedDescription.contains("Wait a moment"))
+        XCTAssertTrue(SpotifyCatalogError.temporarilyUnavailable.localizedDescription.contains("temporarily unavailable"))
+    }
+
     func testRemoveRemovesSelectedQueueItemAndAdvancesRevision() {
         let store = HarmonySessionStore()
         let itemToRemove = store.queue[1]

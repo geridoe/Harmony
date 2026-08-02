@@ -132,6 +132,7 @@ final class HarmonySessionStore: ObservableObject {
     var isLiveSession: Bool { remoteSessionID != nil }
     func providerState(for provider: MusicProvider) -> ProviderAccountStatus { providerStates[provider] ?? .notConnected }
     func canRemove(_ item: QueueItem) -> Bool { currentMember.role == .conductor || item.addedBy.id == currentMember.id }
+    func contains(_ track: HarmonyTrack) -> Bool { queue.contains { Self.representsSameRecording($0.track, track) } }
 
     func refreshProviderConnections() async {
         do {
@@ -322,7 +323,7 @@ final class HarmonySessionStore: ObservableObject {
         activeMemberIDs.subtract(leaves)
     }
     func add(_ track: HarmonyTrack) {
-        guard !queue.contains(where: { $0.track.title == track.title }) else { return }
+        guard !contains(track) else { return }
         queue.append(QueueItem(track: track, addedBy: currentMember))
         record(.add)
         guard let remoteSessionID else { return }
@@ -642,6 +643,15 @@ final class HarmonySessionStore: ObservableObject {
         let parts = value.split(separator: ":", omittingEmptySubsequences: false)
         guard parts.count == 3, parts[0] == "spotify", parts[1] == "track", parts[2].count == 22 else { return false }
         return parts[2].allSatisfy { $0.isASCII && $0.isLetter || $0.isNumber }
+    }
+
+    private static func representsSameRecording(_ lhs: HarmonyTrack, _ rhs: HarmonyTrack) -> Bool {
+        if lhs.id == rhs.id { return true }
+        let lhsProviderIDs = Set(lhs.mappings.filter { !$0.providerID.isEmpty }.map { "\($0.provider.rawValue):\($0.providerID)" })
+        let rhsProviderIDs = Set(rhs.mappings.filter { !$0.providerID.isEmpty }.map { "\($0.provider.rawValue):\($0.providerID)" })
+        if !lhsProviderIDs.isDisjoint(with: rhsProviderIDs) { return true }
+        return lhs.title.compare(rhs.title, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+            && lhs.artist.compare(rhs.artist, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
     }
 }
 

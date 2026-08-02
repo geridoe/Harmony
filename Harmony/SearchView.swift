@@ -94,7 +94,7 @@ struct SearchView: View {
                         Button { store.add(track) } label: {
                             Image(systemName: "plus.circle.fill").font(.title3)
                         }
-                        .disabled(store.queue.contains { $0.track.title == track.title && $0.track.artist == track.artist })
+                        .disabled(store.contains(track))
                     }
                 }
             }
