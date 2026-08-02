@@ -12,7 +12,7 @@ struct SessionView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("LIVE SESSION").font(.caption.weight(.bold)).foregroundColor(.secondary)
                         Text(store.sessionName).font(.title2.bold())
-                        Text("\(store.members.count) members · \(store.activeMemberIDs.count) here now").foregroundColor(.secondary)
+                        Text(store.isLiveSession ? "\(store.members.count) members · \(store.activeMemberIDs.count) here now" : "\(store.members.count) sample members").foregroundColor(.secondary)
 						Text(store.collaborationMessage).font(.caption).foregroundColor(.secondary)
                         HStack {
                             ForEach(store.members) { member in
