@@ -23,6 +23,17 @@ For local development, start Supabase first with `supabase start`, then run `sup
 
 The iOS app will need only the Supabase project URL and publishable/anon key, supplied through an untracked `.xcconfig` file. Do not commit a service-role key. Spotify OAuth token exchange and refresh must run in an Edge Function; its client secret belongs in Supabase Function Secrets. Query `provider_connection_statuses`, never the token-bearing `provider_connections` table.
 
+## Spotify token exchange function
+
+`functions/spotify-token-exchange` is an authenticated PKCE exchange boundary. The app sends its authorization code and verifier to the function; it validates the Harmony user, exchanges the code with Spotify, AES-GCM encrypts the refresh token, and writes it with the Supabase secret key. It never returns a token to iOS.
+
+Before deployment, create a Spotify developer app and register the exact iOS redirect URI. Set `SPOTIFY_CLIENT_ID`, optionally `SPOTIFY_CLIENT_SECRET`, and a random 32-byte base64 `SPOTIFY_TOKEN_ENCRYPTION_KEY` as Supabase Function Secrets. The checked-in `functions/.env.example` is intentionally blank.
+
+```bash
+supabase secrets set --env-file supabase/functions/.env
+supabase functions deploy spotify-token-exchange
+```
+
 ## Session RPCs
 
 `create_session(title, invite_code, playback_mode, allow_collaborator_invites, expires_at)` creates a room and makes the caller its Conductor. `join_session_by_invite(invite_code)` joins an active room as a Collaborator (and is idempotent). Generate invite codes client-side with six to eight uppercase letters/numbers, then show the unique-constraint error by generating a new code and retrying.
