@@ -217,6 +217,6 @@ provider_connections(id, profile_id, provider, encrypted_refresh_token, expires_
 ### Milestone 3 — hardening
 
 - [ ] Push notifications
-- [ ] Disconnect/deletion/privacy controls
+- [x] Disconnect/deletion/privacy controls
 - [ ] Unit/UI/device test coverage
 - [ ] TestFlight release checklist

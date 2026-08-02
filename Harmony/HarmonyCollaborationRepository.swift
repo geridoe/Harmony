@@ -122,6 +122,7 @@ struct SpotifyAccessCredential: Decodable {
 }
 
 private struct SpotifyDisconnectResponse: Decodable { let disconnected: Bool }
+private struct DeleteAccountResponse: Decodable { let deleted: Bool }
 private struct SpotifySearchParameters: Encodable { let query: String }
 private struct SpotifySearchResponse: Decodable { let tracks: [SpotifySearchTrack] }
 struct SpotifySearchTrack: Decodable {
@@ -221,6 +222,13 @@ final class HarmonyCollaborationRepository {
         try await authenticate()
         let response: SpotifyDisconnectResponse = try await client.functions.invoke("spotify-disconnect")
         guard response.disconnected else { throw CollaborationError.invalidResponse }
+    }
+
+    func deleteAccount() async throws {
+        try await authenticate()
+        let response: DeleteAccountResponse = try await client.functions.invoke("delete-account")
+        guard response.deleted else { throw CollaborationError.invalidResponse }
+        try await client.auth.signOut(scope: .local)
     }
 
     func searchSpotify(query: String) async throws -> [SpotifySearchTrack] {

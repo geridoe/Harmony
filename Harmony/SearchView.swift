@@ -105,6 +105,7 @@ struct SearchView: View {
 
 struct ConnectionsView: View {
     @EnvironmentObject private var store: HarmonySessionStore
+    @State private var showingDeleteAccountConfirmation = false
     var body: some View {
         NavigationView {
             List {
@@ -171,6 +172,15 @@ struct ConnectionsView: View {
                         .font(.footnote)
                         .foregroundColor(.secondary)
                 }
+                Section("Privacy") {
+                    Button("Delete Harmony account", role: .destructive) {
+                        showingDeleteAccountConfirmation = true
+                    }
+                    .disabled(store.isDeletingAccount)
+                    Text("Deletes your provider connection, session memberships, queue contributions, and Harmony profile.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
             }
             .navigationTitle("Connections")
             .task { await store.refreshProviderConnections() }
@@ -185,6 +195,18 @@ struct ConnectionsView: View {
                 Button("OK", role: .cancel) { store.dismissSpotifyPlaybackError() }
             } message: {
                 Text(store.spotifyPlaybackErrorMessage ?? "Unknown Spotify connection error")
+            }
+            .confirmationDialog(
+                "Permanently delete your Harmony account?",
+                isPresented: $showingDeleteAccountConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Delete account", role: .destructive) {
+                    Task { await store.deleteAccount() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This cannot be undone. Sessions you conduct will end and all Harmony account data will be removed.")
             }
         }
     }

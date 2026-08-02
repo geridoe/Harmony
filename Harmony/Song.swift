@@ -95,6 +95,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var isConnectingSpotify = false
     @Published private(set) var isConnectingSpotifyPlayback = false
     @Published private(set) var isDisconnectingSpotify = false
+    @Published private(set) var isDeletingAccount = false
     @Published private(set) var spotifyPlaybackConnection: ProviderConnectionState = .disconnected
     @Published private(set) var spotifyPlaybackErrorMessage: String?
     @Published private(set) var activeMemberIDs: Set<UUID> = []
@@ -209,6 +210,31 @@ final class HarmonySessionStore: ObservableObject {
         } catch {
             collaborationMessage = "Could not disconnect Spotify: \(error.localizedDescription)"
             spotifyPlaybackErrorMessage = error.localizedDescription
+        }
+    }
+
+    func deleteAccount() async {
+        guard !isDeletingAccount else { return }
+        isDeletingAccount = true
+        defer { isDeletingAccount = false }
+        do {
+            await detachLiveSubscriptions()
+            spotifyRemote.disconnect()
+            try await collaborationRepository.deleteAccount()
+            remoteSessionID = nil
+            activeMemberIDs = []
+            queue = []
+            queueRevision = 0
+            members = [currentMember]
+            providerStates = [.appleMusic: .setupRequired, .spotify: .notConnected]
+            spotifyPlaybackConnection = .disconnected
+            spotifyLoadedProviderID = nil
+            catalogSearchResults = nil
+            inviteCode = ""
+            sessionName = "No active session"
+            collaborationMessage = "Harmony account deleted"
+        } catch {
+            collaborationMessage = "Could not delete account: \(error.localizedDescription)"
         }
     }
 
