@@ -221,6 +221,17 @@ final class HarmonyCollaborationRepository {
             .value
     }
 
+    func recentSessions() async throws -> [RemoteHarmonySession] {
+        try await authenticate()
+        return try await client
+            .from("sessions")
+            .select("id,title,invite_code,queue_revision,playback_state,ended_at,expires_at,allow_collaborator_invites,playback_mode")
+            .order("created_at", ascending: false)
+            .limit(20)
+            .execute()
+            .value
+    }
+
     func setCollaboratorInvitesAllowed(in sessionID: UUID, allowed: Bool) async throws -> RemoteHarmonySession {
         try await client.rpc(
             "set_harmony_collaborator_invites",

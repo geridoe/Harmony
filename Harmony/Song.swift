@@ -155,6 +155,8 @@ final class HarmonySessionStore: ObservableObject {
     @Published var selectedPlaybackMode: SessionPlaybackMode = .conductorPlayback
     @Published var selectedSessionExpiry: SessionExpiry = .never
     @Published private(set) var sessionExpiresAt: Date?
+    @Published private(set) var recentSessions: [RemoteHarmonySession] = []
+    @Published private(set) var isLoadingRecentSessions = false
     private var remoteSessionID: UUID?
     private var liveQueueSubscription: LiveQueueSubscription?
     private var liveSessionSubscription: LiveSessionSubscription?
@@ -499,6 +501,7 @@ final class HarmonySessionStore: ObservableObject {
             await subscribeToRemoteQueue(remoteSession.id)
             await subscribeToSessionLifecycle(remoteSession.id)
             await subscribeToPresence(remoteSession.id)
+            await refreshRecentSessions()
         } catch {
             collaborationMessage = "Connection failed: \(error.localizedDescription)"
         }
@@ -521,8 +524,48 @@ final class HarmonySessionStore: ObservableObject {
             await subscribeToRemoteQueue(remoteSession.id)
             await subscribeToSessionLifecycle(remoteSession.id)
             await subscribeToPresence(remoteSession.id)
+            await refreshRecentSessions()
         } catch {
             collaborationMessage = "Join failed: \(error.localizedDescription)"
+        }
+    }
+
+    func refreshRecentSessions() async {
+        guard !isLoadingRecentSessions else { return }
+        isLoadingRecentSessions = true
+        defer { isLoadingRecentSessions = false }
+        do {
+            recentSessions = try await collaborationRepository.recentSessions()
+        } catch {
+            // Recents are supplementary; session creation/joining remains usable offline.
+        }
+    }
+
+    func resumeLiveSession(id: UUID) async {
+        collaborationMessage = "Opening session…"
+        do {
+            let remoteSession = try await collaborationRepository.session(id: id)
+            guard remoteSession.endedAt == nil,
+                  remoteSession.expiresAt.map({ $0 > Date() }) ?? true else {
+                collaborationMessage = "This Harmony session is no longer active."
+                await refreshRecentSessions()
+                return
+            }
+            await detachLiveSubscriptions()
+            sessionName = remoteSession.title
+            inviteCode = remoteSession.inviteCode
+            queueRevision = remoteSession.queueRevision
+            allowsCollaboratorInvites = remoteSession.allowCollaboratorInvites
+            selectedPlaybackMode = remoteSession.playbackMode
+            sessionExpiresAt = remoteSession.expiresAt
+            remoteSessionID = remoteSession.id
+            collaborationMessage = "Resumed live Supabase session"
+            await refreshRemoteQueue()
+            await subscribeToRemoteQueue(remoteSession.id)
+            await subscribeToSessionLifecycle(remoteSession.id)
+            await subscribeToPresence(remoteSession.id)
+        } catch {
+            collaborationMessage = "Could not open this session: \(error.localizedDescription)"
         }
     }
 
@@ -588,6 +631,7 @@ final class HarmonySessionStore: ObservableObject {
             queueRevision = session.queueRevision
             allowsCollaboratorInvites = session.allowCollaboratorInvites
             selectedPlaybackMode = session.playbackMode
+            sessionExpiresAt = session.expiresAt
             if session.playbackState?.status == "playing" { playbackState = .playing }
             if session.playbackState?.status == "paused" { playbackState = .paused }
             members = remoteMemberRecords.map { member in

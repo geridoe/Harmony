@@ -88,6 +88,24 @@ struct SessionView: View {
                     .padding(.vertical, 8)
                 }
 
+                if !store.isLiveSession, !store.recentSessions.isEmpty {
+                    Section("Your recent sessions") {
+                        ForEach(store.recentSessions) { session in
+                            Button {
+                                Task { await store.resumeLiveSession(id: session.id) }
+                            } label: {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(session.title).font(.body.weight(.semibold))
+                                    Text(sessionStatus(session))
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .disabled(session.endedAt != nil || session.expiresAt.map({ $0 <= Date() }) ?? false)
+                        }
+                    }
+                }
+
                 Section("Now playing") {
                     if let item = store.nowPlaying {
                         HStack {
@@ -141,6 +159,7 @@ struct SessionView: View {
                 }
             }
             .navigationTitle("Harmony")
+            .task { await store.refreshRecentSessions() }
             .toolbar {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     if store.currentMember.role == .conductor {
@@ -199,5 +218,14 @@ struct SessionView: View {
                 }
             }
         }
+    }
+
+    private func sessionStatus(_ session: RemoteHarmonySession) -> String {
+        if session.endedAt != nil { return "Ended" }
+        if let expiresAt = session.expiresAt, expiresAt <= Date() { return "Expired" }
+        if let expiresAt = session.expiresAt {
+            return "Active · ends \(expiresAt, format: .relative(presentation: .named))"
+        }
+        return "Active"
     }
 }

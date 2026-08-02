@@ -108,6 +108,12 @@ rpc "$collaborator_token" join_session_by_invite \
 joined_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/join.json")"
 [[ "$joined_id" == "$session_id" ]]
 
+stage="recent-session visibility"
+rest_get "$collaborator_token" \
+  'sessions?select=id,title,ended_at,expires_at,playback_mode&order=created_at.desc&limit=20' \
+  "$smoke_tmp/recent-sessions.json"
+jq -e --arg session "$session_id" '.[] | select(.id == $session)' "$smoke_tmp/recent-sessions.json" >/dev/null
+
 stage="provider track canonicalization"
 rpc "$conductor_token" resolve_harmony_track \
   '{"p_provider":"apple_music","p_provider_id":"harmony-smoke-apple-track","p_title":"Harmony Smoke Track","p_artist":"Harmony Test Artist","p_album":"Harmony Test Album","p_duration_ms":180000,"p_artwork_url":null,"p_is_explicit":false,"p_deep_link":null}' \
