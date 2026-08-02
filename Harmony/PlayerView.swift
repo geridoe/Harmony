@@ -22,11 +22,11 @@ struct SessionView: View {
                             Spacer()
                             Text(store.inviteCode).font(.caption.monospaced().bold()).padding(8).background(Color.indigo.opacity(0.12)).cornerRadius(8)
                         }
-                        if store.isLiveSession {
+                        if let inviteURL = store.inviteURL {
                             ShareLink(
-                                item: "Join my Harmony session \(store.sessionName) with invite code \(store.inviteCode).",
+                                item: inviteURL,
                                 subject: Text("Join my Harmony session"),
-                                message: Text("Add and arrange music in our shared queue.")
+                                message: Text("Add and arrange music in \(store.sessionName). Invite code: \(store.inviteCode)")
                             ) {
                                 Label("Share invite", systemImage: "square.and.arrow.up")
                             }

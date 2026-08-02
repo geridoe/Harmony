@@ -243,6 +243,33 @@ final class HarmonySessionStore: ObservableObject {
         _ = spotifyRemote.handleAuthorizationCallback(url)
     }
 
+    func handleOpenURL(_ url: URL) {
+        guard url.scheme?.lowercased() == "harmony" else { return }
+        if url.host?.lowercased() == "spotify-auth" {
+            handleSpotifyOpenURL(url)
+        } else if let code = Self.inviteCode(from: url) {
+            Task { await joinLiveSession(inviteCode: code) }
+        }
+    }
+
+    static func inviteCode(from url: URL) -> String? {
+        guard url.scheme?.lowercased() == "harmony", url.host?.lowercased() == "join",
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let code = components.queryItems?.first(where: { $0.name == "code" })?.value?
+                .trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
+              code.range(of: "^[A-Z0-9]{6,8}$", options: .regularExpression) != nil else { return nil }
+        return code
+    }
+
+    var inviteURL: URL? {
+        guard isLiveSession else { return nil }
+        var components = URLComponents()
+        components.scheme = "harmony"
+        components.host = "join"
+        components.queryItems = [URLQueryItem(name: "code", value: inviteCode)]
+        return components.url
+    }
+
     func applyPresence(joins: Set<UUID>, leaves: Set<UUID>) {
         activeMemberIDs.formUnion(joins)
         activeMemberIDs.subtract(leaves)

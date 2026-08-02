@@ -16,7 +16,7 @@ struct HarmonyApp: App {
             ContentView()
                 .environmentObject(sessionStore)
                 .onOpenURL { url in
-                    sessionStore.handleSpotifyOpenURL(url)
+                    sessionStore.handleOpenURL(url)
                 }
         }
     }

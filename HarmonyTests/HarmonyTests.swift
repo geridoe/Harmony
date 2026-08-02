@@ -111,6 +111,16 @@ final class HarmonyTests: XCTestCase {
 
         XCTAssertEqual(store.activeMemberIDs, [store.currentMember.id])
     }
+
+    func testInviteURLRoutingAcceptsOnlyValidHarmonyJoinCodes() {
+        XCTAssertEqual(
+            HarmonySessionStore.inviteCode(from: URL(string: "harmony://join?code=ab12cd34")!),
+            "AB12CD34"
+        )
+        XCTAssertNil(HarmonySessionStore.inviteCode(from: URL(string: "harmony://spotify-auth?code=secret")!))
+        XCTAssertNil(HarmonySessionStore.inviteCode(from: URL(string: "https://example.com/join?code=ABC123")!))
+        XCTAssertNil(HarmonySessionStore.inviteCode(from: URL(string: "harmony://join?code=bad-code")!))
+    }
 }
 
 @MainActor
