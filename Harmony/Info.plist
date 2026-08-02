@@ -13,11 +13,17 @@
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
+			<key>CFBundleURLName</key>
+			<string>media.com.gwd.Harmony</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>harmony</string>
 			</array>
 		</dict>
+	</array>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>spotify</string>
 	</array>
 	<key>kTCCServiceMediaLibrary</key>
 	<string>Access to music library required to share playback/queue</string>
