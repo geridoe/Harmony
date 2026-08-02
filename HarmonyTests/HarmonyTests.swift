@@ -50,16 +50,26 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(store.queueRevision, initialRevision + 1)
     }
 
-    func testTogglePlaybackAlternatesBetweenPlayingAndPaused() {
+    func testTogglePlaybackAlternatesBetweenPlayingAndPaused() async {
         let store = HarmonySessionStore()
 
         XCTAssertEqual(store.playbackState, .playing)
 
-        store.togglePlayback()
+        await store.togglePlayback()
         XCTAssertEqual(store.playbackState, .paused)
 
-        store.togglePlayback()
+        await store.togglePlayback()
         XCTAssertEqual(store.playbackState, .playing)
+    }
+
+    func testTogglePlaybackSendsPauseAndResumeToConnectedSpotify() async {
+        let spotify = RecordingSpotifyProvider()
+        let store = HarmonySessionStore(spotifyRemote: spotify)
+
+        await store.togglePlayback()
+        await store.togglePlayback()
+
+        XCTAssertEqual(spotify.commands, [.pause, .resume])
     }
 
     func testSpotifyPKCERequestHasRequiredParameters() {
@@ -86,5 +96,24 @@ final class HarmonyTests: XCTestCase {
         store.applyPresence(joins: [], leaves: [memberID])
 
         XCTAssertEqual(store.activeMemberIDs, [store.currentMember.id])
+    }
+}
+
+@MainActor
+private final class RecordingSpotifyProvider: SpotifyPlaybackProviding {
+    let provider: MusicProvider = .spotify
+    var connectionState: ProviderConnectionState = .connected(accountName: "Test Spotify")
+    let capabilities = ProviderCapabilities.spotifyMock
+    var commands: [ProviderPlaybackCommand] = []
+
+    func authorizeAndConnect() async throws {}
+    func handleAuthorizationCallback(_ url: URL) -> Bool { false }
+    func search(query: String) async throws -> [HarmonyTrack] { [] }
+    func resolve(track: HarmonyTrack) async throws -> ResolvedProviderTrack {
+        throw ProviderAdapterError.trackUnavailable(.spotify)
+    }
+    func perform(_ command: ProviderPlaybackCommand) async throws -> ProviderPlaybackResult {
+        commands.append(command)
+        return .applied
     }
 }

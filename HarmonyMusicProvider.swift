@@ -240,6 +240,12 @@ protocol HarmonyMusicProvider: AnyObject {
     func perform(_ command: ProviderPlaybackCommand) async throws -> ProviderPlaybackResult
 }
 
+@MainActor
+protocol SpotifyPlaybackProviding: HarmonyMusicProvider {
+    func authorizeAndConnect() async throws
+    @discardableResult func handleAuthorizationCallback(_ url: URL) -> Bool
+}
+
 /// Simulator-safe Apple Music behavior. Replace with a MusicKit-backed client
 /// after the App ID has MusicKit enabled and the user grants authorization.
 final class MockAppleMusicProvider: HarmonyMusicProvider {
@@ -327,7 +333,7 @@ final class MockSpotifyProvider: HarmonyMusicProvider {
 }
 
 @MainActor
-final class SpotifyAppRemoteProvider: NSObject, HarmonyMusicProvider, @preconcurrency SPTAppRemoteDelegate, @preconcurrency SPTAppRemotePlayerStateDelegate {
+final class SpotifyAppRemoteProvider: NSObject, SpotifyPlaybackProviding, @preconcurrency SPTAppRemoteDelegate, @preconcurrency SPTAppRemotePlayerStateDelegate {
     let provider: MusicProvider = .spotify
     private(set) var connectionState: ProviderConnectionState = .disconnected
     let capabilities = ProviderCapabilities.spotifyMock

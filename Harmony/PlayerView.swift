@@ -55,7 +55,9 @@ struct SessionView: View {
                                 Text(item.track.artist).foregroundColor(.secondary)
                             }
                             Spacer()
-                            Button(action: store.togglePlayback) {
+                            Button {
+                                Task { await store.togglePlayback() }
+                            } label: {
                                 Image(systemName: store.playbackState == .playing ? "pause.fill" : "play.fill").frame(width: 34, height: 34).background(Color.indigo).foregroundColor(.white).clipShape(Circle())
                             }
                         }

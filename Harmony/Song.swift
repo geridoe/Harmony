@@ -71,11 +71,17 @@ final class HarmonySessionStore: ObservableObject {
     private var liveQueueSubscription: LiveQueueSubscription?
     private var livePresenceSubscription: LivePresenceSubscription?
     private let collaborationRepository = HarmonyCollaborationRepository()
-    private let spotifyRemote = SpotifyAppRemoteProvider()
+    private let spotifyRemote: any SpotifyPlaybackProviding
     @Published private(set) var currentMember: SessionMember
     @Published private(set) var members: [SessionMember]
     let catalog: [HarmonyTrack]
-    init() {
+    convenience init() {
+        self.init(spotifyRemote: SpotifyAppRemoteProvider())
+    }
+
+    init(spotifyRemote: any SpotifyPlaybackProviding) {
+        self.spotifyRemote = spotifyRemote
+        spotifyPlaybackConnection = spotifyRemote.connectionState
         let alex = SessionMember(name: "Alex Morgan", initials: "AM", role: .conductor, providers: [.appleMusic, .spotify])
         let sam = SessionMember(name: "Sam Lee", initials: "SL", role: .collaborator, providers: [.spotify])
         let priya = SessionMember(name: "Priya Shah", initials: "PS", role: .collaborator, providers: [.appleMusic])
@@ -185,13 +191,21 @@ final class HarmonySessionStore: ObservableObject {
         Task { await applyRemoteMove(movedItemID, position: Double(destination + 1) * 1024, sessionID: remoteSessionID, expectedRevision: expectedRevision) }
     }
 
-    func togglePlayback() {
+    func togglePlayback() async {
         guard currentMember.role == .conductor else { return }
         playbackState = playbackState == .playing ? .paused : .playing
         record(playbackState == .playing ? .play : .pause)
+        if spotifyPlaybackConnection.isConnected {
+            do {
+                let command: ProviderPlaybackCommand = playbackState == .playing ? .resume : .pause
+                _ = try await spotifyRemote.perform(command)
+                collaborationMessage = playbackState == .playing ? "Playing on Spotify" : "Spotify paused"
+            } catch {
+                collaborationMessage = "Spotify playback command failed: \(error.localizedDescription)"
+            }
+        }
         guard let remoteSessionID else { return }
-        let expectedRevision = queueRevision - 1
-        Task { await applyRemotePlayback(sessionID: remoteSessionID, expectedRevision: expectedRevision) }
+        await applyRemotePlayback(sessionID: remoteSessionID, expectedRevision: queueRevision - 1)
     }
 
     func createLiveSession() async {

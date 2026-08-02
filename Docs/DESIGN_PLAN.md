@@ -210,7 +210,7 @@ provider_connections(id, profile_id, provider, encrypted_refresh_token, expires_
 ### Milestone 2 — real services
 
 - [ ] MusicKit setup and Apple Music device adapter
-- [ ] Spotify developer setup, OAuth, and App Remote adapter
+- [x] Spotify developer setup, OAuth, and App Remote adapter
 - [ ] Canonical search/matching pipeline
 - [ ] Provider-specific error and fallback UI
 
