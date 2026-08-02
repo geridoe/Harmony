@@ -88,7 +88,10 @@ struct RemoteProviderConnection: Decodable {
 
 @MainActor
 final class HarmonyCollaborationRepository {
-    private let client = HarmonySupabaseClient.shared
+    // Defer plist-dependent client creation until a live backend operation is
+    // requested. This keeps local queue behavior and unit tests independent of
+    // a test-host Info.plist while production still fails fast on misconfiguration.
+    private lazy var client = HarmonySupabaseClient.shared
 
     func authenticate() async throws {
         if client.auth.currentSession == nil {
