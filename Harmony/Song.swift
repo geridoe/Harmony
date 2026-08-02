@@ -92,6 +92,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var isClosingSession = false
     private var remoteSessionID: UUID?
     private var liveQueueSubscription: LiveQueueSubscription?
+    private var liveSessionSubscription: LiveSessionSubscription?
     private var livePresenceSubscription: LivePresenceSubscription?
     private let collaborationRepository = HarmonyCollaborationRepository()
     private let spotifyRemote: any SpotifyPlaybackProviding
@@ -366,6 +367,7 @@ final class HarmonySessionStore: ObservableObject {
             collaborationMessage = "Live Supabase session"
             await refreshRemoteQueue()
             await subscribeToRemoteQueue(remoteSession.id)
+            await subscribeToSessionLifecycle(remoteSession.id)
             await subscribeToPresence(remoteSession.id)
         } catch {
             collaborationMessage = "Connection failed: \(error.localizedDescription)"
@@ -376,6 +378,7 @@ final class HarmonySessionStore: ObservableObject {
         collaborationMessage = "Joining…"
         do {
             let remoteSession = try await collaborationRepository.joinSession(inviteCode: inviteCode)
+            await detachLiveSubscriptions()
             sessionName = remoteSession.title
             self.inviteCode = remoteSession.inviteCode
             queueRevision = remoteSession.queueRevision
@@ -383,6 +386,7 @@ final class HarmonySessionStore: ObservableObject {
             collaborationMessage = "Joined live Supabase session"
             await refreshRemoteQueue()
             await subscribeToRemoteQueue(remoteSession.id)
+            await subscribeToSessionLifecycle(remoteSession.id)
             await subscribeToPresence(remoteSession.id)
         } catch {
             collaborationMessage = "Join failed: \(error.localizedDescription)"
@@ -399,10 +403,7 @@ final class HarmonySessionStore: ObservableObject {
             } else {
                 try await collaborationRepository.leaveSession(id: remoteSessionID)
             }
-            await liveQueueSubscription?.channel.unsubscribe()
-            await livePresenceSubscription?.channel.unsubscribe()
-            liveQueueSubscription = nil
-            livePresenceSubscription = nil
+            await detachLiveSubscriptions()
             self.remoteSessionID = nil
             activeMemberIDs = []
             queue = []
@@ -517,9 +518,42 @@ final class HarmonySessionStore: ObservableObject {
         }
     }
 
+    private func subscribeToSessionLifecycle(_ sessionID: UUID) async {
+        do {
+            liveSessionSubscription = try await collaborationRepository.observeSession(sessionID: sessionID) { [weak self] in
+                Task { @MainActor in await self?.refreshSessionLifecycle(sessionID) }
+            }
+        } catch {
+            collaborationMessage = "Live session connected, but lifecycle updates are delayed."
+        }
+    }
+
+    private func refreshSessionLifecycle(_ sessionID: UUID) async {
+        guard remoteSessionID == sessionID else { return }
+        do {
+            let session = try await collaborationRepository.session(id: sessionID)
+            guard session.endedAt != nil else { return }
+            await detachLiveSubscriptions()
+            remoteSessionID = nil
+            activeMemberIDs = []
+            collaborationMessage = "The Conductor ended this session"
+        } catch {
+            collaborationMessage = "Could not refresh session status."
+        }
+    }
+
     private func record(_ type: QueueCommandType) {
         queueRevision += 1
         events.append(QueueEvent(revision: queueRevision, actorID: currentMember.id, type: type))
+    }
+
+    private func detachLiveSubscriptions() async {
+        await liveQueueSubscription?.channel.unsubscribe()
+        await liveSessionSubscription?.channel.unsubscribe()
+        await livePresenceSubscription?.channel.unsubscribe()
+        liveQueueSubscription = nil
+        liveSessionSubscription = nil
+        livePresenceSubscription = nil
     }
 
     private static func providerMapping(_ remote: RemoteProviderTrack) -> ProviderTrackMapping? {

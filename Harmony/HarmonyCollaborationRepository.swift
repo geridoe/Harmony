@@ -7,12 +7,14 @@ struct RemoteHarmonySession: Decodable {
     let inviteCode: String
     let queueRevision: Int
     let playbackState: RemotePlaybackState?
+    let endedAt: Date?
 
     enum CodingKeys: String, CodingKey {
         case id, title
         case inviteCode = "invite_code"
         case queueRevision = "queue_revision"
         case playbackState = "playback_state"
+        case endedAt = "ended_at"
     }
 }
 
@@ -146,11 +148,18 @@ final class HarmonyCollaborationRepository {
 
     func createSession(title: String) async throws -> RemoteHarmonySession {
         try await authenticate()
-        let parameters = CreateSessionParameters(
-            p_title: title,
-            p_invite_code: Self.makeInviteCode()
-        )
-        return try await client.rpc("create_session", params: parameters).execute().value
+        for attempt in 1...3 {
+            do {
+                let parameters = CreateSessionParameters(
+                    p_title: title,
+                    p_invite_code: Self.makeInviteCode()
+                )
+                return try await client.rpc("create_session", params: parameters).execute().value
+            } catch let error as PostgrestError where error.code == "23505" && attempt < 3 {
+                continue
+            }
+        }
+        throw CollaborationError.inviteCodeGenerationFailed
     }
 
     func joinSession(inviteCode: String) async throws -> RemoteHarmonySession {
@@ -172,7 +181,7 @@ final class HarmonyCollaborationRepository {
     func session(id: UUID) async throws -> RemoteHarmonySession {
         try await client
             .from("sessions")
-            .select("id,title,invite_code,queue_revision,playback_state")
+            .select("id,title,invite_code,queue_revision,playback_state,ended_at")
             .eq("id", value: id.uuidString)
             .single()
             .execute()
@@ -317,6 +326,20 @@ final class HarmonyCollaborationRepository {
         return LiveQueueSubscription(channel: channel, token: token)
     }
 
+    func observeSession(sessionID: UUID, onChange: @escaping @Sendable () -> Void) async throws -> LiveSessionSubscription {
+        let channel = client.channel("session-\(sessionID.uuidString)")
+        let token = channel.onPostgresChange(
+            AnyAction.self,
+            schema: "public",
+            table: "sessions",
+            filter: .eq("id", value: sessionID.uuidString)
+        ) { _ in
+            onChange()
+        }
+        try await channel.subscribeWithError()
+        return LiveSessionSubscription(channel: channel, token: token)
+    }
+
     func observePresence(
         sessionID: UUID,
         profileID: UUID,
@@ -342,16 +365,27 @@ final class HarmonyCollaborationRepository {
 }
 
 enum CollaborationError: LocalizedError {
-    case revisionConflict, invalidResponse
+    case revisionConflict, invalidResponse, inviteCodeGenerationFailed
     var errorDescription: String? {
         switch self {
         case .revisionConflict: return "The queue changed on another device. Refresh and try again."
         case .invalidResponse: return "Harmony received an invalid server response."
+        case .inviteCodeGenerationFailed: return "Harmony could not create a unique invite code. Please try again."
         }
     }
 }
 
 final class LiveQueueSubscription {
+    let channel: RealtimeChannelV2
+    let token: RealtimeSubscription
+
+    init(channel: RealtimeChannelV2, token: RealtimeSubscription) {
+        self.channel = channel
+        self.token = token
+    }
+}
+
+final class LiveSessionSubscription {
     let channel: RealtimeChannelV2
     let token: RealtimeSubscription
 
