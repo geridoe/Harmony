@@ -41,6 +41,12 @@ struct SessionView: View {
                             Label("Live session active", systemImage: "dot.radiowaves.left.and.right")
                                 .font(.caption.weight(.semibold))
                                 .foregroundColor(.green)
+                            if let expiresAt = store.sessionExpiresAt {
+                                Label("Ends \(expiresAt, format: .relative(presentation: .named))", systemImage: "clock")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .accessibilityLabel("Session ends \(expiresAt.formatted(date: .abbreviated, time: .shortened))")
+                            }
                         } else {
                             TextField("Session name", text: $store.sessionName)
                                 .textInputAutocapitalization(.words)

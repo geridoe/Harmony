@@ -154,6 +154,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published var allowsCollaboratorInvites = true
     @Published var selectedPlaybackMode: SessionPlaybackMode = .conductorPlayback
     @Published var selectedSessionExpiry: SessionExpiry = .never
+    @Published private(set) var sessionExpiresAt: Date?
     private var remoteSessionID: UUID?
     private var liveQueueSubscription: LiveQueueSubscription?
     private var liveSessionSubscription: LiveSessionSubscription?
@@ -491,6 +492,7 @@ final class HarmonySessionStore: ObservableObject {
             queueRevision = remoteSession.queueRevision
             allowsCollaboratorInvites = remoteSession.allowCollaboratorInvites
             selectedPlaybackMode = remoteSession.playbackMode
+            sessionExpiresAt = remoteSession.expiresAt
             remoteSessionID = remoteSession.id
             collaborationMessage = "Live Supabase session"
             await refreshRemoteQueue()
@@ -512,6 +514,7 @@ final class HarmonySessionStore: ObservableObject {
             queueRevision = remoteSession.queueRevision
             allowsCollaboratorInvites = remoteSession.allowCollaboratorInvites
             selectedPlaybackMode = remoteSession.playbackMode
+            sessionExpiresAt = remoteSession.expiresAt
             remoteSessionID = remoteSession.id
             collaborationMessage = "Joined live Supabase session"
             await refreshRemoteQueue()
@@ -549,6 +552,7 @@ final class HarmonySessionStore: ObservableObject {
             let session = try await collaborationRepository.setCollaboratorInvitesAllowed(in: remoteSessionID, allowed: allowed)
             allowsCollaboratorInvites = session.allowCollaboratorInvites
             selectedPlaybackMode = session.playbackMode
+            sessionExpiresAt = session.expiresAt
             collaborationMessage = allowed ? "Collaborators can share invites" : "Only the Conductor can share invites"
         } catch {
             collaborationMessage = "Could not update invite permissions: \(error.localizedDescription)"
@@ -731,6 +735,7 @@ final class HarmonySessionStore: ObservableObject {
         allowsCollaboratorInvites = true
         selectedPlaybackMode = .conductorPlayback
         selectedSessionExpiry = .never
+        sessionExpiresAt = nil
         sessionName = "No active session"
         collaborationMessage = message
     }
