@@ -49,6 +49,20 @@ struct ConnectionsView: View {
                                 } else {
                                     Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
                                 }
+                                if state == .connected {
+                                    Menu {
+                                        Button("Disconnect Spotify", role: .destructive) {
+                                            Task { await store.disconnectSpotify() }
+                                        }
+                                    } label: {
+                                        if store.isDisconnectingSpotify {
+                                            ProgressView().controlSize(.small)
+                                        } else {
+                                            Image(systemName: "ellipsis.circle")
+                                        }
+                                    }
+                                    .disabled(store.isDisconnectingSpotify)
+                                }
                             } else {
                                 Image(systemName: state == .connected ? "checkmark.circle.fill" : "circle")
                                     .foregroundColor(state == .connected ? .green : .secondary)

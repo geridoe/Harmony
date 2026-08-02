@@ -29,6 +29,8 @@ The iOS app will need only the Supabase project URL and publishable/anon key, su
 
 `functions/spotify-access-token` is the companion App Remote boundary. It validates the Harmony user, decrypts only that user's refresh token, refreshes it with Spotify, and returns a short-lived access token with `Cache-Control: no-store`. Refresh tokens and the Spotify client secret remain server-side.
 
+`functions/spotify-disconnect` authenticates the current Harmony user and deletes only that user's Spotify connection, including the encrypted refresh token. The client cannot delete provider-token rows directly.
+
 Before deployment, create a Spotify developer app and register the exact iOS redirect URI. Set `SPOTIFY_CLIENT_ID`, optionally `SPOTIFY_CLIENT_SECRET`, and a random 32-byte base64 `SPOTIFY_TOKEN_ENCRYPTION_KEY` as Supabase Function Secrets. The checked-in `functions/.env.example` is intentionally blank.
 
 ```bash

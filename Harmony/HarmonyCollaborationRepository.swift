@@ -94,6 +94,8 @@ struct SpotifyAccessCredential: Decodable {
     let scopes: [String]
 }
 
+private struct SpotifyDisconnectResponse: Decodable { let disconnected: Bool }
+
 @MainActor
 final class HarmonyCollaborationRepository {
     // Defer plist-dependent client creation until a live backend operation is
@@ -160,6 +162,12 @@ final class HarmonyCollaborationRepository {
     func spotifyAccessCredential() async throws -> SpotifyAccessCredential {
         try await authenticate()
         return try await client.functions.invoke("spotify-access-token")
+    }
+
+    func disconnectSpotify() async throws {
+        try await authenticate()
+        let response: SpotifyDisconnectResponse = try await client.functions.invoke("spotify-disconnect")
+        guard response.disconnected else { throw CollaborationError.invalidResponse }
     }
 
     func members(for sessionID: UUID) async throws -> [RemoteSessionMember] {
@@ -257,8 +265,13 @@ final class HarmonyCollaborationRepository {
 }
 
 enum CollaborationError: LocalizedError {
-    case revisionConflict
-    var errorDescription: String? { "The queue changed on another device. Refresh and try again." }
+    case revisionConflict, invalidResponse
+    var errorDescription: String? {
+        switch self {
+        case .revisionConflict: return "The queue changed on another device. Refresh and try again."
+        case .invalidResponse: return "Harmony received an invalid server response."
+        }
+    }
 }
 
 final class LiveQueueSubscription {

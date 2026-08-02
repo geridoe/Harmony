@@ -243,6 +243,7 @@ protocol HarmonyMusicProvider: AnyObject {
 @MainActor
 protocol SpotifyPlaybackProviding: HarmonyMusicProvider {
     func authorizeAndConnect() async throws
+    func disconnect()
     @discardableResult func handleAuthorizationCallback(_ url: URL) -> Bool
 }
 

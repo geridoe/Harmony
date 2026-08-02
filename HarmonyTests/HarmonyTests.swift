@@ -107,6 +107,7 @@ private final class RecordingSpotifyProvider: SpotifyPlaybackProviding {
     var commands: [ProviderPlaybackCommand] = []
 
     func authorizeAndConnect() async throws {}
+    func disconnect() { connectionState = .disconnected }
     func handleAuthorizationCallback(_ url: URL) -> Bool { false }
     func search(query: String) async throws -> [HarmonyTrack] { [] }
     func resolve(track: HarmonyTrack) async throws -> ResolvedProviderTrack {

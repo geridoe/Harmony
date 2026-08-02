@@ -64,6 +64,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published var collaborationMessage = "Local prototype"
     @Published private(set) var isConnectingSpotify = false
     @Published private(set) var isConnectingSpotifyPlayback = false
+    @Published private(set) var isDisconnectingSpotify = false
     @Published private(set) var spotifyPlaybackConnection: ProviderConnectionState = .disconnected
     @Published private(set) var spotifyPlaybackErrorMessage: String?
     @Published private(set) var activeMemberIDs: Set<UUID> = []
@@ -152,6 +153,22 @@ final class HarmonySessionStore: ObservableObject {
 
     func dismissSpotifyPlaybackError() {
         spotifyPlaybackErrorMessage = nil
+    }
+
+    func disconnectSpotify() async {
+        guard providerState(for: .spotify) == .connected, !isDisconnectingSpotify else { return }
+        isDisconnectingSpotify = true
+        defer { isDisconnectingSpotify = false }
+        do {
+            try await collaborationRepository.disconnectSpotify()
+            spotifyRemote.disconnect()
+            spotifyPlaybackConnection = .disconnected
+            providerStates[.spotify] = .notConnected
+            collaborationMessage = "Spotify disconnected"
+        } catch {
+            collaborationMessage = "Could not disconnect Spotify: \(error.localizedDescription)"
+            spotifyPlaybackErrorMessage = error.localizedDescription
+        }
     }
 
     func handleSpotifyOpenURL(_ url: URL) {
