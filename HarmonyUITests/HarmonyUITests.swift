@@ -30,6 +30,18 @@ class HarmonyUITests: XCTestCase {
         // Use XCTAssert and related functions to verify your tests produce the correct results.
     }
 
+    func testConnectionsTabLoadsWithoutCrashing() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        let connectionsTab = app.tabBars.buttons["Connections"]
+        XCTAssertTrue(connectionsTab.waitForExistence(timeout: 5))
+        connectionsTab.tap()
+
+        XCTAssertTrue(app.navigationBars["Connections"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Your listening services"].waitForExistence(timeout: 5))
+    }
+
     func testLaunchPerformance() throws {
         if #available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 7.0, *) {
             // This measures how long it takes to launch your application.
