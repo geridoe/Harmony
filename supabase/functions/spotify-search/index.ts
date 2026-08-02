@@ -76,15 +76,21 @@ Deno.serve(async (request) => {
         refresh_token: await decrypt(connection.encrypted_refresh_token),
       }),
     });
-    if (!tokenResponse.ok) return json({ error: "spotify_refresh_failed" }, 502);
+    if (!tokenResponse.ok) {
+      console.error("spotify token refresh rejected", tokenResponse.status, await tokenResponse.text());
+      return json({ error: "spotify_refresh_failed", upstreamStatus: tokenResponse.status }, 502);
+    }
     const tokens = await tokenResponse.json();
     if (!tokens.access_token) return json({ error: "spotify_access_token_missing" }, 502);
 
     const spotifyResponse = await fetch(
-      `https://api.spotify.com/v1/search?${new URLSearchParams({ q: query, type: "track", limit: "20" })}`,
+      `https://api.spotify.com/v1/search?${new URLSearchParams({ q: query, type: "track", limit: "10" })}`,
       { headers: { Authorization: `Bearer ${tokens.access_token}` } },
     );
-    if (!spotifyResponse.ok) return json({ error: "spotify_search_failed" }, 502);
+    if (!spotifyResponse.ok) {
+      console.error("spotify catalog search rejected", spotifyResponse.status, await spotifyResponse.text());
+      return json({ error: "spotify_search_failed", upstreamStatus: spotifyResponse.status }, 502);
+    }
     const spotify = await spotifyResponse.json();
     const tracks = (spotify.tracks?.items ?? []) as SpotifyTrack[];
 
