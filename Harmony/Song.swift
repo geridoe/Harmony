@@ -224,18 +224,11 @@ final class HarmonySessionStore: ObservableObject {
             await detachLiveSubscriptions()
             spotifyRemote.disconnect()
             try await collaborationRepository.deleteAccount()
-            remoteSessionID = nil
-            activeMemberIDs = []
-            queue = []
-            queueRevision = 0
-            members = [currentMember]
+            clearSessionState(message: "Harmony account deleted")
             providerStates = [.appleMusic: .setupRequired, .spotify: .notConnected]
             spotifyPlaybackConnection = .disconnected
             spotifyLoadedProviderID = nil
             catalogSearchResults = nil
-            inviteCode = ""
-            sessionName = "No active session"
-            collaborationMessage = "Harmony account deleted"
         } catch {
             collaborationMessage = "Could not delete account: \(error.localizedDescription)"
         }
@@ -451,14 +444,8 @@ final class HarmonySessionStore: ObservableObject {
                 try await collaborationRepository.leaveSession(id: remoteSessionID)
             }
             await detachLiveSubscriptions()
-            self.remoteSessionID = nil
-            activeMemberIDs = []
-            queue = []
-            queueRevision = 0
-            members = [currentMember]
-            inviteCode = ""
-            sessionName = "No active session"
-            collaborationMessage = currentMember.role == .conductor ? "Session ended" : "You left the session"
+            let message = currentMember.role == .conductor ? "Session ended" : "You left the session"
+            clearSessionState(message: message)
         } catch {
             collaborationMessage = "Could not close session: \(error.localizedDescription)"
         }
@@ -582,9 +569,7 @@ final class HarmonySessionStore: ObservableObject {
             let session = try await collaborationRepository.session(id: sessionID)
             guard session.endedAt != nil else { return }
             await detachLiveSubscriptions()
-            remoteSessionID = nil
-            activeMemberIDs = []
-            collaborationMessage = "The Conductor ended this session"
+            clearSessionState(message: "The Conductor ended this session")
         } catch {
             collaborationMessage = "Could not refresh session status."
         }
@@ -593,6 +578,28 @@ final class HarmonySessionStore: ObservableObject {
     private func record(_ type: QueueCommandType) {
         queueRevision += 1
         events.append(QueueEvent(revision: queueRevision, actorID: currentMember.id, type: type))
+    }
+
+    func clearSessionState(message: String) {
+        let localOwner = SessionMember(
+            id: currentMember.id,
+            name: currentMember.name,
+            initials: currentMember.initials,
+            role: .conductor,
+            providers: currentMember.providers
+        )
+        remoteSessionID = nil
+        activeMemberIDs = []
+        queue = []
+        queueRevision = 0
+        events = []
+        playbackState = .paused
+        spotifyLoadedProviderID = nil
+        currentMember = localOwner
+        members = [localOwner]
+        inviteCode = ""
+        sessionName = "No active session"
+        collaborationMessage = message
     }
 
     private func detachLiveSubscriptions() async {

@@ -162,6 +162,24 @@ final class HarmonyTests: XCTestCase {
         XCTAssertNil(HarmonySessionStore.inviteCode(from: URL(string: "https://example.com/join?code=ABC123")!))
         XCTAssertNil(HarmonySessionStore.inviteCode(from: URL(string: "harmony://join?code=bad-code")!))
     }
+
+    func testClearingSessionRemovesRoomStateAndRestoresLocalOwnership() {
+        let store = HarmonySessionStore()
+
+        store.clearSessionState(message: "The Conductor ended this session")
+
+        XCTAssertFalse(store.isLiveSession)
+        XCTAssertTrue(store.queue.isEmpty)
+        XCTAssertEqual(store.queueRevision, 0)
+        XCTAssertTrue(store.events.isEmpty)
+        XCTAssertEqual(store.playbackState, .paused)
+        XCTAssertEqual(store.sessionName, "No active session")
+        XCTAssertEqual(store.inviteCode, "")
+        XCTAssertEqual(store.members, [store.currentMember])
+        XCTAssertEqual(store.currentMember.role, .conductor)
+        XCTAssertTrue(store.activeMemberIDs.isEmpty)
+        XCTAssertEqual(store.collaborationMessage, "The Conductor ended this session")
+    }
 }
 
 @MainActor
