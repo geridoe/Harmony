@@ -46,7 +46,7 @@ struct SearchView: View {
                 if store.isSearchingCatalog {
                     HStack {
                         ProgressView()
-                        Text("Searching Spotify…").foregroundColor(.secondary)
+                        Text("Searching connected catalogs…").foregroundColor(.secondary)
                     }
                 } else if let message = store.catalogSearchMessage {
                     Text(message).font(.footnote).foregroundColor(.secondary)
@@ -169,6 +169,16 @@ struct ConnectionsView: View {
                                         }
                                     }
                                     .disabled(store.isDisconnectingSpotify)
+                                }
+                            } else if provider == .appleMusic {
+                                if state != .connected {
+                                    Button(store.isConnectingAppleMusic ? "Connecting…" : "Connect") {
+                                        Task { await store.connectAppleMusic() }
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .disabled(store.isConnectingAppleMusic)
+                                } else {
+                                    Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
                                 }
                             } else {
                                 Image(systemName: state == .connected ? "checkmark.circle.fill" : "circle")

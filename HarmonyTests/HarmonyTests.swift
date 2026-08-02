@@ -190,6 +190,21 @@ final class HarmonyTests: XCTestCase {
         XCTAssertFalse(store.canStartLiveSession)
     }
 
+    func testAppleMusicConnectionEnablesItsCatalogSearch() async {
+        let appleMusic = RecordingAppleMusicProvider()
+        let store = HarmonySessionStore(
+            spotifyRemote: RecordingSpotifyProvider(),
+            appleMusicProvider: appleMusic
+        )
+
+        await store.connectAppleMusic()
+        await store.searchCatalog(query: "Apple")
+
+        XCTAssertEqual(store.providerState(for: .appleMusic), .connected)
+        XCTAssertEqual(store.catalogSearchResults?.first?.title, "Apple Catalog Track")
+        XCTAssertEqual(store.catalogSearchResults?.first?.availability(for: .appleMusic), .playable)
+    }
+
     func testClearingSessionRemovesRoomStateAndRestoresLocalOwnership() {
         let store = HarmonySessionStore()
 
@@ -227,4 +242,32 @@ private final class RecordingSpotifyProvider: SpotifyPlaybackProviding {
         commands.append(command)
         return .applied
     }
+}
+
+@MainActor
+private final class RecordingAppleMusicProvider: AppleMusicProviding {
+    let provider: MusicProvider = .appleMusic
+    var connectionState: ProviderConnectionState = .disconnected
+    let capabilities = ProviderCapabilities.appleMusicMock
+
+    func authorize() async throws {
+        connectionState = .connected(accountName: "Test Apple Music")
+    }
+
+    func search(query: String) async throws -> [HarmonyTrack] {
+        [HarmonyTrack(
+            title: "Apple Catalog Track",
+            artist: "Harmony Test Artist",
+            album: "Harmony Test Album",
+            duration: 180,
+            symbol: "music.note",
+            mappings: [ProviderTrackMapping(provider: .appleMusic, providerID: "apple-test-track", availability: .playable)]
+        )]
+    }
+
+    func resolve(track: HarmonyTrack) async throws -> ResolvedProviderTrack {
+        ResolvedProviderTrack(provider: .appleMusic, providerID: "apple-test-track", title: track.title, artist: track.artist, playbackCapability: .queuePlayback)
+    }
+
+    func perform(_ command: ProviderPlaybackCommand) async throws -> ProviderPlaybackResult { .applied }
 }

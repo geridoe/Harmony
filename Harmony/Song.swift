@@ -139,6 +139,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published var inviteCode = "HARMONY-8Q4"
     @Published var collaborationMessage = "Local prototype"
     @Published private(set) var isConnectingSpotify = false
+    @Published private(set) var isConnectingAppleMusic = false
     @Published private(set) var isConnectingSpotifyPlayback = false
     @Published private(set) var isDisconnectingSpotify = false
     @Published private(set) var isDeletingAccount = false
@@ -159,16 +160,22 @@ final class HarmonySessionStore: ObservableObject {
     private var livePresenceSubscription: LivePresenceSubscription?
     private let collaborationRepository = HarmonyCollaborationRepository()
     private let spotifyRemote: any SpotifyPlaybackProviding
+    private let appleMusicProvider: any AppleMusicProviding
     private var spotifyLoadedProviderID: String?
     @Published private(set) var currentMember: SessionMember
     @Published private(set) var members: [SessionMember]
     let catalog: [HarmonyTrack]
     convenience init() {
-        self.init(spotifyRemote: SpotifyAppRemoteProvider())
+        self.init(spotifyRemote: SpotifyAppRemoteProvider(), appleMusicProvider: AppleMusicProvider())
     }
 
-    init(spotifyRemote: any SpotifyPlaybackProviding) {
+    convenience init(spotifyRemote: any SpotifyPlaybackProviding) {
+        self.init(spotifyRemote: spotifyRemote, appleMusicProvider: AppleMusicProvider())
+    }
+
+    init(spotifyRemote: any SpotifyPlaybackProviding, appleMusicProvider: any AppleMusicProviding) {
         self.spotifyRemote = spotifyRemote
+        self.appleMusicProvider = appleMusicProvider
         spotifyPlaybackConnection = spotifyRemote.connectionState
         let alex = SessionMember(name: "Alex Morgan", initials: "AM", role: .conductor, providers: [.appleMusic, .spotify])
         let sam = SessionMember(name: "Sam Lee", initials: "SL", role: .collaborator, providers: [.spotify])
@@ -200,10 +207,23 @@ final class HarmonySessionStore: ObservableObject {
             })
             providerStates[.spotify] = connected.contains(.spotify) ? .connected : .notConnected
             // MusicKit is device-authorized rather than backed by a Harmony token row.
-            // Keep this gated until the explicit App ID has the MusicKit service enabled.
-            providerStates[.appleMusic] = .setupRequired
+            providerStates[.appleMusic] = appleMusicProvider.connectionState.isConnected ? .connected : .notConnected
         } catch {
             collaborationMessage = "Could not load connection status: \(error.localizedDescription)"
+        }
+    }
+
+    func connectAppleMusic() async {
+        guard !isConnectingAppleMusic else { return }
+        isConnectingAppleMusic = true
+        defer { isConnectingAppleMusic = false }
+        do {
+            try await appleMusicProvider.authorize()
+            providerStates[.appleMusic] = .connected
+            collaborationMessage = "Apple Music connected"
+        } catch {
+            providerStates[.appleMusic] = .notConnected
+            collaborationMessage = "Apple Music connection failed: \(error.localizedDescription)"
         }
     }
 
@@ -301,41 +321,37 @@ final class HarmonySessionStore: ObservableObject {
             isSearchingCatalog = false
             return
         }
-        guard providerState(for: .spotify) == .connected else {
+        let canSearchSpotify = providerState(for: .spotify) == .connected
+        let canSearchAppleMusic = providerState(for: .appleMusic) == .connected
+        guard canSearchSpotify || canSearchAppleMusic else {
             catalogSearchResults = catalog.filter {
                 "\($0.title) \($0.artist) \($0.album)".localizedCaseInsensitiveContains(term)
             }
-            catalogSearchMessage = "Connect Spotify to search its full catalog."
+            catalogSearchMessage = "Connect Spotify or Apple Music to search its full catalog."
             return
         }
         isSearchingCatalog = true
         defer { isSearchingCatalog = false }
         catalogSearchMessage = nil
-        do {
-            let results = try await collaborationRepository.searchSpotify(query: term)
-            guard !Task.isCancelled else { return }
-            catalogSearchResults = results.map { result in
-                HarmonyTrack(
-                    title: result.title,
-                    artist: result.artist,
-                    album: result.album,
-                    duration: TimeInterval(result.durationSeconds),
-                    symbol: "music.note",
-                    artworkURL: result.artworkURL,
-                    isExplicit: result.isExplicit,
-                    mappings: [ProviderTrackMapping(
-                        provider: .spotify,
-                        providerID: result.providerID,
-                        availability: .playable,
-                        deepLinkURL: result.deepLinkURL
-                    )]
-                )
+        var results: [HarmonyTrack] = []
+        var failures: [String] = []
+        if canSearchAppleMusic {
+            do { results += try await appleMusicProvider.search(query: term) }
+            catch { failures.append("Apple Music: \(error.localizedDescription)") }
+        }
+        if canSearchSpotify {
+            do {
+                results += try await collaborationRepository.searchSpotify(query: term).map(Self.harmonyTrack)
+            } catch {
+                failures.append("Spotify: \(error.localizedDescription)")
             }
-            catalogSearchMessage = results.isEmpty ? "No Spotify tracks found." : nil
-        } catch {
-            guard !Task.isCancelled else { return }
-            catalogSearchResults = []
-            catalogSearchMessage = "Spotify search failed: \(error.localizedDescription)"
+        }
+        guard !Task.isCancelled else { return }
+        catalogSearchResults = Self.mergeCatalogResults(results)
+        if catalogSearchResults?.isEmpty == true {
+            catalogSearchMessage = failures.isEmpty ? "No tracks found." : failures.joined(separator: "\n")
+        } else if !failures.isEmpty {
+            catalogSearchMessage = failures.joined(separator: "\n")
         }
     }
 
@@ -737,6 +753,46 @@ final class HarmonySessionStore: ObservableObject {
             availability: availability,
             deepLinkURL: remote.deepLink
         )
+    }
+
+    private static func harmonyTrack(_ result: SpotifySearchTrack) -> HarmonyTrack {
+        HarmonyTrack(
+            title: result.title,
+            artist: result.artist,
+            album: result.album,
+            duration: TimeInterval(result.durationSeconds),
+            symbol: "music.note",
+            artworkURL: result.artworkURL,
+            isExplicit: result.isExplicit,
+            mappings: [ProviderTrackMapping(
+                provider: .spotify,
+                providerID: result.providerID,
+                availability: .playable,
+                deepLinkURL: result.deepLinkURL
+            )]
+        )
+    }
+
+    private static func mergeCatalogResults(_ tracks: [HarmonyTrack]) -> [HarmonyTrack] {
+        tracks.reduce(into: [HarmonyTrack]()) { results, track in
+            guard let existingIndex = results.firstIndex(where: { representsSameRecording($0, track) }) else {
+                results.append(track)
+                return
+            }
+            let existing = results[existingIndex]
+            let mappings = Array(Set(existing.mappings + track.mappings))
+            results[existingIndex] = HarmonyTrack(
+                id: existing.id,
+                title: existing.title,
+                artist: existing.artist,
+                album: existing.album,
+                duration: existing.duration,
+                symbol: existing.symbol,
+                artworkURL: existing.artworkURL ?? track.artworkURL,
+                isExplicit: existing.isExplicit || track.isExplicit,
+                mappings: mappings
+            )
+        }
     }
 
     private func playCurrentSpotifyTrackIfAvailable() async throws -> Bool {
