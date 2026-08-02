@@ -18,7 +18,7 @@ struct HarmonyTrack: Identifiable, Hashable {
 }
 enum SessionRole: Equatable { case conductor, collaborator; var label: String { self == .conductor ? "Conductor" : "Collaborator" } }
 struct SessionMember: Identifiable, Hashable { let id = UUID(); let name: String; let initials: String; let role: SessionRole; let providers: Set<MusicProvider> }
-struct QueueItem: Identifiable, Hashable { let id = UUID(); let track: HarmonyTrack; let addedBy: SessionMember }
+struct QueueItem: Identifiable, Hashable { let id: UUID; let track: HarmonyTrack; let addedBy: SessionMember; init(id: UUID = UUID(), track: HarmonyTrack, addedBy: SessionMember) { self.id = id; self.track = track; self.addedBy = addedBy } }
 enum PlaybackState { case playing, paused }
 
 enum QueueCommandType: String, Codable {
@@ -65,6 +65,7 @@ final class HarmonySessionStore: ObservableObject {
         queue = [QueueItem(track: catalog[0], addedBy: sam), QueueItem(track: catalog[2], addedBy: priya), QueueItem(track: catalog[1], addedBy: alex)]
     }
     var nowPlaying: QueueItem? { queue.first }
+    var isLiveSession: Bool { remoteSessionID != nil }
     func add(_ track: HarmonyTrack) {
         guard !queue.contains(where: { $0.track.title == track.title }) else { return }
         queue.append(QueueItem(track: track, addedBy: currentMember))
@@ -77,18 +78,29 @@ final class HarmonySessionStore: ObservableObject {
     func remove(_ item: QueueItem) {
         queue.removeAll { $0.id == item.id }
         record(.remove)
+        guard let remoteSessionID else { return }
+        let expectedRevision = queueRevision - 1
+        Task { await applyRemoteRemove(item.id, sessionID: remoteSessionID, expectedRevision: expectedRevision) }
     }
 
     func move(from: IndexSet, to: Int) {
         guard currentMember.role == .conductor else { return }
+        guard let movedItemID = from.first.map({ queue[$0].id }) else { return }
         queue.move(fromOffsets: from, toOffset: to)
         record(.move)
+        guard let remoteSessionID else { return }
+        guard let destination = queue.firstIndex(where: { $0.id == movedItemID }) else { return }
+        let expectedRevision = queueRevision - 1
+        Task { await applyRemoteMove(movedItemID, position: Double(destination + 1) * 1024, sessionID: remoteSessionID, expectedRevision: expectedRevision) }
     }
 
     func togglePlayback() {
         guard currentMember.role == .conductor else { return }
         playbackState = playbackState == .playing ? .paused : .playing
         record(playbackState == .playing ? .play : .pause)
+        guard let remoteSessionID else { return }
+        let expectedRevision = queueRevision - 1
+        Task { await applyRemotePlayback(sessionID: remoteSessionID, expectedRevision: expectedRevision) }
     }
 
     func createLiveSession() async {
@@ -130,20 +142,57 @@ final class HarmonySessionStore: ObservableObject {
             await refreshRemoteQueue()
         } catch {
             collaborationMessage = "Queue sync failed: \(error.localizedDescription)"
+            await refreshRemoteQueue()
         }
     }
 
     private func refreshRemoteQueue() async {
         guard let remoteSessionID else { return }
         do {
-            let snapshot = try await collaborationRepository.queue(for: remoteSessionID)
+            async let remoteSession = collaborationRepository.session(id: remoteSessionID)
+            async let remoteQueue = collaborationRepository.queue(for: remoteSessionID)
+            let (session, snapshot) = try await (remoteSession, remoteQueue)
+            sessionName = session.title
+            inviteCode = session.inviteCode
+            queueRevision = session.queueRevision
+            if session.playbackState?.status == "playing" { playbackState = .playing }
+            if session.playbackState?.status == "paused" { playbackState = .paused }
             queue = snapshot.map { remote in
                 let track = catalog.first(where: { $0.title == remote.canonicalTrack.title && $0.artist == remote.canonicalTrack.artist })
                     ?? HarmonyTrack(title: remote.canonicalTrack.title, artist: remote.canonicalTrack.artist, album: remote.canonicalTrack.album ?? "", duration: TimeInterval(remote.canonicalTrack.durationMilliseconds ?? 0) / 1000, symbol: "music.note", mappings: [])
-                return QueueItem(track: track, addedBy: currentMember)
+                return QueueItem(id: remote.id, track: track, addedBy: currentMember)
             }
         } catch {
             collaborationMessage = "Could not refresh queue: \(error.localizedDescription)"
+        }
+    }
+
+    private func applyRemoteRemove(_ queueItemID: UUID, sessionID: UUID, expectedRevision: Int) async {
+        do {
+            queueRevision = try await collaborationRepository.remove(queueItemID: queueItemID, from: sessionID, expectedRevision: expectedRevision)
+            await refreshRemoteQueue()
+        } catch {
+            collaborationMessage = "Queue sync failed: \(error.localizedDescription)"
+            await refreshRemoteQueue()
+        }
+    }
+
+    private func applyRemoteMove(_ queueItemID: UUID, position: Double, sessionID: UUID, expectedRevision: Int) async {
+        do {
+            queueRevision = try await collaborationRepository.move(queueItemID: queueItemID, to: position, in: sessionID, expectedRevision: expectedRevision)
+            await refreshRemoteQueue()
+        } catch {
+            collaborationMessage = "Queue sync failed: \(error.localizedDescription)"
+            await refreshRemoteQueue()
+        }
+    }
+
+    private func applyRemotePlayback(sessionID: UUID, expectedRevision: Int) async {
+        do {
+            queueRevision = try await collaborationRepository.setPlayback(state: playbackState, in: sessionID, expectedRevision: expectedRevision)
+        } catch {
+            collaborationMessage = "Playback sync failed: \(error.localizedDescription)"
+            await refreshRemoteQueue()
         }
     }
 

@@ -2,6 +2,8 @@ import SwiftUI
 
 struct SessionView: View {
     @EnvironmentObject private var store: HarmonySessionStore
+    @State private var showingJoinSession = false
+    @State private var inviteCode = ""
 
     var body: some View {
         NavigationView {
@@ -19,8 +21,18 @@ struct SessionView: View {
                             Spacer()
                             Text(store.inviteCode).font(.caption.monospaced().bold()).padding(8).background(Color.indigo.opacity(0.12)).cornerRadius(8)
                         }
-						Button("Start live session") { Task { await store.createLiveSession() } }
-							.buttonStyle(.borderedProminent)
+                        if store.isLiveSession {
+                            Label("Live session active", systemImage: "dot.radiowaves.left.and.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(.green)
+                        } else {
+                            HStack {
+                                Button("Start live session") { Task { await store.createLiveSession() } }
+                                    .buttonStyle(.borderedProminent)
+                                Button("Join session") { showingJoinSession = true }
+                                    .buttonStyle(.bordered)
+                            }
+                        }
                     }
                     .padding(.vertical, 8)
                 }
@@ -59,6 +71,31 @@ struct SessionView: View {
             }
             .navigationTitle("Harmony")
             .toolbar { EditButton() }
+            .sheet(isPresented: $showingJoinSession) {
+                NavigationView {
+                    Form {
+                        Section("Invitation") {
+                            TextField("Invite code", text: $inviteCode)
+                                .textInputAutocapitalization(.characters)
+                                .autocorrectionDisabled()
+                        }
+                        Section {
+                            Button("Join live session") {
+                                let code = inviteCode.trimmingCharacters(in: .whitespacesAndNewlines)
+                                guard !code.isEmpty else { return }
+                                showingJoinSession = false
+                                Task { await store.joinLiveSession(inviteCode: code) }
+                            }
+                        }
+                    }
+                    .navigationTitle("Join Harmony")
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { showingJoinSession = false }
+                        }
+                    }
+                }
+            }
         }
     }
 }

@@ -6,12 +6,18 @@ struct RemoteHarmonySession: Decodable {
     let title: String
     let inviteCode: String
     let queueRevision: Int
+    let playbackState: RemotePlaybackState?
 
     enum CodingKeys: String, CodingKey {
         case id, title
         case inviteCode = "invite_code"
         case queueRevision = "queue_revision"
+        case playbackState = "playback_state"
     }
+}
+
+struct RemotePlaybackState: Decodable {
+    let status: String?
 }
 
 private struct CreateSessionParameters: Encodable {
@@ -30,6 +36,9 @@ private struct QueueCommandParameters<Payload: Encodable>: Encodable {
 }
 
 private struct AddPayload: Encodable { let canonical_track_id: UUID }
+private struct RemovePayload: Encodable { let queue_item_id: UUID }
+private struct MovePayload: Encodable { let queue_item_id: UUID; let position: Double }
+private struct PlaybackPayload: Encodable { let status: String }
 private struct RemoteTrackID: Decodable { let id: UUID }
 private struct QueueCommandResult: Decodable { let status: String; let revision: Int }
 
@@ -85,6 +94,16 @@ final class HarmonyCollaborationRepository {
         ).execute().value
     }
 
+    func session(id: UUID) async throws -> RemoteHarmonySession {
+        try await client
+            .from("sessions")
+            .select("id,title,invite_code,queue_revision,playback_state")
+            .eq("id", value: id.uuidString)
+            .single()
+            .execute()
+            .value
+    }
+
     func add(track: HarmonyTrack, to sessionID: UUID, expectedRevision: Int) async throws -> Int {
         let trackID: RemoteTrackID = try await client
             .from("canonical_tracks")
@@ -94,17 +113,30 @@ final class HarmonyCollaborationRepository {
             .single()
             .execute()
             .value
-        let parameters = QueueCommandParameters(
+        return try await executeCommand(QueueCommandParameters(
             p_session_id: sessionID,
             p_command_id: UUID(),
             p_expected_revision: expectedRevision,
             p_type: "add",
             p_payload: AddPayload(canonical_track_id: trackID.id)
-        )
-        let result: QueueCommandResult = try await client
-            .rpc("apply_queue_command", params: parameters)
-            .execute()
-            .value
+        ))
+    }
+
+    func remove(queueItemID: UUID, from sessionID: UUID, expectedRevision: Int) async throws -> Int {
+        try await executeCommand(QueueCommandParameters(p_session_id: sessionID, p_command_id: UUID(), p_expected_revision: expectedRevision, p_type: "remove", p_payload: RemovePayload(queue_item_id: queueItemID)))
+    }
+
+    func move(queueItemID: UUID, to position: Double, in sessionID: UUID, expectedRevision: Int) async throws -> Int {
+        try await executeCommand(QueueCommandParameters(p_session_id: sessionID, p_command_id: UUID(), p_expected_revision: expectedRevision, p_type: "move", p_payload: MovePayload(queue_item_id: queueItemID, position: position)))
+    }
+
+    func setPlayback(state: PlaybackState, in sessionID: UUID, expectedRevision: Int) async throws -> Int {
+        let type = state == .playing ? "play" : "pause"
+        return try await executeCommand(QueueCommandParameters(p_session_id: sessionID, p_command_id: UUID(), p_expected_revision: expectedRevision, p_type: type, p_payload: PlaybackPayload(status: state == .playing ? "playing" : "paused")))
+    }
+
+    private func executeCommand<Payload: Encodable>(_ parameters: QueueCommandParameters<Payload>) async throws -> Int {
+        let result: QueueCommandResult = try await client.rpc("apply_queue_command", params: parameters).execute().value
         guard result.status == "applied" else { throw CollaborationError.revisionConflict }
         return result.revision
     }
