@@ -42,6 +42,9 @@ struct SessionView: View {
                                 .font(.caption.weight(.semibold))
                                 .foregroundColor(.green)
                         } else {
+                            TextField("Session name", text: $store.sessionName)
+                                .textInputAutocapitalization(.words)
+                                .accessibilityLabel("Session name")
                             HStack {
                                 Button("Start live session") { Task { await store.createLiveSession() } }
                                     .buttonStyle(.borderedProminent)
