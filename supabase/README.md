@@ -48,6 +48,8 @@ supabase functions deploy spotify-token-exchange
 
 `end_harmony_session(session_id)` is Conductor-only and marks the room ended. `leave_harmony_session(session_id)` removes a Collaborator; Conductors must explicitly end their room instead.
 
+`resolve_harmony_track(provider, provider_id, title, artist, ...)` resolves a provider catalog item to a canonical Harmony track before queue insertion. It is idempotent by provider and provider ID, so provider-specific search clients can contribute tracks even before a cross-provider matcher has added mappings for the other services.
+
 ## Queue RPC contract
 
 Authenticated clients call `apply_queue_command` with:
@@ -81,7 +83,7 @@ Run the disposable-user smoke test against the configured project with:
 ./supabase/tests/live_smoke.sh
 ```
 
-It exercises anonymous authentication, session creation/joining, member-role reads, Conductor-only invite-permission updates, collaborator add/remove ownership, queue-only playback rejection, Conductor-only reorder/playback/lifecycle enforcement, revision conflicts, command idempotency, session ending, and account cleanup. It reads the public project URL/key from the app plist and never prints access tokens.
+It exercises anonymous authentication, session creation/joining, provider-track canonicalization, member-role reads, Conductor-only invite-permission updates, collaborator add/remove ownership, queue-only playback rejection, Conductor-only reorder/playback/lifecycle enforcement, revision conflicts, command idempotency, session ending, and account cleanup. It reads the public project URL/key from the app plist and never prints access tokens.
 
 ## Important notes
 

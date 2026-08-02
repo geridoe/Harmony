@@ -50,6 +50,17 @@ private struct QueueCommandParameters<Payload: Encodable>: Encodable {
 }
 
 private struct AddPayload: Encodable { let canonical_track_id: UUID }
+private struct ResolveCanonicalTrackParameters: Encodable {
+    let p_provider: String
+    let p_provider_id: String
+    let p_title: String
+    let p_artist: String
+    let p_album: String?
+    let p_duration_ms: Int?
+    let p_artwork_url: String?
+    let p_is_explicit: Bool
+    let p_deep_link: String?
+}
 private struct RemovePayload: Encodable { let queue_item_id: UUID }
 private struct MovePayload: Encodable { let queue_item_id: UUID; let position: Double }
 private struct PlaybackPayload: Encodable { let status: String }
@@ -59,10 +70,6 @@ private struct SkipQueueParameters: Encodable {
     let p_expected_revision: Int
 }
 private struct RemoteTrackID: Decodable { let id: UUID }
-private struct RemoteCanonicalTrackReference: Decodable {
-    let canonicalTrackID: UUID
-    enum CodingKeys: String, CodingKey { case canonicalTrackID = "canonical_track_id" }
-}
 private struct QueueCommandResult: Decodable { let status: String; let revision: Int }
 private struct SpotifyTokenExchangeParameters: Encodable { let code: String; let codeVerifier: String; let redirectURI: String }
 private struct RemotePresence: Codable { let profileID: UUID }
@@ -297,16 +304,21 @@ final class HarmonyCollaborationRepository {
 
     func add(track: HarmonyTrack, to sessionID: UUID, expectedRevision: Int) async throws -> Int {
         let canonicalTrackID: UUID
-        if let spotify = track.mappings.first(where: { $0.provider == .spotify && !$0.providerID.isEmpty }) {
-            let mapping: RemoteCanonicalTrackReference = try await client
-                .from("provider_tracks")
-                .select("canonical_track_id")
-                .eq("provider", value: "spotify")
-                .eq("provider_id", value: spotify.providerID)
-                .single()
-                .execute()
-                .value
-            canonicalTrackID = mapping.canonicalTrackID
+        if let mapping = track.mappings.first(where: { !$0.providerID.isEmpty }) {
+            canonicalTrackID = try await client.rpc(
+                "resolve_harmony_track",
+                params: ResolveCanonicalTrackParameters(
+                    p_provider: mapping.provider == .spotify ? "spotify" : "apple_music",
+                    p_provider_id: mapping.providerID,
+                    p_title: track.title,
+                    p_artist: track.artist,
+                    p_album: track.album,
+                    p_duration_ms: Int(track.duration * 1000),
+                    p_artwork_url: track.artworkURL?.absoluteString,
+                    p_is_explicit: track.isExplicit,
+                    p_deep_link: mapping.deepLinkURL?.absoluteString
+                )
+            ).execute().value
         } else {
             let trackID: RemoteTrackID = try await client
                 .from("canonical_tracks")
