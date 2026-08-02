@@ -79,7 +79,11 @@ struct SessionView: View {
                 }
             }
             .navigationTitle("Harmony")
-            .toolbar { EditButton() }
+            .toolbar {
+                if store.currentMember.role == .conductor {
+                    EditButton()
+                }
+            }
             .sheet(isPresented: $showingJoinSession) {
                 NavigationView {
                     Form {
