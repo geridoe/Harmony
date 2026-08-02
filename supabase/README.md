@@ -73,6 +73,16 @@ The RPC returns `{ status: "applied", revision }` or `{ status: "conflict", revi
 
 `skip_queue_item(session_id, command_id, expected_revision)` is the Conductor-only companion command. It atomically removes the canonical queue head, advances the revision, records a `skip` event, and leaves provider playback as a device-side effect.
 
+## Live smoke test
+
+Run the disposable-user smoke test against the configured project with:
+
+```bash
+./supabase/tests/live_smoke.sh
+```
+
+It exercises anonymous authentication, session creation/joining, Conductor-only lifecycle enforcement, session ending, and account cleanup. It reads the public project URL/key from the app plist and never prints access tokens.
+
 ## Important notes
 
 - Direct client writes to sessions, members, queue items, and events are intentionally revoked. Session creation and joining have dedicated RPCs; ending a session and invitation-policy changes should get dedicated Conductor-only RPCs before exposing those controls.
