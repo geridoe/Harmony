@@ -574,6 +574,11 @@ final class HarmonySessionStore: ObservableObject {
             async let remoteMembers = collaborationRepository.members(for: remoteSessionID)
             async let currentUserID = collaborationRepository.currentUserID()
             let (session, snapshot, remoteMemberRecords, userID) = try await (remoteSession, remoteQueue, remoteMembers, currentUserID)
+            if let expiresAt = session.expiresAt, expiresAt <= Date() {
+                await detachLiveSubscriptions()
+                clearSessionState(message: "This Harmony session has expired")
+                return
+            }
             sessionName = session.title
             inviteCode = session.inviteCode
             queueRevision = session.queueRevision
@@ -687,6 +692,11 @@ final class HarmonySessionStore: ObservableObject {
         guard remoteSessionID == sessionID else { return }
         do {
             let session = try await collaborationRepository.session(id: sessionID)
+            if let expiresAt = session.expiresAt, expiresAt <= Date() {
+                await detachLiveSubscriptions()
+                clearSessionState(message: "This Harmony session has expired")
+                return
+            }
             guard session.endedAt != nil else { return }
             await detachLiveSubscriptions()
             clearSessionState(message: "The Conductor ended this session")

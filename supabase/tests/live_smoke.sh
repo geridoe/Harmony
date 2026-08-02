@@ -118,6 +118,17 @@ rpc "$conductor_token" resolve_harmony_track \
   "$smoke_tmp/canonical-track-repeat.json"
 [[ "$(jq -er '.' "$smoke_tmp/canonical-track-repeat.json")" == "$canonical_track_id" ]]
 
+stage="expired session rejection"
+expired_invite_code="EXP$(printf '%05d' "$((RANDOM % 100000))")"
+expired_at="$(date -u -v-1H '+%Y-%m-%dT%H:%M:%SZ')"
+rpc "$conductor_token" create_session \
+  "{\"p_title\":\"Expired Harmony smoke\",\"p_invite_code\":\"$expired_invite_code\",\"p_playback_mode\":\"queue_only\",\"p_allow_collaborator_invites\":false,\"p_expires_at\":\"$expired_at\"}" \
+  "$smoke_tmp/expired-session.json"
+expired_join_status="$(rpc_status "$collaborator_token" join_session_by_invite \
+  "{\"p_invite_code\":\"$expired_invite_code\"}" \
+  "$smoke_tmp/expired-join.json")"
+[[ "$expired_join_status" == "400" || "$expired_join_status" == "404" ]]
+
 rest_get "$collaborator_token" \
   "session_members?select=profile_id,role&session_id=eq.$session_id" \
   "$smoke_tmp/members.json"
