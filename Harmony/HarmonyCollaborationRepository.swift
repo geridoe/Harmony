@@ -127,6 +127,10 @@ private struct SpotifyDisconnectResponse: Decodable { let disconnected: Bool }
 private struct DeleteAccountResponse: Decodable { let deleted: Bool }
 private struct SpotifySearchParameters: Encodable { let query: String }
 private struct SpotifySearchResponse: Decodable { let tracks: [SpotifySearchTrack] }
+private struct EdgeFunctionErrorResponse: Decodable {
+    let error: String
+    let upstreamStatus: Int?
+}
 struct SpotifySearchTrack: Decodable {
     let title: String
     let artist: String
@@ -236,11 +240,25 @@ final class HarmonyCollaborationRepository {
 
     func searchSpotify(query: String) async throws -> [SpotifySearchTrack] {
         try await authenticate()
-        let response: SpotifySearchResponse = try await client.functions.invoke(
-            "spotify-search",
-            options: FunctionInvokeOptions(body: SpotifySearchParameters(query: query))
-        )
-        return response.tracks
+        do {
+            let response: SpotifySearchResponse = try await client.functions.invoke(
+                "spotify-search",
+                options: FunctionInvokeOptions(body: SpotifySearchParameters(query: query))
+            )
+            return response.tracks
+        } catch let FunctionsError.httpError(_, data) {
+            let response = try? JSONDecoder().decode(EdgeFunctionErrorResponse.self, from: data)
+            switch (response?.error, response?.upstreamStatus) {
+            case ("spotify_not_connected", _), ("spotify_refresh_failed", _), (_, 401):
+                throw SpotifyCatalogError.reconnectRequired
+            case (_, 403):
+                throw SpotifyCatalogError.accessRestricted
+            case (_, 429):
+                throw SpotifyCatalogError.rateLimited
+            default:
+                throw SpotifyCatalogError.temporarilyUnavailable
+            }
+        }
     }
 
     func members(for sessionID: UUID) async throws -> [RemoteSessionMember] {
@@ -385,6 +403,23 @@ enum CollaborationError: LocalizedError {
         case .revisionConflict: return "The queue changed on another device. Refresh and try again."
         case .invalidResponse: return "Harmony received an invalid server response."
         case .inviteCodeGenerationFailed: return "Harmony could not create a unique invite code. Please try again."
+        }
+    }
+}
+
+enum SpotifyCatalogError: LocalizedError {
+    case reconnectRequired, accessRestricted, rateLimited, temporarilyUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .reconnectRequired:
+            return "Reconnect Spotify, then try the search again."
+        case .accessRestricted:
+            return "Spotify has restricted this catalog request for the current developer app."
+        case .rateLimited:
+            return "Spotify's search limit was reached. Wait a moment and try again."
+        case .temporarilyUnavailable:
+            return "Spotify search is temporarily unavailable. Try again shortly."
         }
     }
 }

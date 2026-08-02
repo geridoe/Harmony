@@ -256,6 +256,7 @@ final class HarmonySessionStore: ObservableObject {
             return
         }
         isSearchingCatalog = true
+        defer { isSearchingCatalog = false }
         catalogSearchMessage = nil
         do {
             let results = try await collaborationRepository.searchSpotify(query: term)
@@ -283,7 +284,6 @@ final class HarmonySessionStore: ObservableObject {
             catalogSearchResults = []
             catalogSearchMessage = "Spotify search failed: \(error.localizedDescription)"
         }
-        isSearchingCatalog = false
     }
 
     func handleSpotifyOpenURL(_ url: URL) {

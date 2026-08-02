@@ -90,7 +90,10 @@ Deno.serve(async (request) => {
     );
     if (!spotifyResponse.ok) {
       console.error("spotify catalog search rejected", spotifyResponse.status, await spotifyResponse.text());
-      return json({ error: "spotify_search_failed", upstreamStatus: spotifyResponse.status }, 502);
+      const status = spotifyResponse.status === 403 || spotifyResponse.status === 429
+        ? spotifyResponse.status
+        : 502;
+      return json({ error: "spotify_search_failed", upstreamStatus: spotifyResponse.status }, status);
     }
     const spotify = await spotifyResponse.json();
     const tracks = (spotify.tracks?.items ?? []) as SpotifyTrack[];
