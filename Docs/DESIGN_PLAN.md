@@ -19,7 +19,7 @@ Harmony coordinates _intent_ and social state; it does not host, transmit, or sy
 
 ### Explicitly not included in the first public build
 
-- Audio rebroadcasting, playlist import/export, voting, chat, profile feeds, payment, ads, or automated moderation.
+- Audio rebroadcasting, playlist import/export, voting, chat, payment, ads, or automated moderation. Social listening, follower-visible history, and reviews are covered by `SOCIAL_EXPANSION_SPEC.md` and remain privacy-first.
 - Promise of frame-accurate cross-provider synchronization.
 - Android/web clients, SharePlay, and background session recovery.
 

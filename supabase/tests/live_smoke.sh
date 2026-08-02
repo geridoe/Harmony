@@ -95,6 +95,25 @@ conductor_id="$(jq -er '.user.id' "$smoke_tmp/conductor-auth.json")"
 collaborator_id="$(jq -er '.user.id' "$smoke_tmp/collaborator-auth.json")"
 invite_code="SMK$(printf '%05d' "$((RANDOM % 100000))")"
 
+stage="social follow and block enforcement"
+rpc "$conductor_token" request_social_follow \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/follow-request.json"
+rpc "$collaborator_token" respond_to_social_follow \
+  "{\"p_requester_id\":\"$conductor_id\",\"p_accept\":true}" \
+  "$smoke_tmp/follow-accept.json"
+rest_get "$conductor_token" \
+  "social_follows?select=follower_id,followed_id,state&follower_id=eq.$conductor_id&followed_id=eq.$collaborator_id" \
+  "$smoke_tmp/follows.json"
+jq -e 'length == 1 and .[0].state == "accepted"' "$smoke_tmp/follows.json" >/dev/null
+rpc "$collaborator_token" block_social_profile \
+  "{\"p_profile_id\":\"$conductor_id\"}" \
+  "$smoke_tmp/block.json"
+blocked_follow_status="$(rpc_status "$conductor_token" request_social_follow \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/blocked-follow.json")"
+[[ "$blocked_follow_status" == "400" || "$blocked_follow_status" == "403" ]]
+
 stage="session creation and join"
 rpc "$conductor_token" create_session \
   "{\"p_title\":\"Harmony live smoke\",\"p_invite_code\":\"$invite_code\",\"p_playback_mode\":\"queue_only\",\"p_allow_collaborator_invites\":true,\"p_expires_at\":null}" \
