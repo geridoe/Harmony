@@ -81,6 +81,7 @@ final class HarmonySessionStore: ObservableObject {
     var nowPlaying: QueueItem? { queue.first }
     var isLiveSession: Bool { remoteSessionID != nil }
     func providerState(for provider: MusicProvider) -> ProviderAccountStatus { providerStates[provider] ?? .notConnected }
+    func canRemove(_ item: QueueItem) -> Bool { currentMember.role == .conductor || item.addedBy.id == currentMember.id }
 
     func refreshProviderConnections() async {
         do {
@@ -128,6 +129,7 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     func remove(_ item: QueueItem) {
+        guard canRemove(item) else { return }
         queue.removeAll { $0.id == item.id }
         record(.remove)
         guard let remoteSessionID else { return }

@@ -75,7 +75,9 @@ struct SessionView: View {
                         }
                     }
                     .onMove(perform: store.move)
-                    .onDelete { offsets in offsets.map { store.queue[$0] }.forEach(store.remove) }
+                    .onDelete { offsets in
+                        offsets.map { store.queue[$0] }.filter(store.canRemove).forEach(store.remove)
+                    }
                 }
             }
             .navigationTitle("Harmony")
