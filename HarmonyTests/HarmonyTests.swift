@@ -61,4 +61,20 @@ final class HarmonyTests: XCTestCase {
         store.togglePlayback()
         XCTAssertEqual(store.playbackState, .playing)
     }
+
+    func testSpotifyPKCERequestHasRequiredParameters() {
+        let challenge = SpotifyPKCEChallenge.make()
+        let redirectURI = URL(string: "harmony://spotify-auth")!
+        let request = SpotifyAuthorizationRequest.url(challenge: challenge, state: "expected-state", clientID: "client-id", redirectURI: redirectURI)
+        let parameters = Dictionary(uniqueKeysWithValues: URLComponents(url: request, resolvingAgainstBaseURL: false)!.queryItems!.map { ($0.name, $0.value) })
+
+        XCTAssertEqual(request.host, "accounts.spotify.com")
+        XCTAssertEqual(parameters["client_id"], "client-id")
+        XCTAssertEqual(parameters["redirect_uri"], redirectURI.absoluteString)
+        XCTAssertEqual(parameters["code_challenge_method"], "S256")
+        XCTAssertEqual(parameters["code_challenge"], challenge.challenge)
+        XCTAssertEqual(parameters["state"], "expected-state")
+        XCTAssertFalse(challenge.verifier.isEmpty)
+        XCTAssertFalse(challenge.challenge.isEmpty)
+    }
 }

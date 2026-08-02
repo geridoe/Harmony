@@ -26,8 +26,16 @@ struct ConnectionsView: View {
                                     .foregroundColor(.secondary)
                             }
                             Spacer()
-                            Image(systemName: state == .connected ? "checkmark.circle.fill" : "circle")
-                                .foregroundColor(state == .connected ? .green : .secondary)
+                            if provider == .spotify && state != .connected {
+                                Button(store.isConnectingSpotify ? "Connecting…" : "Connect") {
+                                    Task { await store.connectSpotify() }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(store.isConnectingSpotify)
+                            } else {
+                                Image(systemName: state == .connected ? "checkmark.circle.fill" : "circle")
+                                    .foregroundColor(state == .connected ? .green : .secondary)
+                            }
                         }
                     }
                 }

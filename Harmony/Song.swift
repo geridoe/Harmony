@@ -62,6 +62,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published var sessionName = "Friday Night Finds"
     @Published var inviteCode = "HARMONY-8Q4"
     @Published var collaborationMessage = "Local prototype"
+    @Published private(set) var isConnectingSpotify = false
     private var remoteSessionID: UUID?
     private var liveQueueSubscription: LiveQueueSubscription?
     private let collaborationRepository = HarmonyCollaborationRepository()
@@ -94,6 +95,20 @@ final class HarmonySessionStore: ObservableObject {
             })
         } catch {
             collaborationMessage = "Could not load connection status: \(error.localizedDescription)"
+        }
+    }
+
+    func connectSpotify() async {
+        guard !isConnectingSpotify else { return }
+        isConnectingSpotify = true
+        defer { isConnectingSpotify = false }
+        do {
+            let response = try await SpotifyAuthorizationCoordinator().authorize()
+            try await collaborationRepository.exchangeSpotifyAuthorization(response)
+            await refreshProviderConnections()
+            collaborationMessage = "Spotify connected"
+        } catch {
+            collaborationMessage = "Spotify connection failed: \(error.localizedDescription)"
         }
     }
     func add(_ track: HarmonyTrack) {

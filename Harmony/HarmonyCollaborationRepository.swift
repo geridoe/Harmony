@@ -41,6 +41,7 @@ private struct MovePayload: Encodable { let queue_item_id: UUID; let position: D
 private struct PlaybackPayload: Encodable { let status: String }
 private struct RemoteTrackID: Decodable { let id: UUID }
 private struct QueueCommandResult: Decodable { let status: String; let revision: Int }
+private struct SpotifyTokenExchangeParameters: Encodable { let code: String; let codeVerifier: String; let redirectURI: String }
 
 struct RemoteQueueSnapshot: Decodable {
     let id: UUID
@@ -135,6 +136,18 @@ final class HarmonyCollaborationRepository {
             .select("provider,expires_at")
             .execute()
             .value
+    }
+
+    func exchangeSpotifyAuthorization(_ response: SpotifyAuthorizationResponse) async throws {
+        try await authenticate()
+        try await client.functions.invoke(
+            "spotify-token-exchange",
+            options: FunctionInvokeOptions(body: SpotifyTokenExchangeParameters(
+                code: response.code,
+                codeVerifier: response.codeVerifier,
+                redirectURI: HarmonySupabaseConfiguration.spotifyRedirectURI.absoluteString
+            ))
+        )
     }
 
     func members(for sessionID: UUID) async throws -> [RemoteSessionMember] {

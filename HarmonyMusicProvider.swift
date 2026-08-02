@@ -8,6 +8,8 @@
 
 import Foundation
 import CryptoKit
+import AuthenticationServices
+import UIKit
 
 struct SpotifyPKCEChallenge: Equatable {
     let verifier: String
@@ -27,17 +29,92 @@ struct SpotifyPKCEChallenge: Equatable {
 
 enum SpotifyAuthorizationRequest {
     static func url(challenge: SpotifyPKCEChallenge, state: String = UUID().uuidString) -> URL {
+        url(challenge: challenge, state: state, clientID: HarmonySupabaseConfiguration.spotifyClientID, redirectURI: HarmonySupabaseConfiguration.spotifyRedirectURI)
+    }
+
+    static func url(challenge: SpotifyPKCEChallenge, state: String, clientID: String, redirectURI: URL) -> URL {
         var components = URLComponents(string: "https://accounts.spotify.com/authorize")!
         components.queryItems = [
-            URLQueryItem(name: "client_id", value: HarmonySupabaseConfiguration.spotifyClientID),
+            URLQueryItem(name: "client_id", value: clientID),
             URLQueryItem(name: "response_type", value: "code"),
-            URLQueryItem(name: "redirect_uri", value: HarmonySupabaseConfiguration.spotifyRedirectURI.absoluteString),
+            URLQueryItem(name: "redirect_uri", value: redirectURI.absoluteString),
             URLQueryItem(name: "code_challenge_method", value: "S256"),
             URLQueryItem(name: "code_challenge", value: challenge.challenge),
             URLQueryItem(name: "state", value: state),
             URLQueryItem(name: "scope", value: "user-read-private user-read-email user-read-playback-state user-modify-playback-state app-remote-control")
         ]
         return components.url!
+    }
+}
+
+struct SpotifyAuthorizationResponse: Equatable {
+    let code: String
+    let codeVerifier: String
+}
+
+enum SpotifyAuthorizationError: LocalizedError {
+    case invalidCallback, stateMismatch, denied
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidCallback: return "Spotify returned an invalid authorization response."
+        case .stateMismatch: return "Spotify authorization could not be verified. Please try again."
+        case .denied: return "Spotify authorization was cancelled."
+        }
+    }
+}
+
+/// Owns the short-lived web authentication session used for Spotify's PKCE flow.
+/// It returns only an authorization code and verifier; refresh tokens stay server-side.
+@MainActor
+final class SpotifyAuthorizationCoordinator: NSObject, ASWebAuthenticationPresentationContextProviding {
+    private var webSession: ASWebAuthenticationSession?
+
+    func authorize() async throws -> SpotifyAuthorizationResponse {
+        let challenge = SpotifyPKCEChallenge.make()
+        let state = UUID().uuidString
+        let request = SpotifyAuthorizationRequest.url(challenge: challenge, state: state)
+
+        return try await withCheckedThrowingContinuation { continuation in
+            let session = ASWebAuthenticationSession(url: request, callbackURLScheme: HarmonySupabaseConfiguration.spotifyRedirectURI.scheme) { [weak self] callbackURL, error in
+                self?.webSession = nil
+                if let error {
+                    if (error as? ASWebAuthenticationSessionError)?.code == .canceledLogin {
+                        continuation.resume(throwing: SpotifyAuthorizationError.denied)
+                    } else {
+                        continuation.resume(throwing: error)
+                    }
+                    return
+                }
+                guard let callbackURL,
+                      let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false),
+                      let returnedState = components.queryItems?.first(where: { $0.name == "state" })?.value,
+                      returnedState == state else {
+                    continuation.resume(throwing: SpotifyAuthorizationError.stateMismatch)
+                    return
+                }
+                if components.queryItems?.contains(where: { $0.name == "error" }) == true {
+                    continuation.resume(throwing: SpotifyAuthorizationError.denied)
+                    return
+                }
+                guard let code = components.queryItems?.first(where: { $0.name == "code" })?.value, !code.isEmpty else {
+                    continuation.resume(throwing: SpotifyAuthorizationError.invalidCallback)
+                    return
+                }
+                continuation.resume(returning: SpotifyAuthorizationResponse(code: code, codeVerifier: challenge.verifier))
+            }
+            session.presentationContextProvider = self
+            webSession = session
+            guard session.start() else {
+                webSession = nil
+                continuation.resume(throwing: SpotifyAuthorizationError.invalidCallback)
+                return
+            }
+        }
+    }
+
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows).first(where: { $0.isKeyWindow }) ?? ASPresentationAnchor()
     }
 }
 
