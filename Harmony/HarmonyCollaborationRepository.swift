@@ -65,6 +65,16 @@ struct RemoteCatalogTrack: Decodable {
     }
 }
 
+struct RemoteProviderConnection: Decodable {
+    let provider: String
+    let expiresAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case provider
+        case expiresAt = "expires_at"
+    }
+}
+
 @MainActor
 final class HarmonyCollaborationRepository {
     private let client = HarmonySupabaseClient.shared
@@ -100,6 +110,15 @@ final class HarmonyCollaborationRepository {
             .select("id,title,invite_code,queue_revision,playback_state")
             .eq("id", value: id.uuidString)
             .single()
+            .execute()
+            .value
+    }
+
+    func providerConnections() async throws -> [RemoteProviderConnection] {
+        try await authenticate()
+        return try await client
+            .from("provider_connection_statuses")
+            .select("provider,expires_at")
             .execute()
             .value
     }

@@ -9,5 +9,48 @@ struct SearchView: View {
 
 struct ConnectionsView: View {
     @EnvironmentObject private var store: HarmonySessionStore
-    var body: some View { NavigationView { List(MusicProvider.allCases) { provider in HStack { Image(systemName: provider == .appleMusic ? "apple.logo" : "waveform").font(.title2).frame(width: 36); VStack(alignment: .leading) { Text(provider.name).font(.headline); Text(store.connectedProviders.contains(provider) ? "Connected for this prototype" : "Not connected").font(.caption).foregroundColor(.secondary) }; Spacer(); Image(systemName: store.connectedProviders.contains(provider) ? "checkmark.circle.fill" : "circle").foregroundColor(store.connectedProviders.contains(provider) ? .green : .secondary) } }.navigationTitle("Connections") } }
+    var body: some View {
+        NavigationView {
+            List {
+                Section("Your listening services") {
+                    ForEach(MusicProvider.allCases) { provider in
+                        let state = store.providerState(for: provider)
+                        HStack {
+                            Image(systemName: provider == .appleMusic ? "apple.logo" : "waveform")
+                                .font(.title2)
+                                .frame(width: 36)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(provider.name).font(.headline)
+                                Text(detail(for: provider, state: state))
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: state == .connected ? "checkmark.circle.fill" : "circle")
+                                .foregroundColor(state == .connected ? .green : .secondary)
+                        }
+                    }
+                }
+                Section("How Harmony uses providers") {
+                    Text("Harmony shares queue intent. Each person plays music through their own connected service; Harmony never relays audio.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .navigationTitle("Connections")
+            .task { await store.refreshProviderConnections() }
+            .refreshable { await store.refreshProviderConnections() }
+        }
+    }
+
+    private func detail(for provider: MusicProvider, state: ProviderConnectionState) -> String {
+        switch state {
+        case .connected: return "Connected to your Harmony account"
+        case .notConnected: return "Not connected"
+        case .setupRequired:
+            return provider == .spotify
+                ? "Spotify OAuth configuration is needed"
+                : "MusicKit configuration is needed"
+        }
+    }
 }

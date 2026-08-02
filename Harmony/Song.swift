@@ -9,6 +9,17 @@ import Foundation
 import SwiftUI
 
 enum MusicProvider: String, CaseIterable, Hashable, Identifiable { case appleMusic, spotify; var id: String { rawValue }; var name: String { self == .appleMusic ? "Apple Music" : "Spotify" } }
+enum ProviderConnectionState: Equatable {
+    case setupRequired, notConnected, connected
+
+    var label: String {
+        switch self {
+        case .setupRequired: return "Setup required"
+        case .notConnected: return "Not connected"
+        case .connected: return "Connected"
+        }
+    }
+}
 enum ProviderAvailability: String, Hashable { case playable, openInProvider, unavailable; var label: String { self == .playable ? "Ready" : self == .openInProvider ? "Open" : "Unavailable" } }
 struct ProviderTrackMapping: Hashable { let provider: MusicProvider; let providerID: String; let availability: ProviderAvailability }
 struct HarmonyTrack: Identifiable, Hashable {
@@ -46,7 +57,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published var queue: [QueueItem]
     @Published var queueRevision = 12
     @Published var playbackState: PlaybackState = .playing
-    @Published var connectedProviders: Set<MusicProvider> = [.appleMusic, .spotify]
+    @Published private(set) var providerStates: [MusicProvider: ProviderConnectionState] = [.appleMusic: .setupRequired, .spotify: .setupRequired]
     @Published private(set) var events: [QueueEvent] = []
     @Published var sessionName = "Friday Night Finds"
     @Published var inviteCode = "HARMONY-8Q4"
@@ -66,6 +77,25 @@ final class HarmonySessionStore: ObservableObject {
     }
     var nowPlaying: QueueItem? { queue.first }
     var isLiveSession: Bool { remoteSessionID != nil }
+    func providerState(for provider: MusicProvider) -> ProviderConnectionState { providerStates[provider] ?? .notConnected }
+
+    func refreshProviderConnections() async {
+        do {
+            let connections = try await collaborationRepository.providerConnections()
+            let connected = Set(connections.compactMap { connection -> MusicProvider? in
+                switch connection.provider {
+                case "apple_music": return .appleMusic
+                case "spotify": return .spotify
+                default: return nil
+                }
+            })
+            providerStates = Dictionary(uniqueKeysWithValues: MusicProvider.allCases.map {
+                ($0, connected.contains($0) ? .connected : .notConnected)
+            })
+        } catch {
+            collaborationMessage = "Could not load connection status: \(error.localizedDescription)"
+        }
+    }
     func add(_ track: HarmonyTrack) {
         guard !queue.contains(where: { $0.track.title == track.title }) else { return }
         queue.append(QueueItem(track: track, addedBy: currentMember))
