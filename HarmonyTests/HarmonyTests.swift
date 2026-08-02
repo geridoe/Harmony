@@ -1,6 +1,7 @@
 import XCTest
 @testable import Harmony
 
+@MainActor
 final class HarmonyTests: XCTestCase {
     func testAddingTrackAdvancesQueueRevision() {
         let store = HarmonySessionStore()
