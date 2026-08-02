@@ -28,7 +28,7 @@ struct HarmonyTrack: Identifiable, Hashable {
     var durationText: String { String(format: "%d:%02d", Int(duration) / 60, Int(duration) % 60) }
 }
 enum SessionRole: Equatable { case conductor, collaborator; var label: String { self == .conductor ? "Conductor" : "Collaborator" } }
-struct SessionMember: Identifiable, Hashable { let id = UUID(); let name: String; let initials: String; let role: SessionRole; let providers: Set<MusicProvider> }
+struct SessionMember: Identifiable, Hashable { let id: UUID; let name: String; let initials: String; let role: SessionRole; let providers: Set<MusicProvider>; init(id: UUID = UUID(), name: String, initials: String, role: SessionRole, providers: Set<MusicProvider>) { self.id = id; self.name = name; self.initials = initials; self.role = role; self.providers = providers } }
 struct QueueItem: Identifiable, Hashable { let id: UUID; let track: HarmonyTrack; let addedBy: SessionMember; init(id: UUID = UUID(), track: HarmonyTrack, addedBy: SessionMember) { self.id = id; self.track = track; self.addedBy = addedBy } }
 enum PlaybackState { case playing, paused }
 
@@ -65,8 +65,8 @@ final class HarmonySessionStore: ObservableObject {
     private var remoteSessionID: UUID?
     private var liveQueueSubscription: LiveQueueSubscription?
     private let collaborationRepository = HarmonyCollaborationRepository()
-    let currentMember: SessionMember
-    let members: [SessionMember]
+    @Published private(set) var currentMember: SessionMember
+    @Published private(set) var members: [SessionMember]
     let catalog: [HarmonyTrack]
     init() {
         let alex = SessionMember(name: "Alex Morgan", initials: "AM", role: .conductor, providers: [.appleMusic, .spotify])
@@ -181,16 +181,23 @@ final class HarmonySessionStore: ObservableObject {
         do {
             async let remoteSession = collaborationRepository.session(id: remoteSessionID)
             async let remoteQueue = collaborationRepository.queue(for: remoteSessionID)
-            let (session, snapshot) = try await (remoteSession, remoteQueue)
+            async let remoteMembers = collaborationRepository.members(for: remoteSessionID)
+            async let currentUserID = collaborationRepository.currentUserID()
+            let (session, snapshot, remoteMemberRecords, userID) = try await (remoteSession, remoteQueue, remoteMembers, currentUserID)
             sessionName = session.title
             inviteCode = session.inviteCode
             queueRevision = session.queueRevision
             if session.playbackState?.status == "playing" { playbackState = .playing }
             if session.playbackState?.status == "paused" { playbackState = .paused }
+            members = remoteMemberRecords.map { member in
+                let name = member.profile.displayName
+                return SessionMember(id: member.profileID, name: name, initials: String(name.prefix(2)).uppercased(), role: member.role == "conductor" ? .conductor : .collaborator, providers: [])
+            }
+            if let me = members.first(where: { $0.id == userID }) { currentMember = me }
             queue = snapshot.map { remote in
                 let track = catalog.first(where: { $0.title == remote.canonicalTrack.title && $0.artist == remote.canonicalTrack.artist })
                     ?? HarmonyTrack(title: remote.canonicalTrack.title, artist: remote.canonicalTrack.artist, album: remote.canonicalTrack.album ?? "", duration: TimeInterval(remote.canonicalTrack.durationMilliseconds ?? 0) / 1000, symbol: "music.note", mappings: [])
-                return QueueItem(id: remote.id, track: track, addedBy: currentMember)
+                return QueueItem(id: remote.id, track: track, addedBy: members.first(where: { $0.id == remote.addedBy }) ?? currentMember)
             }
         } catch {
             collaborationMessage = "Could not refresh queue: \(error.localizedDescription)"

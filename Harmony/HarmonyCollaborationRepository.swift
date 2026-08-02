@@ -45,13 +45,24 @@ private struct QueueCommandResult: Decodable { let status: String; let revision:
 struct RemoteQueueSnapshot: Decodable {
     let id: UUID
     let position: Double
+    let addedBy: UUID
     let canonicalTrack: RemoteCatalogTrack
 
     enum CodingKeys: String, CodingKey {
         case id, position
+        case addedBy = "added_by"
         case canonicalTrack = "canonical_tracks"
     }
 }
+
+struct RemoteSessionMember: Decodable {
+    let profileID: UUID
+    let role: String
+    let profile: RemoteProfile
+    enum CodingKeys: String, CodingKey { case profileID = "profile_id"; case role; case profile = "profiles" }
+}
+
+struct RemoteProfile: Decodable { let displayName: String; enum CodingKeys: String, CodingKey { case displayName = "display_name" } }
 
 struct RemoteCatalogTrack: Decodable {
     let title: String
@@ -123,6 +134,15 @@ final class HarmonyCollaborationRepository {
             .value
     }
 
+    func members(for sessionID: UUID) async throws -> [RemoteSessionMember] {
+        try await client.from("session_members").select("profile_id,role,profiles(display_name)").eq("session_id", value: sessionID.uuidString).execute().value
+    }
+
+    func currentUserID() async throws -> UUID {
+        try await authenticate()
+        return try await client.auth.session.user.id
+    }
+
     func add(track: HarmonyTrack, to sessionID: UUID, expectedRevision: Int) async throws -> Int {
         let trackID: RemoteTrackID = try await client
             .from("canonical_tracks")
@@ -163,7 +183,7 @@ final class HarmonyCollaborationRepository {
     func queue(for sessionID: UUID) async throws -> [RemoteQueueSnapshot] {
         try await client
             .from("queue_items")
-            .select("id,position,canonical_tracks(title,artist,album,duration_ms)")
+            .select("id,position,added_by,canonical_tracks(title,artist,album,duration_ms)")
             .eq("session_id", value: sessionID.uuidString)
             .order("position", ascending: true)
             .execute()
