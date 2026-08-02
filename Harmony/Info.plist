@@ -6,6 +6,19 @@
 	<string>https://wiwjtbwgxyvzqqghsqbk.supabase.co</string>
 	<key>SupabasePublishableKey</key>
 	<string>sb_publishable_ODoBDJLMce1s1SVs66mpgA_BBug7qGc</string>
+	<key>SpotifyClientID</key>
+	<string>c318293fc8384b50a25dbb1255f2fda2</string>
+	<key>SpotifyRedirectURI</key>
+	<string>harmony://spotify-auth</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>harmony</string>
+			</array>
+		</dict>
+	</array>
 	<key>kTCCServiceMediaLibrary</key>
 	<string>Access to music library required to share playback/queue</string>
 </dict>
