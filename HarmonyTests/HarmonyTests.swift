@@ -72,6 +72,20 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(spotify.commands, [.pause, .resume])
     }
 
+    func testSkipAdvancesCanonicalQueueAndRevision() async {
+        let store = HarmonySessionStore()
+        let previousNext = store.queue[1]
+        let previousRevision = store.queueRevision
+
+        await store.skipToNext()
+
+        XCTAssertEqual(store.queue.first, previousNext)
+        XCTAssertEqual(store.queue.count, 2)
+        XCTAssertEqual(store.queueRevision, previousRevision + 1)
+        XCTAssertEqual(store.events.last?.type, .skip)
+        XCTAssertEqual(store.playbackState, .playing)
+    }
+
     func testSpotifyPKCERequestHasRequiredParameters() {
         let challenge = SpotifyPKCEChallenge.make()
         let redirectURI = URL(string: "harmony://spotify-auth")!

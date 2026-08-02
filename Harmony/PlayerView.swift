@@ -56,10 +56,19 @@ struct SessionView: View {
                             }
                             Spacer()
                             Button {
+                                Task { await store.skipToNext() }
+                            } label: {
+                                Image(systemName: "forward.end.fill")
+                                    .frame(width: 34, height: 34)
+                            }
+                            .disabled(store.currentMember.role != .conductor || store.queue.count < 2)
+                            .accessibilityLabel("Skip to next track")
+                            Button {
                                 Task { await store.togglePlayback() }
                             } label: {
                                 Image(systemName: store.playbackState == .playing ? "pause.fill" : "play.fill").frame(width: 34, height: 34).background(Color.indigo).foregroundColor(.white).clipShape(Circle())
                             }
+                            .accessibilityLabel(store.playbackState == .playing ? "Pause" : "Play")
                         }
                     }
                 }

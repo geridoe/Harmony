@@ -51,7 +51,7 @@ struct QueueItem: Identifiable, Hashable { let id: UUID; let track: HarmonyTrack
 enum PlaybackState { case playing, paused }
 
 enum QueueCommandType: String, Codable {
-    case add, move, remove, play, pause
+    case add, move, remove, play, pause, skip
 }
 
 struct QueueEvent: Identifiable, Hashable {
@@ -296,6 +296,35 @@ final class HarmonySessionStore: ObservableObject {
         }
         guard let remoteSessionID else { return }
         await applyRemotePlayback(sessionID: remoteSessionID, expectedRevision: queueRevision - 1)
+    }
+
+    func skipToNext() async {
+        guard currentMember.role == .conductor, queue.count > 1 else { return }
+        let expectedRevision = queueRevision
+        queue.removeFirst()
+        playbackState = .playing
+        spotifyLoadedProviderID = nil
+        record(.skip)
+
+        if spotifyPlaybackConnection.isConnected {
+            do {
+                if try await playCurrentSpotifyTrackIfAvailable() {
+                    collaborationMessage = "Skipped to the next Harmony track"
+                } else {
+                    collaborationMessage = "Next track is unavailable on Spotify"
+                }
+            } catch {
+                collaborationMessage = "Spotify skip failed: \(error.localizedDescription)"
+            }
+        }
+        guard let remoteSessionID else { return }
+        do {
+            queueRevision = try await collaborationRepository.skip(in: remoteSessionID, expectedRevision: expectedRevision)
+            await refreshRemoteQueue()
+        } catch {
+            collaborationMessage = "Queue skip conflicted with another update."
+            await refreshRemoteQueue()
+        }
     }
 
     func createLiveSession() async {

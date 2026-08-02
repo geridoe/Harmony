@@ -39,6 +39,11 @@ private struct AddPayload: Encodable { let canonical_track_id: UUID }
 private struct RemovePayload: Encodable { let queue_item_id: UUID }
 private struct MovePayload: Encodable { let queue_item_id: UUID; let position: Double }
 private struct PlaybackPayload: Encodable { let status: String }
+private struct SkipQueueParameters: Encodable {
+    let p_session_id: UUID
+    let p_command_id: UUID
+    let p_expected_revision: Int
+}
 private struct RemoteTrackID: Decodable { let id: UUID }
 private struct RemoteCanonicalTrackReference: Decodable {
     let canonicalTrackID: UUID
@@ -259,6 +264,19 @@ final class HarmonyCollaborationRepository {
     func setPlayback(state: PlaybackState, in sessionID: UUID, expectedRevision: Int) async throws -> Int {
         let type = state == .playing ? "play" : "pause"
         return try await executeCommand(QueueCommandParameters(p_session_id: sessionID, p_command_id: UUID(), p_expected_revision: expectedRevision, p_type: type, p_payload: PlaybackPayload(status: state == .playing ? "playing" : "paused")))
+    }
+
+    func skip(in sessionID: UUID, expectedRevision: Int) async throws -> Int {
+        let result: QueueCommandResult = try await client.rpc(
+            "skip_queue_item",
+            params: SkipQueueParameters(
+                p_session_id: sessionID,
+                p_command_id: UUID(),
+                p_expected_revision: expectedRevision
+            )
+        ).execute().value
+        guard result.status == "applied" else { throw CollaborationError.revisionConflict }
+        return result.revision
     }
 
     private func executeCommand<Payload: Encodable>(_ parameters: QueueCommandParameters<Payload>) async throws -> Int {

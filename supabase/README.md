@@ -63,9 +63,11 @@ Payloads:
 | `add` | `{ "canonical_track_id": "UUID" }` |
 | `move` | `{ "queue_item_id": "UUID", "position": 1024.0 }` |
 | `remove` | `{ "queue_item_id": "UUID" }` |
-| `play`, `pause`, `skip` | Playback intent JSON, e.g. `{ "status": "playing", "queue_item_id": "UUID", "started_at": "ISO-8601" }` |
+| `play`, `pause` | Playback intent JSON, e.g. `{ "status": "playing", "queue_item_id": "UUID", "started_at": "ISO-8601" }` |
 
 The RPC returns `{ status: "applied", revision }` or `{ status: "conflict", revision }`. Retrying an applied command with the same command ID is safe. The server verifies membership and role, locks the session, updates the materialized state, increments its revision, and inserts its immutable event in one transaction.
+
+`skip_queue_item(session_id, command_id, expected_revision)` is the Conductor-only companion command. It atomically removes the canonical queue head, advances the revision, records a `skip` event, and leaves provider playback as a device-side effect.
 
 ## Important notes
 
