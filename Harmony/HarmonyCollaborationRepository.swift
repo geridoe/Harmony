@@ -8,6 +8,7 @@ struct RemoteHarmonySession: Decodable {
     let queueRevision: Int
     let playbackState: RemotePlaybackState?
     let endedAt: Date?
+    let expiresAt: Date?
     let allowCollaboratorInvites: Bool
     let playbackMode: SessionPlaybackMode
 
@@ -17,6 +18,7 @@ struct RemoteHarmonySession: Decodable {
         case queueRevision = "queue_revision"
         case playbackState = "playback_state"
         case endedAt = "ended_at"
+        case expiresAt = "expires_at"
         case allowCollaboratorInvites = "allow_collaborator_invites"
         case playbackMode = "playback_mode"
     }
@@ -31,6 +33,7 @@ private struct CreateSessionParameters: Encodable {
     let p_invite_code: String
     let p_playback_mode: String
     let p_allow_collaborator_invites: Bool
+    let p_expires_at: Date?
 }
 
 private struct UpdateInvitePermissionParameters: Encodable {
@@ -166,7 +169,7 @@ final class HarmonyCollaborationRepository {
         }
     }
 
-    func createSession(title: String, allowCollaboratorInvites: Bool, playbackMode: SessionPlaybackMode) async throws -> RemoteHarmonySession {
+    func createSession(title: String, allowCollaboratorInvites: Bool, playbackMode: SessionPlaybackMode, expiresAt: Date?) async throws -> RemoteHarmonySession {
         try await authenticate()
         for attempt in 1...3 {
             do {
@@ -174,7 +177,8 @@ final class HarmonyCollaborationRepository {
                     p_title: title,
                     p_invite_code: Self.makeInviteCode(),
                     p_playback_mode: playbackMode.rawValue,
-                    p_allow_collaborator_invites: allowCollaboratorInvites
+                    p_allow_collaborator_invites: allowCollaboratorInvites,
+                    p_expires_at: expiresAt
                 )
                 return try await client.rpc("create_session", params: parameters).execute().value
             } catch let error as PostgrestError where error.code == "23505" && attempt < 3 {
@@ -203,7 +207,7 @@ final class HarmonyCollaborationRepository {
     func session(id: UUID) async throws -> RemoteHarmonySession {
         try await client
             .from("sessions")
-            .select("id,title,invite_code,queue_revision,playback_state,ended_at,allow_collaborator_invites,playback_mode")
+            .select("id,title,invite_code,queue_revision,playback_state,ended_at,expires_at,allow_collaborator_invites,playback_mode")
             .eq("id", value: id.uuidString)
             .single()
             .execute()

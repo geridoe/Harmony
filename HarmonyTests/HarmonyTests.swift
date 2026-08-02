@@ -163,6 +163,20 @@ final class HarmonyTests: XCTestCase {
         XCTAssertNil(HarmonySessionStore.inviteCode(from: URL(string: "harmony://join?code=bad-code")!))
     }
 
+    func testSessionExpiryChoicesProduceExpectedDates() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+
+        XCTAssertNil(SessionExpiry.never.date(from: now))
+        XCTAssertEqual(SessionExpiry.twoHours.date(from: now), now.addingTimeInterval(2 * 60 * 60))
+        XCTAssertEqual(SessionExpiry.oneDay.date(from: now), now.addingTimeInterval(24 * 60 * 60))
+    }
+
+    func testPlaybackModeRawValuesMatchBackendEnum() {
+        XCTAssertEqual(SessionPlaybackMode.conductorPlayback.rawValue, "conductor_playback")
+        XCTAssertEqual(SessionPlaybackMode.personalListenAlong.rawValue, "personal_listen_along")
+        XCTAssertEqual(SessionPlaybackMode.queueOnly.rawValue, "queue_only")
+    }
+
     func testClearingSessionRemovesRoomStateAndRestoresLocalOwnership() {
         let store = HarmonySessionStore()
 

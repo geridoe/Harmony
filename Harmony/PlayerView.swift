@@ -61,6 +61,11 @@ struct SessionView: View {
                             Text(store.selectedPlaybackMode.detail)
                                 .font(.caption)
                                 .foregroundColor(.secondary)
+                            Picker("Session expiry", selection: $store.selectedSessionExpiry) {
+                                ForEach(SessionExpiry.allCases) { expiry in
+                                    Text(expiry.title).tag(expiry)
+                                }
+                            }
                         }
                         if store.isLiveSession, store.currentMember.role == .conductor {
                             Toggle(

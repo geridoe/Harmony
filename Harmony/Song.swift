@@ -86,6 +86,28 @@ enum SessionPlaybackMode: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+enum SessionExpiry: String, CaseIterable, Identifiable {
+    case never
+    case twoHours
+    case oneDay
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .never: "No expiry"
+        case .twoHours: "2 hours"
+        case .oneDay: "24 hours"
+        }
+    }
+    func date(from now: Date = Date()) -> Date? {
+        switch self {
+        case .never: nil
+        case .twoHours: now.addingTimeInterval(2 * 60 * 60)
+        case .oneDay: now.addingTimeInterval(24 * 60 * 60)
+        }
+    }
+}
+
 enum QueueCommandType: String, Codable {
     case add, move, remove, play, pause, skip
 }
@@ -130,6 +152,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var isUpdatingInvitePermissions = false
     @Published var allowsCollaboratorInvites = true
     @Published var selectedPlaybackMode: SessionPlaybackMode = .conductorPlayback
+    @Published var selectedSessionExpiry: SessionExpiry = .never
     private var remoteSessionID: UUID?
     private var liveQueueSubscription: LiveQueueSubscription?
     private var liveSessionSubscription: LiveSessionSubscription?
@@ -428,7 +451,8 @@ final class HarmonySessionStore: ObservableObject {
             let remoteSession = try await collaborationRepository.createSession(
                 title: sessionName,
                 allowCollaboratorInvites: allowsCollaboratorInvites,
-                playbackMode: selectedPlaybackMode
+                playbackMode: selectedPlaybackMode,
+                expiresAt: selectedSessionExpiry.date()
             )
             sessionName = remoteSession.title
             inviteCode = remoteSession.inviteCode
@@ -649,6 +673,7 @@ final class HarmonySessionStore: ObservableObject {
         inviteCode = ""
         allowsCollaboratorInvites = true
         selectedPlaybackMode = .conductorPlayback
+        selectedSessionExpiry = .never
         sessionName = "No active session"
         collaborationMessage = message
     }
