@@ -546,6 +546,7 @@ final class HarmonySessionStore: ObservableObject {
             inviteCode = session.inviteCode
             queueRevision = session.queueRevision
             allowsCollaboratorInvites = session.allowCollaboratorInvites
+            selectedPlaybackMode = session.playbackMode
             if session.playbackState?.status == "playing" { playbackState = .playing }
             if session.playbackState?.status == "paused" { playbackState = .paused }
             members = remoteMemberRecords.map { member in
@@ -567,6 +568,7 @@ final class HarmonySessionStore: ObservableObject {
                     )
                 return QueueItem(id: remote.id, track: track, addedBy: members.first(where: { $0.id == remote.addedBy }) ?? currentMember)
             }
+            await synchronizePersonalSpotifyPlaybackIfNeeded()
         } catch {
             collaborationMessage = "Could not refresh queue: \(error.localizedDescription)"
         }
@@ -598,6 +600,19 @@ final class HarmonySessionStore: ObservableObject {
         } catch {
             collaborationMessage = "Playback sync failed: \(error.localizedDescription)"
             await refreshRemoteQueue()
+        }
+    }
+
+    private func synchronizePersonalSpotifyPlaybackIfNeeded() async {
+        guard selectedPlaybackMode == .personalListenAlong, spotifyPlaybackConnection.isConnected else { return }
+        do {
+            if playbackState == .playing {
+                _ = try await playCurrentSpotifyTrackIfAvailable()
+            } else {
+                _ = try await spotifyRemote.perform(.pause)
+            }
+        } catch {
+            collaborationMessage = "Personal Spotify playback could not sync: \(error.localizedDescription)"
         }
     }
 
