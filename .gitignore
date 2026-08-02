@@ -1,0 +1,19 @@
+# Xcode user and build state
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+*.xccheckout
+
+# Local configuration and credentials
+.env
+.env.*
+!*.env.example
+*.xcconfig
+!Config.example.xcconfig
+
+# Tool-generated logs
+*.log
+
+# macOS metadata
+.DS_Store

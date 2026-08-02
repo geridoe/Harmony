@@ -1,36 +1,63 @@
-//
-//  HarmonyTests.swift
-//  HarmonyTests
-//
-//  Created by Geri Doe on 7/25/22.
-//
-
 import XCTest
 @testable import Harmony
 
-class HarmonyTests: XCTestCase {
+final class HarmonyTests: XCTestCase {
+    func testAddingTrackAdvancesQueueRevision() {
+        let store = HarmonySessionStore()
+        let initialCount = store.queue.count
+        let initialRevision = store.queueRevision
 
-    override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
+        store.add(store.catalog[3])
+
+        XCTAssertEqual(store.queue.count, initialCount + 1)
+        XCTAssertEqual(store.queueRevision, initialRevision + 1)
+        XCTAssertEqual(store.queue.last?.track, store.catalog[3])
+        XCTAssertEqual(store.queue.last?.addedBy, store.currentMember)
     }
 
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
+    func testAddingTrackAlreadyInQueueDoesNotChangeQueueOrRevision() {
+        let store = HarmonySessionStore()
+        let initialQueue = store.queue
+        let initialRevision = store.queueRevision
+
+        store.add(store.catalog[0])
+
+        XCTAssertEqual(store.queue, initialQueue)
+        XCTAssertEqual(store.queueRevision, initialRevision)
     }
 
-    func testExample() throws {
-        // This is an example of a functional test case.
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // Any test you write for XCTest can be annotated as throws and async.
-        // Mark your test throws to produce an unexpected failure when your test encounters an uncaught error.
-        // Mark your test async to allow awaiting for asynchronous code to complete. Check the results with assertions afterwards.
+    func testRemoveRemovesSelectedQueueItemAndAdvancesRevision() {
+        let store = HarmonySessionStore()
+        let itemToRemove = store.queue[1]
+        let initialRevision = store.queueRevision
+
+        store.remove(itemToRemove)
+
+        XCTAssertEqual(store.queue.count, 2)
+        XCTAssertFalse(store.queue.contains(itemToRemove))
+        XCTAssertEqual(store.queueRevision, initialRevision + 1)
     }
 
-    func testPerformanceExample() throws {
-        // This is an example of a performance test case.
-        self.measure {
-            // Put the code you want to measure the time of here.
-        }
+    func testMoveReordersQueueAndAdvancesRevision() {
+        let store = HarmonySessionStore()
+        let originalLastItem = store.queue[2]
+        let initialRevision = store.queueRevision
+
+        store.move(from: IndexSet(integer: 2), to: 0)
+
+        XCTAssertEqual(store.queue.first, originalLastItem)
+        XCTAssertEqual(store.queueRevision, initialRevision + 1)
     }
 
+    func testTogglePlaybackAlternatesBetweenPlayingAndPaused() {
+        let store = HarmonySessionStore()
+
+        XCTAssertEqual(store.playbackState, .playing)
+
+        store.togglePlayback()
+        XCTAssertEqual(store.playbackState, .paused)
+
+        store.togglePlayback()
+        XCTAssertEqual(store.playbackState, .playing)
+    }
 }

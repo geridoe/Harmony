@@ -9,9 +9,12 @@ import SwiftUI
 
 @main
 struct HarmonyApp: App {
+    @StateObject private var sessionStore = HarmonySessionStore()
+
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environmentObject(sessionStore)
         }
     }
 }
