@@ -382,7 +382,9 @@ final class SpotifyAppRemoteProvider: NSObject, SpotifyPlaybackProviding, @preco
             connectionContinuation = continuation
             appRemote.authorizeAndPlayURI("") { [weak self] spotifyInstalled in
                 guard spotifyInstalled else {
-                    self?.finishConnection(with: .failure(SpotifyAppRemoteError.spotifyNotInstalled))
+                    Task { @MainActor [weak self] in
+                        self?.finishConnection(with: .failure(SpotifyAppRemoteError.spotifyNotInstalled))
+                    }
                     return
                 }
             }
