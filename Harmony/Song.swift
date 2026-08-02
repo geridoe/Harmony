@@ -52,6 +52,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published var inviteCode = "HARMONY-8Q4"
     @Published var collaborationMessage = "Local prototype"
     private var remoteSessionID: UUID?
+    private var liveQueueSubscription: LiveQueueSubscription?
     private let collaborationRepository = HarmonyCollaborationRepository()
     let currentMember: SessionMember
     let members: [SessionMember]
@@ -100,6 +101,7 @@ final class HarmonySessionStore: ObservableObject {
             remoteSessionID = remoteSession.id
             collaborationMessage = "Live Supabase session"
             await refreshRemoteQueue()
+            await subscribeToRemoteQueue(remoteSession.id)
         } catch {
             collaborationMessage = "Connection failed: \(error.localizedDescription)"
         }
@@ -115,6 +117,7 @@ final class HarmonySessionStore: ObservableObject {
             remoteSessionID = remoteSession.id
             collaborationMessage = "Joined live Supabase session"
             await refreshRemoteQueue()
+            await subscribeToRemoteQueue(remoteSession.id)
         } catch {
             collaborationMessage = "Join failed: \(error.localizedDescription)"
         }
@@ -141,6 +144,16 @@ final class HarmonySessionStore: ObservableObject {
             }
         } catch {
             collaborationMessage = "Could not refresh queue: \(error.localizedDescription)"
+        }
+    }
+
+    private func subscribeToRemoteQueue(_ sessionID: UUID) async {
+        do {
+            liveQueueSubscription = try await collaborationRepository.observeQueue(sessionID: sessionID) { [weak self] in
+                Task { @MainActor in await self?.refreshRemoteQueue() }
+            }
+        } catch {
+            collaborationMessage = "Live session connected, but updates are delayed."
         }
     }
 

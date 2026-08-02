@@ -119,6 +119,20 @@ final class HarmonyCollaborationRepository {
             .value
     }
 
+    func observeQueue(sessionID: UUID, onChange: @escaping @Sendable () -> Void) async throws -> LiveQueueSubscription {
+        let channel = client.channel("queue-\(sessionID.uuidString)")
+        let token = channel.onPostgresChange(
+            AnyAction.self,
+            schema: "public",
+            table: "queue_events",
+            filter: .eq("session_id", value: sessionID.uuidString)
+        ) { _ in
+            onChange()
+        }
+        try await channel.subscribeWithError()
+        return LiveQueueSubscription(channel: channel, token: token)
+    }
+
     private static func makeInviteCode() -> String {
         String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8)).uppercased()
     }
@@ -127,4 +141,14 @@ final class HarmonyCollaborationRepository {
 enum CollaborationError: LocalizedError {
     case revisionConflict
     var errorDescription: String? { "The queue changed on another device. Refresh and try again." }
+}
+
+final class LiveQueueSubscription {
+    let channel: RealtimeChannelV2
+    let token: RealtimeSubscription
+
+    init(channel: RealtimeChannelV2, token: RealtimeSubscription) {
+        self.channel = channel
+        self.token = token
+    }
 }
