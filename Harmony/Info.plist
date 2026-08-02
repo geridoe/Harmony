@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>SupabaseURL</key>
+	<string>https://wiwjtbwgxyvzqqghsqbk.supabase.co</string>
+	<key>SupabasePublishableKey</key>
+	<string>sb_publishable_ODoBDJLMce1s1SVs66mpgA_BBug7qGc</string>
 	<key>kTCCServiceMediaLibrary</key>
 	<string>Access to music library required to share playback/queue</string>
 </dict>

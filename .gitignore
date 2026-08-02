@@ -12,6 +12,9 @@ xcuserdata/
 *.xcconfig
 !Config.example.xcconfig
 
+# Supabase CLI project-link state
+supabase/.temp/
+
 # Tool-generated logs
 *.log
 

@@ -20,6 +20,8 @@
 		EBDBBCA028A04FF800BB9589 /* Sidebar.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBDBBC9F28A04FF800BB9589 /* Sidebar.swift */; };
 		EBDD962F289E162C00624552 /* AppleMusicAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBDD962E289E162C00624552 /* AppleMusicAPI.swift */; };
 		F1000001289E162C00624552 /* HarmonyMusicProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000289E162C00624552 /* HarmonyMusicProvider.swift */; };
+		F2000001289E162C00624552 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = F2000000289E162C00624552 /* Supabase */; };
+		F2000004289E162C00624552 /* SupabaseConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2000005289E162C00624552 /* SupabaseConfiguration.swift */; };
 		EBDD9631289E166100624552 /* Song.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBDD9630289E166100624552 /* Song.swift */; };
 		EBDD9633289E22ED00624552 /* SwiftyJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBDD9632289E22ED00624552 /* SwiftyJSON.swift */; };
 /* End PBXBuildFile section */
@@ -58,6 +60,7 @@
 		EBDBBC9F28A04FF800BB9589 /* Sidebar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sidebar.swift; sourceTree = "<group>"; };
 		EBDD962E289E162C00624552 /* AppleMusicAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMusicAPI.swift; sourceTree = "<group>"; };
 		F1000000289E162C00624552 /* HarmonyMusicProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../HarmonyMusicProvider.swift; sourceTree = "<group>"; };
+		F2000005289E162C00624552 /* SupabaseConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseConfiguration.swift; sourceTree = "<group>"; };
 		EBDD9630289E166100624552 /* Song.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Song.swift; sourceTree = "<group>"; };
 		EBDD9632289E22ED00624552 /* SwiftyJSON.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SwiftyJSON.swift; sourceTree = "<group>"; };
 		EBDD9634289E3E7400624552 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -68,6 +71,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F2000001289E162C00624552 /* Supabase in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -118,6 +122,7 @@
 				EBDBBC9F28A04FF800BB9589 /* Sidebar.swift */,
 				EBDD962E289E162C00624552 /* AppleMusicAPI.swift */,
 				F1000000289E162C00624552 /* HarmonyMusicProvider.swift */,
+				F2000005289E162C00624552 /* SupabaseConfiguration.swift */,
 				EBDD9630289E166100624552 /* Song.swift */,
 				EB2DE734289A2B0200B7B028 /* PlayerView.swift */,
 				EB79A8B5295238600068A036 /* AppleLibraryView.swift */,
@@ -167,6 +172,9 @@
 			buildRules = (
 			);
 			dependencies = (
+			);
+			packageProductDependencies = (
+				F2000000289E162C00624552 /* Supabase */,
 			);
 			name = Harmony;
 			productName = Harmony;
@@ -242,6 +250,9 @@
 			);
 			mainGroup = EB708AF4288F4ACB007B6E1A;
 			productRefGroup = EB708AFE288F4ACB007B6E1A /* Products */;
+			packageReferences = (
+				F2000003289E162C00624552 /* XCRemoteSwiftPackageReference \"supabase-swift\" */,
+			);
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -251,6 +262,25 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		F2000003289E162C00624552 /* XCRemoteSwiftPackageReference "supabase-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/supabase/supabase-swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		F2000000289E162C00624552 /* Supabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F2000003289E162C00624552 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Supabase;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin PBXResourcesBuildPhase section */
 		EB708AFB288F4ACB007B6E1A /* Resources */ = {
@@ -283,6 +313,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F2000004289E162C00624552 /* SupabaseConfiguration.swift in Sources */,
 				EBDD9631289E166100624552 /* Song.swift in Sources */,
 				EBDD962F289E162C00624552 /* AppleMusicAPI.swift in Sources */,
 				F1000001289E162C00624552 /* HarmonyMusicProvider.swift in Sources */,
@@ -379,7 +410,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.5;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -433,7 +464,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.5;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = iphoneos;
@@ -516,7 +547,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.5;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.gwd.HarmonyTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -535,7 +566,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.5;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.gwd.HarmonyTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
