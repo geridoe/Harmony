@@ -12,11 +12,11 @@ struct SessionView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("LIVE SESSION").font(.caption.weight(.bold)).foregroundColor(.secondary)
                         Text(store.sessionName).font(.title2.bold())
-                        Text("\(store.members.count) people are curating together").foregroundColor(.secondary)
+                        Text("\(store.members.count) members · \(store.activeMemberIDs.count) here now").foregroundColor(.secondary)
 						Text(store.collaborationMessage).font(.caption).foregroundColor(.secondary)
                         HStack {
                             ForEach(store.members) { member in
-                                Text(member.initials).font(.caption.bold()).frame(width: 30, height: 30).background(Color.indigo.opacity(0.15)).clipShape(Circle())
+                                Text(member.initials).font(.caption.bold()).frame(width: 30, height: 30).background(Color.indigo.opacity(store.activeMemberIDs.contains(member.id) ? 0.28 : 0.10)).overlay(Circle().stroke(store.activeMemberIDs.contains(member.id) ? Color.green : .clear, lineWidth: 2)).clipShape(Circle()).accessibilityLabel("\(member.name), \(store.activeMemberIDs.contains(member.id) ? "active now" : "not active")")
                             }
                             Spacer()
                             Text(store.inviteCode).font(.caption.monospaced().bold()).padding(8).background(Color.indigo.opacity(0.12)).cornerRadius(8)

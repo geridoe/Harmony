@@ -205,7 +205,7 @@ provider_connections(id, profile_id, provider, encrypted_refresh_token, expires_
 - [x] Create/join/share session
 - [x] Realtime queue updates
 - [x] Conflict/revision recovery
-- [ ] Presence / participant list backed by Supabase Realtime
+- [x] Presence / participant list backed by Supabase Realtime
 
 ### Milestone 2 — real services
 

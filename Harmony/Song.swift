@@ -63,8 +63,10 @@ final class HarmonySessionStore: ObservableObject {
     @Published var inviteCode = "HARMONY-8Q4"
     @Published var collaborationMessage = "Local prototype"
     @Published private(set) var isConnectingSpotify = false
+    @Published private(set) var activeMemberIDs: Set<UUID> = []
     private var remoteSessionID: UUID?
     private var liveQueueSubscription: LiveQueueSubscription?
+    private var livePresenceSubscription: LivePresenceSubscription?
     private let collaborationRepository = HarmonyCollaborationRepository()
     @Published private(set) var currentMember: SessionMember
     @Published private(set) var members: [SessionMember]
@@ -110,6 +112,11 @@ final class HarmonySessionStore: ObservableObject {
         } catch {
             collaborationMessage = "Spotify connection failed: \(error.localizedDescription)"
         }
+    }
+
+    func applyPresence(joins: Set<UUID>, leaves: Set<UUID>) {
+        activeMemberIDs.formUnion(joins)
+        activeMemberIDs.subtract(leaves)
     }
     func add(_ track: HarmonyTrack) {
         guard !queue.contains(where: { $0.track.title == track.title }) else { return }
@@ -159,6 +166,7 @@ final class HarmonySessionStore: ObservableObject {
             collaborationMessage = "Live Supabase session"
             await refreshRemoteQueue()
             await subscribeToRemoteQueue(remoteSession.id)
+            await subscribeToPresence(remoteSession.id)
         } catch {
             collaborationMessage = "Connection failed: \(error.localizedDescription)"
         }
@@ -175,6 +183,7 @@ final class HarmonySessionStore: ObservableObject {
             collaborationMessage = "Joined live Supabase session"
             await refreshRemoteQueue()
             await subscribeToRemoteQueue(remoteSession.id)
+            await subscribeToPresence(remoteSession.id)
         } catch {
             collaborationMessage = "Join failed: \(error.localizedDescription)"
         }
@@ -255,6 +264,21 @@ final class HarmonySessionStore: ObservableObject {
             }
         } catch {
             collaborationMessage = "Live session connected, but updates are delayed."
+        }
+    }
+
+    private func subscribeToPresence(_ sessionID: UUID) async {
+        do {
+            let profileID = try await collaborationRepository.currentUserID()
+            activeMemberIDs.insert(profileID)
+            livePresenceSubscription = try await collaborationRepository.observePresence(sessionID: sessionID, profileID: profileID) { [weak self] joins, leaves in
+                Task { @MainActor in
+                    self?.applyPresence(joins: joins, leaves: leaves)
+                }
+            }
+        } catch {
+            // Presence is an enhancement; room membership and queue sync remain usable.
+            collaborationMessage = "Live session connected, but member activity is delayed."
         }
     }
 

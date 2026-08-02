@@ -77,4 +77,14 @@ final class HarmonyTests: XCTestCase {
         XCTAssertFalse(challenge.verifier.isEmpty)
         XCTAssertFalse(challenge.challenge.isEmpty)
     }
+
+    func testPresenceMembershipTracksJoinsAndLeaves() {
+        let store = HarmonySessionStore()
+        let memberID = store.members[1].id
+
+        store.applyPresence(joins: [store.currentMember.id, memberID], leaves: [])
+        store.applyPresence(joins: [], leaves: [memberID])
+
+        XCTAssertEqual(store.activeMemberIDs, [store.currentMember.id])
+    }
 }

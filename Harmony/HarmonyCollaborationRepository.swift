@@ -42,6 +42,7 @@ private struct PlaybackPayload: Encodable { let status: String }
 private struct RemoteTrackID: Decodable { let id: UUID }
 private struct QueueCommandResult: Decodable { let status: String; let revision: Int }
 private struct SpotifyTokenExchangeParameters: Encodable { let code: String; let codeVerifier: String; let redirectURI: String }
+private struct RemotePresence: Codable { let profileID: UUID }
 
 struct RemoteQueueSnapshot: Decodable {
     let id: UUID
@@ -220,6 +221,25 @@ final class HarmonyCollaborationRepository {
         return LiveQueueSubscription(channel: channel, token: token)
     }
 
+    func observePresence(
+        sessionID: UUID,
+        profileID: UUID,
+        onChange: @escaping @Sendable (_ joins: Set<UUID>, _ leaves: Set<UUID>) -> Void
+    ) async throws -> LivePresenceSubscription {
+        try await authenticate()
+        let channel = client.channel("presence-\(sessionID.uuidString)") { config in
+            config.presence.key = profileID.uuidString
+        }
+        let token = channel.onPresenceChange { action in
+            let joins = Set(action.joins.keys.compactMap(UUID.init(uuidString:)))
+            let leaves = Set(action.leaves.keys.compactMap(UUID.init(uuidString:)))
+            onChange(joins, leaves)
+        }
+        try await channel.subscribeWithError()
+        try await channel.track(RemotePresence(profileID: profileID))
+        return LivePresenceSubscription(channel: channel, token: token)
+    }
+
     private static func makeInviteCode() -> String {
         String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8)).uppercased()
     }
@@ -231,6 +251,16 @@ enum CollaborationError: LocalizedError {
 }
 
 final class LiveQueueSubscription {
+    let channel: RealtimeChannelV2
+    let token: RealtimeSubscription
+
+    init(channel: RealtimeChannelV2, token: RealtimeSubscription) {
+        self.channel = channel
+        self.token = token
+    }
+}
+
+final class LivePresenceSubscription {
     let channel: RealtimeChannelV2
     let token: RealtimeSubscription
 
