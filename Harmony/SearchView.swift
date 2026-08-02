@@ -10,7 +10,7 @@ struct TrackArtwork: View {
             if let artworkURL = track.artworkURL {
                 AsyncImage(url: artworkURL) { phase in
                     if let image = phase.image {
-                        image.resizable().scaledToFill()
+                        image.resizable().scaledToFit()
                     } else {
                         fallback
                     }
@@ -21,7 +21,7 @@ struct TrackArtwork: View {
         }
         .frame(width: size, height: size)
         .background(Color.indigo.opacity(0.12))
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+        .clipShape(RoundedRectangle(cornerRadius: min(cornerRadius, 4)))
     }
 
     private var fallback: some View {
@@ -65,6 +65,19 @@ struct SearchView: View {
                                         .font(.caption2)
                                         .foregroundColor(track.availability(for: provider) == .unavailable ? .secondary : .indigo)
                                 }
+                            }
+                            if let spotifyURL = track.mappings.first(where: { $0.provider == .spotify })?.deepLinkURL {
+                                Link(destination: spotifyURL) {
+                                    HStack(spacing: 6) {
+                                        Image("SpotifyFullLogo")
+                                            .resizable()
+                                            .scaledToFit()
+                                            .frame(width: 70, height: 20)
+                                        Text("OPEN SPOTIFY")
+                                            .font(.caption2.weight(.semibold))
+                                    }
+                                }
+                                .accessibilityLabel("Open \(track.title) in Spotify")
                             }
                         }
                         Spacer()

@@ -21,7 +21,19 @@ enum ProviderAccountStatus: Equatable {
     }
 }
 enum ProviderAvailability: String, Hashable { case playable, openInProvider, unavailable; var label: String { self == .playable ? "Ready" : self == .openInProvider ? "Open" : "Unavailable" } }
-struct ProviderTrackMapping: Hashable { let provider: MusicProvider; let providerID: String; let availability: ProviderAvailability }
+struct ProviderTrackMapping: Hashable {
+    let provider: MusicProvider
+    let providerID: String
+    let availability: ProviderAvailability
+    let deepLinkURL: URL?
+
+    init(provider: MusicProvider, providerID: String, availability: ProviderAvailability, deepLinkURL: URL? = nil) {
+        self.provider = provider
+        self.providerID = providerID
+        self.availability = availability
+        self.deepLinkURL = deepLinkURL
+    }
+}
 struct HarmonyTrack: Identifiable, Hashable {
     let id: UUID
     let title: String
@@ -228,7 +240,12 @@ final class HarmonySessionStore: ObservableObject {
                     duration: TimeInterval(result.durationSeconds),
                     symbol: "music.note",
                     artworkURL: result.artworkURL,
-                    mappings: [ProviderTrackMapping(provider: .spotify, providerID: result.providerID, availability: .playable)]
+                    mappings: [ProviderTrackMapping(
+                        provider: .spotify,
+                        providerID: result.providerID,
+                        availability: .playable,
+                        deepLinkURL: result.deepLinkURL
+                    )]
                 )
             }
             catalogSearchMessage = results.isEmpty ? "No Spotify tracks found." : nil
@@ -569,7 +586,12 @@ final class HarmonySessionStore: ObservableObject {
         case "open_in_provider": availability = .openInProvider
         default: availability = .unavailable
         }
-        return ProviderTrackMapping(provider: provider, providerID: remote.providerID, availability: availability)
+        return ProviderTrackMapping(
+            provider: provider,
+            providerID: remote.providerID,
+            availability: availability,
+            deepLinkURL: remote.deepLink
+        )
     }
 
     private func playCurrentSpotifyTrackIfAvailable() async throws -> Bool {

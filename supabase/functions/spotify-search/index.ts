@@ -133,6 +133,7 @@ Deno.serve(async (request) => {
         durationSeconds: Math.round(track.duration_ms / 1000),
         artworkURL: track.album.images?.[0]?.url ?? null,
         providerID: track.uri,
+        deepLinkURL: track.external_urls?.spotify ?? null,
       })),
     });
   } catch (error) {
