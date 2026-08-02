@@ -157,6 +157,10 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var sessionExpiresAt: Date?
     @Published private(set) var recentSessions: [RemoteHarmonySession] = []
     @Published private(set) var isLoadingRecentSessions = false
+    @Published private(set) var listeningFeed: [RemoteListeningPresence] = []
+    @Published private(set) var isRefreshingListeningFeed = false
+    @Published private(set) var isPublishingListeningPresence = false
+    @Published private(set) var isEavesdropping = false
     private var remoteSessionID: UUID?
     private var liveQueueSubscription: LiveQueueSubscription?
     private var liveSessionSubscription: LiveSessionSubscription?
@@ -538,6 +542,45 @@ final class HarmonySessionStore: ObservableObject {
             recentSessions = try await collaborationRepository.recentSessions()
         } catch {
             // Recents are supplementary; session creation/joining remains usable offline.
+        }
+    }
+
+    func refreshListeningFeed() async {
+        guard !isRefreshingListeningFeed else { return }
+        isRefreshingListeningFeed = true
+        defer { isRefreshingListeningFeed = false }
+        do {
+            async let feed = collaborationRepository.listeningFeed()
+            async let currentUserID = collaborationRepository.currentUserID()
+            let (activity, userID) = try await (feed, currentUserID)
+            listeningFeed = activity
+            isEavesdropping = activity.contains(where: { $0.profileID == userID })
+        } catch {
+            collaborationMessage = "Could not refresh listening activity."
+        }
+    }
+
+    func toggleEavesdropping() async {
+        guard !isPublishingListeningPresence else { return }
+        isPublishingListeningPresence = true
+        defer { isPublishingListeningPresence = false }
+        do {
+            if isEavesdropping {
+                try await collaborationRepository.stopListeningPresence()
+                isEavesdropping = false
+                listeningFeed.removeAll { $0.profileID == currentMember.id }
+                collaborationMessage = "Stopped sharing listening activity"
+            } else {
+                guard let track = nowPlaying?.track else {
+                    collaborationMessage = "Start a Harmony queue track before sharing listening activity."
+                    return
+                }
+                try await collaborationRepository.publishListeningPresence(track: track)
+                collaborationMessage = "Sharing this track with approved followers for five minutes"
+                await refreshListeningFeed()
+            }
+        } catch {
+            collaborationMessage = "Could not update listening activity: \(error.localizedDescription)"
         }
     }
 
