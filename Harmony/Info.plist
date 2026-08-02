@@ -25,7 +25,7 @@
 	<array>
 		<string>spotify</string>
 	</array>
-	<key>kTCCServiceMediaLibrary</key>
-	<string>Access to music library required to share playback/queue</string>
+	<key>NSAppleMusicUsageDescription</key>
+	<string>Harmony uses Apple Music to search for songs and play your shared session queue.</string>
 </dict>
 </plist>
