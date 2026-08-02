@@ -95,7 +95,7 @@ conductor_id="$(jq -er '.user.id' "$smoke_tmp/conductor-auth.json")"
 collaborator_id="$(jq -er '.user.id' "$smoke_tmp/collaborator-auth.json")"
 invite_code="SMK$(printf '%05d' "$((RANDOM % 100000))")"
 
-stage="social follow and block enforcement"
+stage="social follow enforcement"
 rpc "$conductor_token" request_social_follow \
   "{\"p_profile_id\":\"$collaborator_id\"}" \
   "$smoke_tmp/follow-request.json"
@@ -106,13 +106,6 @@ rest_get "$conductor_token" \
   "social_follows?select=follower_id,followed_id,state&follower_id=eq.$conductor_id&followed_id=eq.$collaborator_id" \
   "$smoke_tmp/follows.json"
 jq -e 'length == 1 and .[0].state == "accepted"' "$smoke_tmp/follows.json" >/dev/null
-rpc "$collaborator_token" block_social_profile \
-  "{\"p_profile_id\":\"$conductor_id\"}" \
-  "$smoke_tmp/block.json"
-blocked_follow_status="$(rpc_status "$conductor_token" request_social_follow \
-  "{\"p_profile_id\":\"$collaborator_id\"}" \
-  "$smoke_tmp/blocked-follow.json")"
-[[ "$blocked_follow_status" == "400" || "$blocked_follow_status" == "403" ]]
 
 stage="session creation and join"
 rpc "$conductor_token" create_session \
@@ -142,6 +135,36 @@ rpc "$conductor_token" resolve_harmony_track \
   '{"p_provider":"apple_music","p_provider_id":"harmony-smoke-apple-track","p_title":"Changed display title","p_artist":"Changed display artist","p_album":null,"p_duration_ms":181000,"p_artwork_url":null,"p_is_explicit":false,"p_deep_link":null}' \
   "$smoke_tmp/canonical-track-repeat.json"
 [[ "$(jq -er '.' "$smoke_tmp/canonical-track-repeat.json")" == "$canonical_track_id" ]]
+
+stage="follower listening visibility"
+presence_expires_at="$(date -u -v+5M '+%Y-%m-%dT%H:%M:%SZ')"
+rpc "$collaborator_token" publish_listening_presence \
+  "{\"p_canonical_track_id\":\"$canonical_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-smoke-apple-track\",\"p_provider_deep_link\":null,\"p_status\":\"listening\",\"p_visibility\":\"followers\",\"p_started_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_expires_at\":\"$presence_expires_at\"}" \
+  "$smoke_tmp/presence.json"
+rest_get "$conductor_token" \
+  "listening_presence?select=profile_id,canonical_track_id,status&profile_id=eq.$collaborator_id" \
+  "$smoke_tmp/follower-presence.json"
+jq -e --arg profile "$collaborator_id" --arg track "$canonical_track_id" 'length == 1 and .[0].profile_id == $profile and .[0].canonical_track_id == $track and .[0].status == "listening"' "$smoke_tmp/follower-presence.json" >/dev/null
+rpc "$collaborator_token" record_listening_history \
+  "{\"p_canonical_track_id\":\"$canonical_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-smoke-apple-track\",\"p_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_source\":\"manual\",\"p_visibility\":\"followers\"}" \
+  "$smoke_tmp/history.json"
+rest_get "$conductor_token" \
+  "listening_history_entries?select=profile_id,canonical_track_id&profile_id=eq.$collaborator_id" \
+  "$smoke_tmp/follower-history.json"
+jq -e --arg profile "$collaborator_id" --arg track "$canonical_track_id" 'length == 1 and .[0].profile_id == $profile and .[0].canonical_track_id == $track' "$smoke_tmp/follower-history.json" >/dev/null
+
+stage="social block enforcement"
+rpc "$collaborator_token" block_social_profile \
+  "{\"p_profile_id\":\"$conductor_id\"}" \
+  "$smoke_tmp/block.json"
+rest_get "$conductor_token" \
+  "listening_presence?select=profile_id&profile_id=eq.$collaborator_id" \
+  "$smoke_tmp/blocked-presence.json"
+[[ "$(jq 'length' "$smoke_tmp/blocked-presence.json")" -eq 0 ]]
+blocked_follow_status="$(rpc_status "$conductor_token" request_social_follow \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/blocked-follow.json")"
+[[ "$blocked_follow_status" == "400" || "$blocked_follow_status" == "403" ]]
 
 stage="expired session rejection"
 expired_invite_code="EXP$(printf '%05d' "$((RANDOM % 100000))")"

@@ -52,6 +52,8 @@ supabase functions deploy spotify-token-exchange
 
 `profile_social_settings` is private by default. `request_social_follow(profile_id)` creates a follower request; the target accepts or rejects it with `respond_to_social_follow(requester_id, accept)`. `block_social_profile(profile_id)` removes both follow edges and prevents a new request. These operations are dedicated security-definer RPCs, not direct client writes. The visibility helpers used by later listening activity and review tables deny access across blocks and require an accepted follower for follower-visible data.
 
+`publish_listening_presence(...)` writes a single user-owned, short-lived eavesdrop card. It must expire within ten minutes and is hidden by RLS unless its owner allows the viewer. `stop_listening_presence()` removes it. `record_listening_history(...)` is the user-owned history path; it never imports a provider’s data without an explicit client action.
+
 `resolve_harmony_track(provider, provider_id, title, artist, ...)` resolves a provider catalog item to a canonical Harmony track before queue insertion. It is idempotent by provider and provider ID, so provider-specific search clients can contribute tracks even before a cross-provider matcher has added mappings for the other services.
 
 ## Queue RPC contract
