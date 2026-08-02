@@ -71,7 +71,7 @@ Payloads:
 
 The RPC returns `{ status: "applied", revision }` or `{ status: "conflict", revision }`. Retrying an applied command with the same command ID is safe. The server verifies membership and role, locks the session, updates the materialized state, increments its revision, and inserts its immutable event in one transaction.
 
-`skip_queue_item(session_id, command_id, expected_revision)` is the Conductor-only companion command. It atomically removes the canonical queue head, advances the revision, records a `skip` event, and leaves provider playback as a device-side effect.
+`skip_queue_item(session_id, command_id, expected_revision)` is the Conductor-only companion command. It atomically removes the canonical queue head, advances the revision, records a `skip` event, and leaves provider playback as a device-side effect. Both it and playback commands are rejected for `queue_only` sessions.
 
 ## Live smoke test
 
@@ -81,7 +81,7 @@ Run the disposable-user smoke test against the configured project with:
 ./supabase/tests/live_smoke.sh
 ```
 
-It exercises anonymous authentication, session creation/joining, member-role reads, Conductor-only invite-permission updates, collaborator add/remove ownership, Conductor-only reorder/playback/lifecycle enforcement, revision conflicts, command idempotency, session ending, and account cleanup. It reads the public project URL/key from the app plist and never prints access tokens.
+It exercises anonymous authentication, session creation/joining, member-role reads, Conductor-only invite-permission updates, collaborator add/remove ownership, queue-only playback rejection, Conductor-only reorder/playback/lifecycle enforcement, revision conflicts, command idempotency, session ending, and account cleanup. It reads the public project URL/key from the app plist and never prints access tokens.
 
 ## Important notes
 

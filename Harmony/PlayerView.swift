@@ -90,20 +90,27 @@ struct SessionView: View {
                                 Text(item.track.artist).foregroundColor(.secondary)
                             }
                             Spacer()
-                            Button {
-                                Task { await store.skipToNext() }
-                            } label: {
-                                Image(systemName: "forward.end.fill")
-                                    .frame(width: 34, height: 34)
+                            if store.selectedPlaybackMode == .queueOnly {
+                                Label("Queue only", systemImage: "text.line.first.and.arrowtriangle.forward")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            } else {
+                                Button {
+                                    Task { await store.skipToNext() }
+                                } label: {
+                                    Image(systemName: "forward.end.fill")
+                                        .frame(width: 34, height: 34)
+                                }
+                                .disabled(!store.canControlPlayback || store.queue.count < 2)
+                                .accessibilityLabel("Skip to next track")
+                                Button {
+                                    Task { await store.togglePlayback() }
+                                } label: {
+                                    Image(systemName: store.playbackState == .playing ? "pause.fill" : "play.fill").frame(width: 34, height: 34).background(Color.indigo).foregroundColor(.white).clipShape(Circle())
+                                }
+                                .disabled(!store.canControlPlayback)
+                                .accessibilityLabel(store.playbackState == .playing ? "Pause" : "Play")
                             }
-                            .disabled(store.currentMember.role != .conductor || store.queue.count < 2)
-                            .accessibilityLabel("Skip to next track")
-                            Button {
-                                Task { await store.togglePlayback() }
-                            } label: {
-                                Image(systemName: store.playbackState == .playing ? "pause.fill" : "play.fill").frame(width: 34, height: 34).background(Color.indigo).foregroundColor(.white).clipShape(Circle())
-                            }
-                            .accessibilityLabel(store.playbackState == .playing ? "Pause" : "Play")
                         }
                     }
                 }

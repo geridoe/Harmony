@@ -179,6 +179,7 @@ final class HarmonySessionStore: ObservableObject {
     var nowPlaying: QueueItem? { queue.first }
     var isLiveSession: Bool { remoteSessionID != nil }
     var canShareInvite: Bool { isLiveSession && (currentMember.role == .conductor || allowsCollaboratorInvites) }
+    var canControlPlayback: Bool { selectedPlaybackMode != .queueOnly && currentMember.role == .conductor }
     func providerState(for provider: MusicProvider) -> ProviderAccountStatus { providerStates[provider] ?? .notConnected }
     func canRemove(_ item: QueueItem) -> Bool { currentMember.role == .conductor || item.addedBy.id == currentMember.id }
     func contains(_ track: HarmonyTrack) -> Bool { queue.contains { Self.representsSameRecording($0.track, track) } }
@@ -394,7 +395,7 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     func togglePlayback() async {
-        guard currentMember.role == .conductor else { return }
+        guard canControlPlayback else { return }
         playbackState = playbackState == .playing ? .paused : .playing
         record(playbackState == .playing ? .play : .pause)
         if spotifyPlaybackConnection.isConnected {
@@ -417,7 +418,7 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     func skipToNext() async {
-        guard currentMember.role == .conductor, queue.count > 1 else { return }
+        guard canControlPlayback, queue.count > 1 else { return }
         let expectedRevision = queueRevision
         queue.removeFirst()
         playbackState = .playing

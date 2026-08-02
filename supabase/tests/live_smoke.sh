@@ -195,6 +195,12 @@ collaborator_play_status="$(rpc_status "$collaborator_token" apply_queue_command
   "$smoke_tmp/collaborator-play.json")"
 [[ "$collaborator_play_status" == "400" || "$collaborator_play_status" == "403" ]]
 
+stage="queue-only playback rejection"
+conductor_play_status="$(rpc_status "$conductor_token" apply_queue_command \
+  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":4,\"p_type\":\"play\",\"p_payload\":{\"status\":\"playing\"}}" \
+  "$smoke_tmp/conductor-play.json")"
+[[ "$conductor_play_status" == "400" || "$conductor_play_status" == "403" ]]
+
 stage="collaborator end rejection"
 collaborator_end_status="$(curl --silent --show-error \
   -X POST "$supabase_url/rest/v1/rpc/end_harmony_session" \
