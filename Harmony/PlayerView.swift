@@ -22,6 +22,15 @@ struct SessionView: View {
                             Text(store.inviteCode).font(.caption.monospaced().bold()).padding(8).background(Color.indigo.opacity(0.12)).cornerRadius(8)
                         }
                         if store.isLiveSession {
+                            ShareLink(
+                                item: "Join my Harmony session \(store.sessionName) with invite code \(store.inviteCode).",
+                                subject: Text("Join my Harmony session"),
+                                message: Text("Add and arrange music in our shared queue.")
+                            ) {
+                                Label("Share invite", systemImage: "square.and.arrow.up")
+                            }
+                        }
+                        if store.isLiveSession {
                             Label("Live session active", systemImage: "dot.radiowaves.left.and.right")
                                 .font(.caption.weight(.semibold))
                                 .foregroundColor(.green)

@@ -199,11 +199,13 @@ provider_connections(id, profile_id, provider, encrypted_refresh_token, expires_
 
 ### Milestone 1 — live collaboration
 
-- [ ] Supabase project and schema
+- [x] Supabase project and schema
 - [ ] Sign in with Apple
-- [ ] Create/join/share session
-- [ ] Realtime queue and presence
-- [ ] Conflict/revision recovery
+- [x] Anonymous sign-in for personal-project development
+- [x] Create/join/share session
+- [x] Realtime queue updates
+- [x] Conflict/revision recovery
+- [ ] Presence / participant list backed by Supabase Realtime
 
 ### Milestone 2 — real services
 
