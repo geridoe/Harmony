@@ -21,6 +21,41 @@ private struct CreateSessionParameters: Encodable {
     let p_allow_collaborator_invites = true
 }
 
+private struct QueueCommandParameters<Payload: Encodable>: Encodable {
+    let p_session_id: UUID
+    let p_command_id: UUID
+    let p_expected_revision: Int
+    let p_type: String
+    let p_payload: Payload
+}
+
+private struct AddPayload: Encodable { let canonical_track_id: UUID }
+private struct RemoteTrackID: Decodable { let id: UUID }
+private struct QueueCommandResult: Decodable { let status: String; let revision: Int }
+
+struct RemoteQueueSnapshot: Decodable {
+    let id: UUID
+    let position: Double
+    let canonicalTrack: RemoteCatalogTrack
+
+    enum CodingKeys: String, CodingKey {
+        case id, position
+        case canonicalTrack = "canonical_tracks"
+    }
+}
+
+struct RemoteCatalogTrack: Decodable {
+    let title: String
+    let artist: String
+    let album: String?
+    let durationMilliseconds: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case title, artist, album
+        case durationMilliseconds = "duration_ms"
+    }
+}
+
 @MainActor
 final class HarmonyCollaborationRepository {
     private let client = HarmonySupabaseClient.shared
@@ -50,7 +85,46 @@ final class HarmonyCollaborationRepository {
         ).execute().value
     }
 
+    func add(track: HarmonyTrack, to sessionID: UUID, expectedRevision: Int) async throws -> Int {
+        let trackID: RemoteTrackID = try await client
+            .from("canonical_tracks")
+            .select("id")
+            .eq("title", value: track.title)
+            .eq("artist", value: track.artist)
+            .single()
+            .execute()
+            .value
+        let parameters = QueueCommandParameters(
+            p_session_id: sessionID,
+            p_command_id: UUID(),
+            p_expected_revision: expectedRevision,
+            p_type: "add",
+            p_payload: AddPayload(canonical_track_id: trackID.id)
+        )
+        let result: QueueCommandResult = try await client
+            .rpc("apply_queue_command", params: parameters)
+            .execute()
+            .value
+        guard result.status == "applied" else { throw CollaborationError.revisionConflict }
+        return result.revision
+    }
+
+    func queue(for sessionID: UUID) async throws -> [RemoteQueueSnapshot] {
+        try await client
+            .from("queue_items")
+            .select("id,position,canonical_tracks(title,artist,album,duration_ms)")
+            .eq("session_id", value: sessionID.uuidString)
+            .order("position", ascending: true)
+            .execute()
+            .value
+    }
+
     private static func makeInviteCode() -> String {
         String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8)).uppercased()
     }
+}
+
+enum CollaborationError: LocalizedError {
+    case revisionConflict
+    var errorDescription: String? { "The queue changed on another device. Refresh and try again." }
 }

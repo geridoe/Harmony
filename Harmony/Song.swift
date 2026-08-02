@@ -51,6 +51,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published var sessionName = "Friday Night Finds"
     @Published var inviteCode = "HARMONY-8Q4"
     @Published var collaborationMessage = "Local prototype"
+    private var remoteSessionID: UUID?
     private let collaborationRepository = HarmonyCollaborationRepository()
     let currentMember: SessionMember
     let members: [SessionMember]
@@ -67,6 +68,9 @@ final class HarmonySessionStore: ObservableObject {
         guard !queue.contains(where: { $0.track.title == track.title }) else { return }
         queue.append(QueueItem(track: track, addedBy: currentMember))
         record(.add)
+        guard let remoteSessionID else { return }
+        let expectedRevision = queueRevision - 1
+        Task { await applyRemoteAdd(track, sessionID: remoteSessionID, expectedRevision: expectedRevision) }
     }
 
     func remove(_ item: QueueItem) {
@@ -93,7 +97,9 @@ final class HarmonySessionStore: ObservableObject {
             sessionName = remoteSession.title
             inviteCode = remoteSession.inviteCode
             queueRevision = remoteSession.queueRevision
+            remoteSessionID = remoteSession.id
             collaborationMessage = "Live Supabase session"
+            await refreshRemoteQueue()
         } catch {
             collaborationMessage = "Connection failed: \(error.localizedDescription)"
         }
@@ -106,9 +112,35 @@ final class HarmonySessionStore: ObservableObject {
             sessionName = remoteSession.title
             self.inviteCode = remoteSession.inviteCode
             queueRevision = remoteSession.queueRevision
+            remoteSessionID = remoteSession.id
             collaborationMessage = "Joined live Supabase session"
+            await refreshRemoteQueue()
         } catch {
             collaborationMessage = "Join failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func applyRemoteAdd(_ track: HarmonyTrack, sessionID: UUID, expectedRevision: Int) async {
+        do {
+            queueRevision = try await collaborationRepository.add(track: track, to: sessionID, expectedRevision: expectedRevision)
+            collaborationMessage = "Live Supabase session"
+            await refreshRemoteQueue()
+        } catch {
+            collaborationMessage = "Queue sync failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func refreshRemoteQueue() async {
+        guard let remoteSessionID else { return }
+        do {
+            let snapshot = try await collaborationRepository.queue(for: remoteSessionID)
+            queue = snapshot.map { remote in
+                let track = catalog.first(where: { $0.title == remote.canonicalTrack.title && $0.artist == remote.canonicalTrack.artist })
+                    ?? HarmonyTrack(title: remote.canonicalTrack.title, artist: remote.canonicalTrack.artist, album: remote.canonicalTrack.album ?? "", duration: TimeInterval(remote.canonicalTrack.durationMilliseconds ?? 0) / 1000, symbol: "music.note", mappings: [])
+                return QueueItem(track: track, addedBy: currentMember)
+            }
+        } catch {
+            collaborationMessage = "Could not refresh queue: \(error.localizedDescription)"
         }
     }
 
