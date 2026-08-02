@@ -56,6 +56,7 @@ final class AppleMusicProvider: AppleMusicProviding {
                 album: song.albumTitle ?? "",
                 duration: song.duration ?? 0,
                 symbol: "music.note",
+                artworkURL: song.artwork?.url(width: 300, height: 300),
                 mappings: [ProviderTrackMapping(provider: .appleMusic, providerID: song.id.rawValue, availability: .playable)]
             )
         }

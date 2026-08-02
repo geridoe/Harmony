@@ -23,7 +23,25 @@ enum ProviderAccountStatus: Equatable {
 enum ProviderAvailability: String, Hashable { case playable, openInProvider, unavailable; var label: String { self == .playable ? "Ready" : self == .openInProvider ? "Open" : "Unavailable" } }
 struct ProviderTrackMapping: Hashable { let provider: MusicProvider; let providerID: String; let availability: ProviderAvailability }
 struct HarmonyTrack: Identifiable, Hashable {
-    let id = UUID(); let title: String; let artist: String; let album: String; let duration: TimeInterval; let symbol: String; let mappings: [ProviderTrackMapping]
+    let id: UUID
+    let title: String
+    let artist: String
+    let album: String
+    let duration: TimeInterval
+    let symbol: String
+    let artworkURL: URL?
+    let mappings: [ProviderTrackMapping]
+
+    init(id: UUID = UUID(), title: String, artist: String, album: String, duration: TimeInterval, symbol: String, artworkURL: URL? = nil, mappings: [ProviderTrackMapping]) {
+        self.id = id
+        self.title = title
+        self.artist = artist
+        self.album = album
+        self.duration = duration
+        self.symbol = symbol
+        self.artworkURL = artworkURL
+        self.mappings = mappings
+    }
     func availability(for provider: MusicProvider) -> ProviderAvailability { mappings.first(where: { $0.provider == provider })?.availability ?? .unavailable }
     var durationText: String { String(format: "%d:%02d", Int(duration) / 60, Int(duration) % 60) }
 }
@@ -108,9 +126,10 @@ final class HarmonySessionStore: ObservableObject {
                 default: return nil
                 }
             })
-            providerStates = Dictionary(uniqueKeysWithValues: MusicProvider.allCases.map {
-                ($0, connected.contains($0) ? .connected : .notConnected)
-            })
+            providerStates[.spotify] = connected.contains(.spotify) ? .connected : .notConnected
+            // MusicKit is device-authorized rather than backed by a Harmony token row.
+            // Keep this gated until the explicit App ID has the MusicKit service enabled.
+            providerStates[.appleMusic] = .setupRequired
         } catch {
             collaborationMessage = "Could not load connection status: \(error.localizedDescription)"
         }
@@ -206,6 +225,7 @@ final class HarmonySessionStore: ObservableObject {
                     album: result.album,
                     duration: TimeInterval(result.durationSeconds),
                     symbol: "music.note",
+                    artworkURL: result.artworkURL,
                     mappings: [ProviderTrackMapping(provider: .spotify, providerID: result.providerID, availability: .playable)]
                 )
             }
@@ -349,6 +369,7 @@ final class HarmonySessionStore: ObservableObject {
                         album: remote.canonicalTrack.album ?? "",
                         duration: TimeInterval(remote.canonicalTrack.durationMilliseconds ?? 0) / 1000,
                         symbol: "music.note",
+                        artworkURL: remote.canonicalTrack.artworkURL,
                         mappings: (remote.canonicalTrack.providerTracks ?? []).compactMap(Self.providerMapping)
                     )
                 return QueueItem(id: remote.id, track: track, addedBy: members.first(where: { $0.id == remote.addedBy }) ?? currentMember)

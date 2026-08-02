@@ -1,5 +1,34 @@
 import SwiftUI
 
+struct TrackArtwork: View {
+    let track: HarmonyTrack
+    let size: CGFloat
+    var cornerRadius: CGFloat = 8
+
+    var body: some View {
+        Group {
+            if let artworkURL = track.artworkURL {
+                AsyncImage(url: artworkURL) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFill()
+                    } else {
+                        fallback
+                    }
+                }
+            } else {
+                fallback
+            }
+        }
+        .frame(width: size, height: size)
+        .background(Color.indigo.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+    }
+
+    private var fallback: some View {
+        Image(systemName: track.symbol).foregroundColor(.indigo)
+    }
+}
+
 struct SearchView: View {
     @EnvironmentObject private var store: HarmonySessionStore
     @State private var query = ""
@@ -24,11 +53,7 @@ struct SearchView: View {
                 }
                 ForEach(tracks) { track in
                     HStack {
-                        Image(systemName: track.symbol)
-                            .foregroundColor(.indigo)
-                            .frame(width: 36, height: 36)
-                            .background(Color.indigo.opacity(0.12))
-                            .cornerRadius(8)
+                        TrackArtwork(track: track, size: 36)
                         VStack(alignment: .leading) {
                             Text(track.title).font(.headline)
                             Text("\(track.artist) · \(track.album)")

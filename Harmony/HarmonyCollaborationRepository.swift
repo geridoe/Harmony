@@ -75,11 +75,13 @@ struct RemoteCatalogTrack: Decodable {
     let artist: String
     let album: String?
     let durationMilliseconds: Int?
+    let artworkURL: URL?
     let providerTracks: [RemoteProviderTrack]?
 
     enum CodingKeys: String, CodingKey {
         case title, artist, album
         case durationMilliseconds = "duration_ms"
+        case artworkURL = "artwork_url"
         case providerTracks = "provider_tracks"
     }
 }
@@ -268,7 +270,7 @@ final class HarmonyCollaborationRepository {
     func queue(for sessionID: UUID) async throws -> [RemoteQueueSnapshot] {
         try await client
             .from("queue_items")
-            .select("id,position,added_by,canonical_tracks(title,artist,album,duration_ms,provider_tracks(provider,provider_id,availability))")
+            .select("id,position,added_by,canonical_tracks(title,artist,album,duration_ms,artwork_url,provider_tracks(provider,provider_id,availability))")
             .eq("session_id", value: sessionID.uuidString)
             .order("position", ascending: true)
             .execute()

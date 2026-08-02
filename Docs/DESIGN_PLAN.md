@@ -158,8 +158,8 @@ provider_connections(id, profile_id, provider, encrypted_refresh_token, expires_
 ### Apple Music
 
 1. Enroll in Apple Developer Program and enable MusicKit for Harmony’s App ID.
-2. Add `NSAppleMusicUsageDescription`, MusicKit capability, and `MusicAuthorization` flow.
-3. Use MusicKit catalog search and local playback on a physical device.
+2. [Implemented] Add `NSAppleMusicUsageDescription` and the `MusicAuthorization` flow; enable the MusicKit App Service after enrollment.
+3. [Implemented, awaiting entitlement] Use MusicKit catalog search and local playback on a physical device.
 4. Resolve canonical tracks to catalog IDs per storefront.
 
 ### Spotify

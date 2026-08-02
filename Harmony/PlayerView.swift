@@ -49,7 +49,7 @@ struct SessionView: View {
                 Section("Now playing") {
                     if let item = store.nowPlaying {
                         HStack {
-                            Image(systemName: item.track.symbol).font(.title2).foregroundColor(.indigo).frame(width: 44, height: 44).background(Color.indigo.opacity(0.12)).cornerRadius(10)
+                            TrackArtwork(track: item.track, size: 44, cornerRadius: 10)
                             VStack(alignment: .leading) {
                                 Text(item.track.title).font(.headline)
                                 Text(item.track.artist).foregroundColor(.secondary)
@@ -67,7 +67,7 @@ struct SessionView: View {
                 Section(header: HStack { Text("Shared queue"); Spacer(); Text("rev \(store.queueRevision)").font(.caption).foregroundColor(.secondary) }) {
                     ForEach(store.queue) { item in
                         HStack {
-                            Image(systemName: item.track.symbol).foregroundColor(.indigo).frame(width: 30)
+                            TrackArtwork(track: item.track, size: 30, cornerRadius: 6)
                             VStack(alignment: .leading) {
                                 Text(item.track.title).font(.body.weight(.semibold))
                                 Text("\(item.track.artist) · added by \(item.addedBy.name)").font(.caption).foregroundColor(.secondary)
