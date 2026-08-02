@@ -55,7 +55,17 @@ struct SearchView: View {
                     HStack {
                         TrackArtwork(track: track, size: 36)
                         VStack(alignment: .leading) {
-                            Text(track.title).font(.headline)
+                            HStack(spacing: 5) {
+                                Text(track.title).font(.headline)
+                                if track.isExplicit {
+                                    Text("E")
+                                        .font(.caption2.bold())
+                                        .foregroundColor(.secondary)
+                                        .padding(.horizontal, 4)
+                                        .overlay(RoundedRectangle(cornerRadius: 2).stroke(Color.secondary))
+                                        .accessibilityLabel("Explicit")
+                                }
+                            }
                             Text("\(track.artist) · \(track.album)")
                                 .font(.caption)
                                 .foregroundColor(.secondary)

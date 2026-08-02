@@ -42,9 +42,10 @@ struct HarmonyTrack: Identifiable, Hashable {
     let duration: TimeInterval
     let symbol: String
     let artworkURL: URL?
+    let isExplicit: Bool
     let mappings: [ProviderTrackMapping]
 
-    init(id: UUID = UUID(), title: String, artist: String, album: String, duration: TimeInterval, symbol: String, artworkURL: URL? = nil, mappings: [ProviderTrackMapping]) {
+    init(id: UUID = UUID(), title: String, artist: String, album: String, duration: TimeInterval, symbol: String, artworkURL: URL? = nil, isExplicit: Bool = false, mappings: [ProviderTrackMapping]) {
         self.id = id
         self.title = title
         self.artist = artist
@@ -52,6 +53,7 @@ struct HarmonyTrack: Identifiable, Hashable {
         self.duration = duration
         self.symbol = symbol
         self.artworkURL = artworkURL
+        self.isExplicit = isExplicit
         self.mappings = mappings
     }
     func availability(for provider: MusicProvider) -> ProviderAvailability { mappings.first(where: { $0.provider == provider })?.availability ?? .unavailable }
@@ -266,6 +268,7 @@ final class HarmonySessionStore: ObservableObject {
                     duration: TimeInterval(result.durationSeconds),
                     symbol: "music.note",
                     artworkURL: result.artworkURL,
+                    isExplicit: result.isExplicit,
                     mappings: [ProviderTrackMapping(
                         provider: .spotify,
                         providerID: result.providerID,
@@ -497,7 +500,8 @@ final class HarmonySessionStore: ObservableObject {
                         album: remote.canonicalTrack.album ?? "",
                         duration: TimeInterval(remote.canonicalTrack.durationMilliseconds ?? 0) / 1000,
                         symbol: "music.note",
-                        artworkURL: remote.canonicalTrack.artworkURL,
+                artworkURL: remote.canonicalTrack.artworkURL,
+                isExplicit: remote.canonicalTrack.isExplicit,
                         mappings: (remote.canonicalTrack.providerTracks ?? []).compactMap(Self.providerMapping)
                     )
                 return QueueItem(id: remote.id, track: track, addedBy: members.first(where: { $0.id == remote.addedBy }) ?? currentMember)

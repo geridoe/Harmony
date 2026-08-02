@@ -5,6 +5,7 @@ type SpotifyTrack = {
   name: string;
   uri: string;
   duration_ms: number;
+  explicit: boolean;
   artists: Array<{ name: string }>;
   album: { name: string; images?: Array<{ url: string }> };
   external_ids?: { isrc?: string };
@@ -102,19 +103,52 @@ Deno.serve(async (request) => {
         .eq("provider_id", track.uri)
         .eq("storefront", "global")
         .maybeSingle();
-      if (existing) continue;
+      if (existing) {
+        if (track.explicit) {
+          const { error: explicitError } = await admin
+            .from("canonical_tracks")
+            .update({ is_explicit: true })
+            .eq("id", existing.canonical_track_id);
+          if (explicitError) throw explicitError;
+        }
+        continue;
+      }
 
-      const { data: canonical, error: canonicalError } = await admin.from("canonical_tracks").insert({
-        title: track.name,
-        artist: track.artists.map((artist) => artist.name).join(", "),
-        album: track.album.name,
-        duration_ms: track.duration_ms,
-        isrc: track.external_ids?.isrc?.toUpperCase() ?? null,
-        artwork_url: track.album.images?.[0]?.url ?? null,
-      }).select("id").single();
-      if (canonicalError) throw canonicalError;
+      const isrc = track.external_ids?.isrc?.toUpperCase() ?? null;
+      let canonicalID: string | null = null;
+      if (isrc) {
+        const { data: candidates, error: candidateError } = await admin
+          .from("canonical_tracks")
+          .select("id,provider_tracks!left(id)")
+          .eq("isrc", isrc)
+          .eq("provider_tracks.provider", "spotify")
+          .eq("provider_tracks.storefront", "global")
+          .limit(10);
+        if (candidateError) throw candidateError;
+        canonicalID = candidates?.find((candidate) => (candidate.provider_tracks?.length ?? 0) === 0)?.id ?? null;
+        if (canonicalID && track.explicit) {
+          const { error: explicitError } = await admin
+            .from("canonical_tracks")
+            .update({ is_explicit: true })
+            .eq("id", canonicalID);
+          if (explicitError) throw explicitError;
+        }
+      }
+      if (!canonicalID) {
+        const { data: canonical, error: canonicalError } = await admin.from("canonical_tracks").insert({
+          title: track.name,
+          artist: track.artists.map((artist) => artist.name).join(", "),
+          album: track.album.name,
+          duration_ms: track.duration_ms,
+          isrc,
+          artwork_url: track.album.images?.[0]?.url ?? null,
+          is_explicit: track.explicit,
+        }).select("id").single();
+        if (canonicalError) throw canonicalError;
+        canonicalID = canonical.id;
+      }
       const { error: mappingError } = await admin.from("provider_tracks").insert({
-        canonical_track_id: canonical.id,
+        canonical_track_id: canonicalID,
         provider: "spotify",
         provider_id: track.uri,
         storefront: "global",
@@ -134,6 +168,7 @@ Deno.serve(async (request) => {
         artworkURL: track.album.images?.[0]?.url ?? null,
         providerID: track.uri,
         deepLinkURL: track.external_urls?.spotify ?? null,
+        isExplicit: track.explicit,
       })),
     });
   } catch (error) {
