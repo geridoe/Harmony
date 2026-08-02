@@ -230,8 +230,13 @@ final class HarmonySessionStore: ObservableObject {
             }
             try await spotifyRemote.authorizeAndConnect()
             spotifyPlaybackConnection = spotifyRemote.connectionState
-            if try await playCurrentSpotifyTrackIfAvailable() {
-                collaborationMessage = "Playing the Harmony queue on Spotify"
+            if selectedPlaybackMode == .personalListenAlong && playbackState == .paused {
+                _ = try await spotifyRemote.perform(.pause)
+                collaborationMessage = "Spotify is ready to listen along"
+            } else if try await playCurrentSpotifyTrackIfAvailable() {
+                collaborationMessage = selectedPlaybackMode == .personalListenAlong
+                    ? "Listening along with the Harmony queue on Spotify"
+                    : "Playing the Harmony queue on Spotify"
             } else {
                 collaborationMessage = "Spotify playback ready"
             }
