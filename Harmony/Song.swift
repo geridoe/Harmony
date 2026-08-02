@@ -65,6 +65,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var isConnectingSpotify = false
     @Published private(set) var isConnectingSpotifyPlayback = false
     @Published private(set) var spotifyPlaybackConnection: ProviderConnectionState = .disconnected
+    @Published private(set) var spotifyPlaybackErrorMessage: String?
     @Published private(set) var activeMemberIDs: Set<UUID> = []
     private var remoteSessionID: UUID?
     private var liveQueueSubscription: LiveQueueSubscription?
@@ -120,18 +121,35 @@ final class HarmonySessionStore: ObservableObject {
 
     func enableSpotifyPlayback() async {
         guard providerState(for: .spotify) == .connected, !isConnectingSpotifyPlayback else { return }
+        spotifyPlaybackErrorMessage = nil
         isConnectingSpotifyPlayback = true
         spotifyPlaybackConnection = .authorizing
         defer { isConnectingSpotifyPlayback = false }
         do {
             let credential = try await collaborationRepository.spotifyAccessCredential()
-            try await spotifyRemote.connect(accessToken: credential.accessToken)
+            guard credential.scopes.contains("app-remote-control") else {
+                throw SpotifyAppRemoteError.missingAppRemoteScope
+            }
+            try await spotifyRemote.authorizeAndConnect()
             spotifyPlaybackConnection = spotifyRemote.connectionState
             collaborationMessage = "Spotify playback ready"
         } catch {
-            spotifyPlaybackConnection = .unavailable(reason: error.localizedDescription)
-            collaborationMessage = "Spotify playback connection failed: \(error.localizedDescription)"
+            let nsError = error as NSError
+            let details = nsError.userInfo.isEmpty ? "" : " \(nsError.userInfo)"
+            let message = error.localizedDescription
+            spotifyPlaybackConnection = .unavailable(reason: message)
+            spotifyPlaybackErrorMessage = message
+            collaborationMessage = "Spotify playback connection failed: \(message)"
+            print("Harmony Spotify playback connection failed: \(message) [\(nsError.domain) \(nsError.code)]\(details)")
         }
+    }
+
+    func dismissSpotifyPlaybackError() {
+        spotifyPlaybackErrorMessage = nil
+    }
+
+    func handleSpotifyOpenURL(_ url: URL) {
+        _ = spotifyRemote.handleAuthorizationCallback(url)
     }
 
     func applyPresence(joins: Set<UUID>, leaves: Set<UUID>) {

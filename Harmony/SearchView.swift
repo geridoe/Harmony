@@ -34,8 +34,15 @@ struct ConnectionsView: View {
                                     .buttonStyle(.borderedProminent)
                                     .disabled(store.isConnectingSpotify)
                                 } else if !store.spotifyPlaybackConnection.isConnected {
-                                    Button(store.isConnectingSpotifyPlayback ? "Enabling…" : "Enable playback") {
+                                    Button {
                                         Task { await store.enableSpotifyPlayback() }
+                                    } label: {
+                                        if store.isConnectingSpotifyPlayback {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                        } else {
+                                            Text("Enable playback")
+                                        }
                                     }
                                     .buttonStyle(.bordered)
                                     .disabled(store.isConnectingSpotifyPlayback)
@@ -58,6 +65,17 @@ struct ConnectionsView: View {
             .navigationTitle("Connections")
             .task { await store.refreshProviderConnections() }
             .refreshable { await store.refreshProviderConnections() }
+            .alert(
+                "Spotify playback unavailable",
+                isPresented: Binding(
+                    get: { store.spotifyPlaybackErrorMessage != nil },
+                    set: { if !$0 { store.dismissSpotifyPlaybackError() } }
+                )
+            ) {
+                Button("OK", role: .cancel) { store.dismissSpotifyPlaybackError() }
+            } message: {
+                Text(store.spotifyPlaybackErrorMessage ?? "Unknown Spotify connection error")
+            }
         }
     }
 
@@ -65,9 +83,20 @@ struct ConnectionsView: View {
         switch state {
         case .connected:
             if provider == .spotify {
-                return store.spotifyPlaybackConnection.isConnected
-                    ? "Account connected · device playback ready"
-                    : "Account connected · enable device playback"
+                switch store.spotifyPlaybackConnection {
+                case .connected:
+                    return "Account connected · device playback ready"
+                case .authorizing:
+                    return "Connecting to the Spotify app…"
+                case let .unavailable(reason):
+                    return reason
+                case .requiresSubscription:
+                    return "Spotify Premium is required for playback"
+                case .requiresProviderApp:
+                    return "Install and open Spotify to enable playback"
+                case .disconnected:
+                    return "Account connected · enable device playback"
+                }
             }
             return "Connected to your Harmony account"
         case .notConnected: return "Not connected"

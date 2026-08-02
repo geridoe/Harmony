@@ -340,7 +340,7 @@ final class SpotifyAppRemoteProvider: NSObject, HarmonyMusicProvider, @preconcur
     )
 
     private lazy var appRemote: SPTAppRemote = {
-        let remote = SPTAppRemote(configuration: configuration, logLevel: .error)
+        let remote = SPTAppRemote(configuration: configuration, logLevel: .debug)
         remote.delegate = self
         return remote
     }()
@@ -362,6 +362,42 @@ final class SpotifyAppRemoteProvider: NSObject, HarmonyMusicProvider, @preconcur
                 self?.finishConnection(with: .failure(SpotifyAppRemoteError.connectionFailed))
             }
         }
+    }
+
+    func authorizeAndConnect() async throws {
+        if appRemote.isConnected {
+            connectionState = .connected(accountName: nil)
+            return
+        }
+        guard connectionContinuation == nil else { return }
+        connectionState = .authorizing
+        try await withCheckedThrowingContinuation { continuation in
+            connectionContinuation = continuation
+            appRemote.authorizeAndPlayURI("") { [weak self] spotifyInstalled in
+                guard spotifyInstalled else {
+                    self?.finishConnection(with: .failure(SpotifyAppRemoteError.spotifyNotInstalled))
+                    return
+                }
+            }
+            connectionTimeoutTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                guard !Task.isCancelled else { return }
+                self?.finishConnection(with: .failure(SpotifyAppRemoteError.authorizationTimedOut))
+            }
+        }
+    }
+
+    @discardableResult
+    func handleAuthorizationCallback(_ url: URL) -> Bool {
+        guard let parameters = appRemote.authorizationParameters(from: url) else { return false }
+        if let accessToken = parameters[SPTAppRemoteAccessTokenKey], !accessToken.isEmpty {
+            appRemote.connectionParameters.accessToken = accessToken
+            appRemote.connect()
+        } else {
+            let reason = parameters[SPTAppRemoteErrorDescriptionKey] ?? "Spotify did not return an App Remote access token."
+            finishConnection(with: .failure(SpotifyAppRemoteError.authorizationFailed(reason)))
+        }
+        return true
     }
 
     func disconnect() {
@@ -444,7 +480,25 @@ final class SpotifyAppRemoteProvider: NSObject, HarmonyMusicProvider, @preconcur
 
 enum SpotifyAppRemoteError: LocalizedError {
     case connectionFailed
-    var errorDescription: String? { "Could not connect to the Spotify app. Open Spotify and try again." }
+    case missingAppRemoteScope
+    case spotifyNotInstalled
+    case authorizationTimedOut
+    case authorizationFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .connectionFailed:
+            return "Could not connect to the Spotify app. Open Spotify and try again."
+        case .missingAppRemoteScope:
+            return "Reconnect your Spotify account so Harmony can request playback-control permission."
+        case .spotifyNotInstalled:
+            return "Install the Spotify app to enable playback."
+        case .authorizationTimedOut:
+            return "Spotify did not return to Harmony. Open Spotify, confirm playback, and try again."
+        case let .authorizationFailed(reason):
+            return reason
+        }
+    }
 }
 
 /// One injection point for feature code. It makes the local prototype and
