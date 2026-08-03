@@ -35,6 +35,8 @@ The iOS app will need only the Supabase project URL and publishable/anon key, su
 
 `functions/spotify-history-import` is an explicit, user-triggered import of up to 20 recently played Spotify tracks. It requires the `user-read-recently-played` scope, deduplicates exact plays, resolves canonical tracks, and writes history using the user's current history visibility. Existing Spotify connections must reauthorize once to grant the added scope.
 
+`functions/spotify-now-listening` is an explicit foreground snapshot of the connected user's current Spotify track. It resolves the canonical track and publishes a five-minute activity record using the user's current live-listening visibility; it does not poll in the background or expose playback position.
+
 `functions/delete-account` validates the current user, removes their session and provider data through a service-role-only database function, then deletes their Supabase Auth user. The iOS client cannot invoke the cleanup RPC directly.
 
 Before deployment, create a Spotify developer app and register the exact iOS redirect URI. Set `SPOTIFY_CLIENT_ID`, optionally `SPOTIFY_CLIENT_SECRET`, and a random 32-byte base64 `SPOTIFY_TOKEN_ENCRYPTION_KEY` as Supabase Function Secrets. The checked-in `functions/.env.example` is intentionally blank.

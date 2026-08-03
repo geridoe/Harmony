@@ -93,6 +93,14 @@ struct SocialView: View {
                         }
                     }
                     .disabled(store.isPublishingListeningPresence)
+                    if !store.isEavesdropping && store.providerState(for: .spotify) == .connected {
+                        Button {
+                            Task { await store.shareSpotifyNowListening() }
+                        } label: {
+                            Label("Share Spotify now playing", systemImage: "dot.radiowaves.left.and.right")
+                        }
+                        .disabled(store.isPublishingListeningPresence)
+                    }
                 }
 
                 Section("Listening now") {

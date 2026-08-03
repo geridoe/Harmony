@@ -842,6 +842,28 @@ final class HarmonySessionStore: ObservableObject {
         }
     }
 
+    func shareSpotifyNowListening() async {
+        guard providerState(for: .spotify) == .connected, !isPublishingListeningPresence else { return }
+        isPublishingListeningPresence = true
+        defer { isPublishingListeningPresence = false }
+        do {
+            let response = try await collaborationRepository.publishSpotifyNowListening()
+            guard response.published else {
+                collaborationMessage = response.reason == "unsupported_content"
+                    ? "Spotify is playing content Harmony cannot share yet."
+                    : "Start playing a song in Spotify, then try again."
+                return
+            }
+            let trackDescription = [response.title, response.artist].compactMap { $0 }.joined(separator: " — ")
+            collaborationMessage = liveSocialVisibility == .followers
+                ? "Sharing (trackDescription) with approved followers for five minutes"
+                : "Saved (trackDescription) as a private now-listening entry"
+            await refreshListeningFeed()
+        } catch {
+            collaborationMessage = "Could not share Spotify activity: \(error.localizedDescription)"
+        }
+    }
+
     func refreshMusicReviews() async {
         guard !isRefreshingMusicReviews else { return }
         isRefreshingMusicReviews = true

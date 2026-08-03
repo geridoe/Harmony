@@ -90,10 +90,10 @@ review’s public identity.
    deep link, and an explicit Stop sharing control.
 3. **Diary** — user-owned listening history, track/album rating/review,
    comments, reactions, edit/delete, and RLS tests.
-4. **Provider import** — Spotify recent-history import is implemented as an
-   explicit foreground action with exact-play deduplication. Spotify current
-   playback publishing and MusicKit recent content follow after their provider
-   authorization paths are available.
+4. **Provider import** — Spotify recent-history import and current-playback
+   publishing are implemented as explicit foreground actions, with exact-play
+   deduplication for history. MusicKit recent content follows after its provider
+   authorization path is available.
 
 ## Out of scope for this expansion
 

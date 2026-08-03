@@ -129,6 +129,9 @@ stage="Spotify history import authentication boundary"
 spotify_history_status="$(function_status "$conductor_token" spotify-history-import '{}' "$smoke_tmp/spotify-history.json")"
 [[ "$spotify_history_status" == "404" ]]
 jq -e '.error == "spotify_not_connected"' "$smoke_tmp/spotify-history.json" >/dev/null
+spotify_presence_status="$(function_status "$conductor_token" spotify-now-listening '{}' "$smoke_tmp/spotify-presence.json")"
+[[ "$spotify_presence_status" == "404" ]]
+jq -e '.error == "spotify_not_connected"' "$smoke_tmp/spotify-presence.json" >/dev/null
 
 stage="private profile defaults and account settings"
 rest_get "$conductor_token" \

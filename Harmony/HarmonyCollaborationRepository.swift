@@ -333,6 +333,13 @@ private struct EdgeFunctionErrorResponse: Decodable {
     let upstreamStatus: Int?
 }
 struct SpotifyHistoryImportResponse: Decodable { let imported: Int; let skipped: Int }
+struct SpotifyNowListeningResponse: Decodable {
+    let published: Bool
+    let reason: String?
+    let title: String?
+    let artist: String?
+    let isPlaying: Bool?
+}
 enum SpotifyHistoryImportError: LocalizedError {
     case reconnectRequired
     case rateLimited
@@ -343,6 +350,19 @@ enum SpotifyHistoryImportError: LocalizedError {
         case .reconnectRequired: return "Reconnect Spotify to approve recent-listening access."
         case .rateLimited: return "Spotify is rate limiting history imports. Try again shortly."
         case .unavailable: return "Spotify listening history is temporarily unavailable."
+        }
+    }
+}
+enum SpotifyNowListeningError: LocalizedError {
+    case reconnectRequired
+    case rateLimited
+    case unavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .reconnectRequired: return "Reconnect Spotify to approve playback access."
+        case .rateLimited: return "Spotify is rate limiting playback checks. Try again shortly."
+        case .unavailable: return "Spotify playback activity is temporarily unavailable."
         }
     }
 }
@@ -637,6 +657,22 @@ final class HarmonyCollaborationRepository {
             default:
                 if response?.upstreamStatus == 429 { throw SpotifyHistoryImportError.rateLimited }
                 throw SpotifyHistoryImportError.unavailable
+            }
+        }
+    }
+
+    func publishSpotifyNowListening() async throws -> SpotifyNowListeningResponse {
+        try await authenticate()
+        do {
+            return try await client.functions.invoke("spotify-now-listening")
+        } catch let FunctionsError.httpError(_, data) {
+            let response = try? JSONDecoder().decode(EdgeFunctionErrorResponse.self, from: data)
+            switch response?.error {
+            case "spotify_playback_scope_missing", "spotify_not_connected", "spotify_refresh_failed":
+                throw SpotifyNowListeningError.reconnectRequired
+            default:
+                if response?.upstreamStatus == 429 { throw SpotifyNowListeningError.rateLimited }
+                throw SpotifyNowListeningError.unavailable
             }
         }
     }
