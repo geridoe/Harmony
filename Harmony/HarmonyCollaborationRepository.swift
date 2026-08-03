@@ -1,6 +1,20 @@
 import Foundation
 import Supabase
 
+private enum HarmonyRepositoryError: LocalizedError {
+    case invalidCanonicalAlbumAggregate
+    case canonicalAlbumUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidCanonicalAlbumAggregate:
+            "The album rating summary was unavailable."
+        case .canonicalAlbumUnavailable:
+            "Harmony could not load this canonical album."
+        }
+    }
+}
+
 struct RemoteHarmonySession: Decodable {
     let id: UUID
     let title: String
@@ -179,6 +193,41 @@ private struct TrackSubjectStatePageParameters: Encodable {
     let p_before_updated_at: Date?
     let p_before_canonical_track_id: UUID?
     let p_limit: Int
+}
+private struct SetAlbumSubjectStateParameters: Encodable {
+    let p_canonical_album_id: UUID
+    let p_has_listened: Bool
+    let p_default_rating: Double?
+    let p_is_loved: Bool
+    let p_want_to_listen: Bool
+}
+private struct AlbumSubjectStatePageParameters: Encodable {
+    let p_before_updated_at: Date?
+    let p_before_canonical_album_id: UUID?
+    let p_limit: Int
+    let p_scope: String
+}
+private struct CanonicalAlbumIDParameters: Encodable {
+    let p_canonical_album_id: UUID
+}
+private struct CanonicalAlbumReviewsPageParameters: Encodable {
+    let p_canonical_album_id: UUID
+    let p_before_created_at: Date?
+    let p_before_id: UUID?
+    let p_limit: Int
+}
+private struct ResolveCanonicalAlbumParameters: Encodable {
+    let p_provider: String
+    let p_provider_id: String
+    let p_title: String
+    let p_artist: String
+    let p_artwork_url: String?
+    let p_deep_link: String?
+    let p_upc: String? = nil
+    let p_release_date: String? = nil
+    let p_total_tracks: Int? = nil
+    let p_album_type: String? = nil
+    let p_storefront: String
 }
 private struct FollowingActivityPageParameters: Encodable {
     let p_before_published_at: Date?
@@ -615,6 +664,46 @@ struct RemoteTrackSubjectState: Decodable, Identifiable {
     }
 }
 
+struct RemoteAlbumSubjectState: Decodable, Identifiable {
+    let profileID: UUID
+    let canonicalAlbumID: UUID
+    let hasListened: Bool
+    let defaultRating: Double?
+    let isLoved: Bool
+    let wantToListen: Bool
+    let createdAt: Date
+    let updatedAt: Date
+    let canonicalAlbum: RemoteCanonicalAlbum?
+
+    var id: UUID { canonicalAlbumID }
+
+    enum CodingKeys: String, CodingKey {
+        case profileID = "profile_id"
+        case canonicalAlbumID = "canonical_album_id"
+        case hasListened = "has_listened"
+        case defaultRating = "default_rating"
+        case isLoved = "is_loved"
+        case wantToListen = "want_to_listen"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+        case canonicalAlbum = "canonical_albums"
+    }
+
+    func preservingCanonicalAlbum(_ fallback: RemoteCanonicalAlbum?) -> RemoteAlbumSubjectState {
+        RemoteAlbumSubjectState(
+            profileID: profileID,
+            canonicalAlbumID: canonicalAlbumID,
+            hasListened: hasListened,
+            defaultRating: defaultRating,
+            isLoved: isLoved,
+            wantToListen: wantToListen,
+            createdAt: createdAt,
+            updatedAt: updatedAt,
+            canonicalAlbum: canonicalAlbum ?? fallback
+        )
+    }
+}
+
 struct RemotePublicLovedTrack: Decodable, Identifiable {
     let profileID: UUID
     let canonicalTrackID: UUID
@@ -707,6 +796,35 @@ struct RemoteProviderAlbum: Decodable, Identifiable {
         case providerAlbumID = "provider_album_id"
         case deepLink = "deep_link"
         case identityBasis = "identity_basis"
+    }
+}
+
+struct RemoteCanonicalAlbumStateAggregate: Decodable, Equatable {
+    let canonicalAlbumID: UUID
+    let ratingCount: Int
+    let averageRating: Double?
+    let listenedCount: Int
+    let lovedCount: Int
+    let wantToListenCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case canonicalAlbumID = "canonical_album_id"
+        case ratingCount = "rating_count"
+        case averageRating = "average_rating"
+        case listenedCount = "listened_count"
+        case lovedCount = "loved_count"
+        case wantToListenCount = "want_to_listen_count"
+    }
+}
+
+struct RemoteCanonicalAlbumRatingBucket: Decodable, Equatable, Identifiable {
+    let rating: Double
+    let ratingCount: Int
+    var id: Double { rating }
+
+    enum CodingKeys: String, CodingKey {
+        case rating
+        case ratingCount = "rating_count"
     }
 }
 
@@ -906,6 +1024,7 @@ final class HarmonyCollaborationRepository {
     private static let musicListSelection = "id,owner_id,title,description,tags,is_ranked,visibility,entries_revision,created_at,updated_at,deleted_at,owner:profiles!music_lists_owner_id_fkey(display_name)"
     private static let musicListEntrySelection = "id,list_id,canonical_track_id,position,note,created_at,updated_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit,isrc,provider_tracks(provider,provider_id,storefront,availability,deep_link))"
     private static let musicListCommentSelection = "id,list_id,author_id,body,created_at,updated_at,deleted_at,author:profiles!music_list_comments_author_id_fkey(display_name)"
+    private static let albumSubjectStateSelection = "profile_id,canonical_album_id,has_listened,default_rating,is_loved,want_to_listen,created_at,updated_at,canonical_albums(id,title,artist,release_date,upc,album_type,total_tracks,artwork_url,provider_albums(provider,provider_album_id,storefront,deep_link,availability,identity_basis))"
     private static let legacyMusicReviewSelection = "id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,rating,body,visibility,contains_spoilers,is_loved,created_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name),review_comments(id,author_id,body,created_at,profiles(display_name)),review_reactions(profile_id,kind)"
     private static let musicReviewSelection = "id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,canonical_album_id,rating,body,visibility,contains_spoilers,is_loved,created_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),canonical_albums(id,title,artist,release_date,upc,album_type,total_tracks,artwork_url,provider_albums(provider,provider_album_id,storefront,deep_link,availability,identity_basis)),profiles(display_name),review_comments(id,author_id,body,created_at,profiles(display_name)),review_reactions(profile_id,kind)"
 
@@ -1182,6 +1301,130 @@ final class HarmonyCollaborationRepository {
         )
         .select("profile_id,canonical_track_id,has_listened,default_rating,is_loved,want_to_listen,created_at,updated_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit)")
         .execute().value
+    }
+
+    func albumSubjectState(canonicalAlbumID: UUID) async throws -> RemoteAlbumSubjectState? {
+        try await authenticate()
+        let states: [RemoteAlbumSubjectState] = try await client
+            .from("profile_album_subject_states")
+            .select(Self.albumSubjectStateSelection)
+            .eq("canonical_album_id", value: canonicalAlbumID.uuidString)
+            .limit(1)
+            .execute().value
+        return states.first
+    }
+
+    func resolveCanonicalAlbum(_ album: ReviewableAlbum) async throws -> RemoteCanonicalAlbum {
+        try await authenticate()
+        let canonicalID: UUID
+        if let existingID = album.canonicalAlbumID {
+            canonicalID = existingID
+        } else {
+            canonicalID = try await client.rpc(
+                "resolve_harmony_album_v2",
+                params: ResolveCanonicalAlbumParameters(
+                    p_provider: album.provider == .spotify ? "spotify" : "apple_music",
+                    p_provider_id: album.providerID,
+                    p_title: album.title,
+                    p_artist: album.artist,
+                    p_artwork_url: album.artworkURL?.absoluteString,
+                    p_deep_link: album.deepLinkURL?.absoluteString,
+                    p_storefront: album.storefront
+                )
+            ).execute().value
+        }
+        let albums: [RemoteCanonicalAlbum] = try await client
+            .from("canonical_albums")
+            .select("id,title,artist,release_date,upc,album_type,total_tracks,artwork_url,provider_albums(provider,provider_album_id,storefront,deep_link,availability,identity_basis)")
+            .eq("id", value: canonicalID.uuidString)
+            .limit(1)
+            .execute().value
+        guard let resolved = albums.first else {
+            throw HarmonyRepositoryError.canonicalAlbumUnavailable
+        }
+        return resolved
+    }
+
+    func albumSubjectStatePage(
+        beforeUpdatedAt: Date? = nil,
+        beforeCanonicalAlbumID: UUID? = nil,
+        limit: Int = 51,
+        scope: String = "all"
+    ) async throws -> [RemoteAlbumSubjectState] {
+        try await authenticate()
+        return try await client.rpc(
+            "list_my_album_subject_states",
+            params: AlbumSubjectStatePageParameters(
+                p_before_updated_at: beforeUpdatedAt,
+                p_before_canonical_album_id: beforeCanonicalAlbumID,
+                p_limit: limit,
+                p_scope: scope
+            )
+        )
+        .select(Self.albumSubjectStateSelection)
+        .execute().value
+    }
+
+    func updateAlbumSubjectState(
+        canonicalAlbumID: UUID,
+        draft: AlbumSubjectStateDraft
+    ) async throws -> RemoteAlbumSubjectState {
+        try await authenticate()
+        let draft = draft.normalizedForSubmission
+        return try await client.rpc(
+            "set_my_album_subject_state",
+            params: SetAlbumSubjectStateParameters(
+                p_canonical_album_id: canonicalAlbumID,
+                p_has_listened: draft.hasListened,
+                p_default_rating: draft.defaultRating,
+                p_is_loved: draft.isLoved,
+                p_want_to_listen: draft.wantToListen
+            )
+        ).execute().value
+    }
+
+    func canonicalAlbumReviews(
+        canonicalAlbumID: UUID,
+        beforeCreatedAt: Date? = nil,
+        beforeID: UUID? = nil,
+        limit: Int = 51
+    ) async throws -> [RemoteMusicReview] {
+        try await authenticate()
+        return try await client.rpc(
+            "list_canonical_album_reviews",
+            params: CanonicalAlbumReviewsPageParameters(
+                p_canonical_album_id: canonicalAlbumID,
+                p_before_created_at: beforeCreatedAt,
+                p_before_id: beforeID,
+                p_limit: limit
+            )
+        )
+        .select(Self.musicReviewSelection)
+        .execute().value
+    }
+
+    func canonicalAlbumStateAggregate(
+        canonicalAlbumID: UUID
+    ) async throws -> RemoteCanonicalAlbumStateAggregate {
+        try await authenticate()
+        let rows: [RemoteCanonicalAlbumStateAggregate] = try await client.rpc(
+            "get_canonical_album_state_aggregate",
+            params: CanonicalAlbumIDParameters(p_canonical_album_id: canonicalAlbumID)
+        ).execute().value
+        guard let aggregate = rows.first else {
+            throw HarmonyRepositoryError.invalidCanonicalAlbumAggregate
+        }
+        return aggregate
+    }
+
+    func canonicalAlbumRatingDistribution(
+        canonicalAlbumID: UUID
+    ) async throws -> [RemoteCanonicalAlbumRatingBucket] {
+        try await authenticate()
+        return try await client.rpc(
+            "list_canonical_album_rating_distribution",
+            params: CanonicalAlbumIDParameters(p_canonical_album_id: canonicalAlbumID)
+        ).execute().value
     }
 
     func followingActivityPage(

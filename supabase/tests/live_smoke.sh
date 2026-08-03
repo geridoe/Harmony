@@ -119,6 +119,22 @@ rest_patch() {
     -o "$output_file"
 }
 
+rest_patch_status() {
+  local token="$1"
+  local path="$2"
+  local body="$3"
+  local output_file="$4"
+  curl --silent --show-error \
+    -X PATCH "$supabase_url/rest/v1/$path" \
+    -H "apikey: $publishable_key" \
+    -H "Authorization: Bearer $token" \
+    -H "Content-Type: application/json" \
+    -H "Prefer: return=representation" \
+    --data "$body" \
+    -o "$output_file" \
+    -w '%{http_code}'
+}
+
 new_uuid() {
   uuidgen | tr '[:upper:]' '[:lower:]'
 }
@@ -581,7 +597,8 @@ canonical_only_album_id="$(jq -er '.' "$smoke_tmp/canonical-only-album.json")"
 rpc "$collaborator_token" resolve_harmony_album_v2 \
   '{"p_provider":"apple_music","p_provider_id":"harmony-title-only-apple","p_title":"Harmony Smoke Album","p_artist":"Harmony Test Artist","p_artwork_url":null,"p_deep_link":"https://music.apple.com/us/album/harmony-smoke-album/harmony-title-only-apple","p_upc":null,"p_release_date":null,"p_total_tracks":null,"p_album_type":"album","p_storefront":"us"}' \
   "$smoke_tmp/apple-title-only-album.json"
-[[ "$(jq -er '.' "$smoke_tmp/apple-title-only-album.json")" != "$album_canonical_id" ]]
+apple_title_only_album_id="$(jq -er '.' "$smoke_tmp/apple-title-only-album.json")"
+[[ "$apple_title_only_album_id" != "$album_canonical_id" ]]
 rpc "$conductor_token" list_canonical_album_reviews \
   "{\"p_canonical_album_id\":\"$album_canonical_id\",\"p_before_created_at\":null,\"p_before_id\":null,\"p_limit\":50}" \
   "$smoke_tmp/canonical-album-reviews.json"
@@ -594,6 +611,130 @@ jq -e --arg album "$canonical_only_album_id" '(if type == "array" then .[0] else
 rpc "$collaborator_token" delete_music_review \
   "{\"p_review_id\":\"$canonical_only_review_id\"}" \
   "$smoke_tmp/deleted-canonical-only-album-review.json"
+
+stage="album review synchronization and independent snapshots"
+# Saving a canonical album review establishes current subject state. Soft
+# deletion retains that state; it does not roll the owner backward.
+rest_get "$collaborator_token" \
+  "profile_album_subject_states?select=profile_id,canonical_album_id,has_listened,default_rating,is_loved,want_to_listen&canonical_album_id=in.($album_canonical_id,$canonical_only_album_id)" \
+  "$smoke_tmp/album-review-synchronized-state.json"
+jq -e --arg album "$album_canonical_id" --arg canonical_only "$canonical_only_album_id" '
+  length == 2
+  and any(.[]; .canonical_album_id == $album and .has_listened == true and .default_rating == 4.0 and .is_loved == false and .want_to_listen == false)
+  and any(.[]; .canonical_album_id == $canonical_only and .has_listened == true and .default_rating == 4.5 and .is_loved == false and .want_to_listen == false)
+' "$smoke_tmp/album-review-synchronized-state.json" >/dev/null
+clear_listened_with_album_review_status="$(rpc_status "$collaborator_token" set_my_album_subject_state \
+  "{\"p_canonical_album_id\":\"$album_canonical_id\",\"p_has_listened\":false,\"p_default_rating\":null,\"p_is_loved\":false,\"p_want_to_listen\":false}" \
+  "$smoke_tmp/clear-listened-with-album-review.json")"
+[[ "$clear_listened_with_album_review_status" == "400" ]]
+rpc "$collaborator_token" update_music_review \
+  "{\"p_review_id\":\"$album_review_id\",\"p_rating\":3.5,\"p_body\":\"An updated album diary entry.\",\"p_visibility\":\"followers\",\"p_contains_spoilers\":false,\"p_is_loved\":true}" \
+  "$smoke_tmp/updated-album-review.json"
+rest_get "$collaborator_token" \
+  "profile_album_subject_states?select=has_listened,default_rating,is_loved,want_to_listen&canonical_album_id=eq.$album_canonical_id" \
+  "$smoke_tmp/updated-album-review-state.json"
+jq -e 'length == 1 and .[0].has_listened == true and .[0].default_rating == 3.5 and .[0].is_loved == true and .[0].want_to_listen == false' "$smoke_tmp/updated-album-review-state.json" >/dev/null
+invalid_album_rating_status="$(rpc_status "$collaborator_token" set_my_album_subject_state \
+  "{\"p_canonical_album_id\":\"$album_canonical_id\",\"p_has_listened\":true,\"p_default_rating\":4.2,\"p_is_loved\":false,\"p_want_to_listen\":false}" \
+  "$smoke_tmp/invalid-album-rating.json")"
+[[ "$invalid_album_rating_status" == "400" ]]
+rpc "$collaborator_token" set_my_album_subject_state \
+  "{\"p_canonical_album_id\":\"$album_canonical_id\",\"p_has_listened\":true,\"p_default_rating\":4.0,\"p_is_loved\":true,\"p_want_to_listen\":true}" \
+  "$smoke_tmp/rated-album-state.json"
+jq -e '(if type == "array" then .[0] else . end) | .has_listened == true and .default_rating == 4.0 and .is_loved == true and .want_to_listen == false' "$smoke_tmp/rated-album-state.json" >/dev/null
+rpc "$collaborator_token" set_my_album_subject_state \
+  "{\"p_canonical_album_id\":\"$canonical_only_album_id\",\"p_has_listened\":false,\"p_default_rating\":2.5,\"p_is_loved\":false,\"p_want_to_listen\":true}" \
+  "$smoke_tmp/second-rated-album-state.json"
+jq -e '(if type == "array" then .[0] else . end) | .has_listened == true and .default_rating == 2.5 and .want_to_listen == false' "$smoke_tmp/second-rated-album-state.json" >/dev/null
+rpc "$collaborator_token" set_my_album_subject_state \
+  "{\"p_canonical_album_id\":\"$apple_title_only_album_id\",\"p_has_listened\":false,\"p_default_rating\":null,\"p_is_loved\":false,\"p_want_to_listen\":true}" \
+  "$smoke_tmp/want-album-state.json"
+jq -e '(if type == "array" then .[0] else . end) | .has_listened == false and .default_rating == null and .want_to_listen == true' "$smoke_tmp/want-album-state.json" >/dev/null
+rest_get "$conductor_token" \
+  "profile_album_subject_states?select=profile_id&profile_id=eq.$collaborator_id" \
+  "$smoke_tmp/foreign-album-state.json"
+[[ "$(jq 'length' "$smoke_tmp/foreign-album-state.json")" -eq 0 ]]
+direct_album_state_write_status="$(rest_patch_status "$collaborator_token" \
+  "profile_album_subject_states?profile_id=eq.$collaborator_id&canonical_album_id=eq.$album_canonical_id" \
+  '{"default_rating":1.0}' \
+  "$smoke_tmp/direct-album-state-write.json")"
+[[ "$direct_album_state_write_status" == "403" ]]
+rest_get "$collaborator_token" \
+  "profile_album_subject_states?select=canonical_album_id,default_rating,canonical_albums(id,title,artist,artwork_url)&canonical_album_id=eq.$album_canonical_id" \
+  "$smoke_tmp/swift-shaped-album-state.json"
+jq -e --arg album "$album_canonical_id" 'length == 1 and .[0].canonical_album_id == $album and .[0].default_rating == 4.0 and .[0].canonical_albums.id == $album and .[0].canonical_albums.title == "Harmony Smoke Album"' "$smoke_tmp/swift-shaped-album-state.json" >/dev/null
+# State changes do not rewrite the review's authored rating or Loved snapshot.
+rest_get "$collaborator_token" \
+  "music_reviews?select=id,rating,is_loved&id=eq.$album_review_id" \
+  "$smoke_tmp/album-state-independent-review.json"
+jq -e 'length == 1 and .[0].rating == 3.5 and .[0].is_loved == true' "$smoke_tmp/album-state-independent-review.json" >/dev/null
+
+stage="owner album Ratings shelf keyset pagination"
+rpc "$collaborator_token" list_my_album_subject_states \
+  '{"p_before_updated_at":null,"p_before_canonical_album_id":null,"p_limit":1,"p_scope":"rated"}' \
+  "$smoke_tmp/rated-album-first-page.json"
+rated_album_first_id="$(jq -er '.[0].canonical_album_id' "$smoke_tmp/rated-album-first-page.json")"
+rated_album_first_updated_at="$(jq -er '.[0].updated_at' "$smoke_tmp/rated-album-first-page.json")"
+rest_get "$collaborator_token" \
+  "rpc/list_my_album_subject_states?p_limit=1&p_scope=rated&select=canonical_album_id,default_rating,canonical_albums(id,title,provider_albums(provider,provider_album_id,storefront))" \
+  "$smoke_tmp/rated-album-client-shape.json"
+jq -e --arg album "$rated_album_first_id" 'length == 1 and .[0].canonical_album_id == $album and .[0].default_rating != null and .[0].canonical_albums.id == $album and (.[] | .canonical_albums.provider_albums | length) > 0' "$smoke_tmp/rated-album-client-shape.json" >/dev/null
+rpc "$collaborator_token" list_my_album_subject_states \
+  "{\"p_before_updated_at\":\"$rated_album_first_updated_at\",\"p_before_canonical_album_id\":\"$rated_album_first_id\",\"p_limit\":10,\"p_scope\":\"rated\"}" \
+  "$smoke_tmp/rated-album-second-page.json"
+jq -e --arg first "$rated_album_first_id" 'length == 1 and .[0].canonical_album_id != $first and .[0].default_rating != null' "$smoke_tmp/rated-album-second-page.json" >/dev/null
+rpc "$collaborator_token" list_my_album_subject_states \
+  '{"p_before_updated_at":null,"p_before_canonical_album_id":null,"p_limit":50,"p_scope":"want_to_listen"}' \
+  "$smoke_tmp/want-album-page.json"
+jq -e --arg album "$apple_title_only_album_id" 'length == 1 and .[0].canonical_album_id == $album and .[0].want_to_listen == true' "$smoke_tmp/want-album-page.json" >/dev/null
+rpc "$conductor_token" list_my_album_subject_states \
+  '{"p_before_updated_at":null,"p_before_canonical_album_id":null,"p_limit":50,"p_scope":"all"}' \
+  "$smoke_tmp/foreign-album-state-page.json"
+[[ "$(jq 'length' "$smoke_tmp/foreign-album-state-page.json")" -eq 0 ]]
+partial_album_state_cursor_status="$(rpc_status "$collaborator_token" list_my_album_subject_states \
+  "{\"p_before_updated_at\":\"$rated_album_first_updated_at\",\"p_before_canonical_album_id\":null,\"p_limit\":50,\"p_scope\":\"rated\"}" \
+  "$smoke_tmp/partial-album-state-cursor.json")"
+[[ "$partial_album_state_cursor_status" == "400" ]]
+invalid_album_state_scope_status="$(rpc_status "$collaborator_token" list_my_album_subject_states \
+  '{"p_before_updated_at":null,"p_before_canonical_album_id":null,"p_limit":50,"p_scope":"reviews"}' \
+  "$smoke_tmp/invalid-album-state-scope.json")"
+[[ "$invalid_album_state_scope_status" == "400" ]]
+
+stage="canonical album visible-review aggregates"
+rpc "$collaborator_token" create_music_review \
+  "{\"p_subject_kind\":\"album\",\"p_canonical_album_id\":\"$album_canonical_id\",\"p_rating\":2.0,\"p_body\":\"A newer album rating.\",\"p_visibility\":\"followers\",\"p_is_loved\":false}" \
+  "$smoke_tmp/newer-album-review.json"
+newer_album_review_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/newer-album-review.json")"
+rpc "$conductor_token" get_canonical_album_state_aggregate \
+  "{\"p_canonical_album_id\":\"$album_canonical_id\"}" \
+  "$smoke_tmp/album-state-aggregate.json"
+jq -e --arg album "$album_canonical_id" 'length == 1 and .[0].canonical_album_id == $album and .[0].rating_count == 1 and .[0].average_rating == 2.00 and .[0].listened_count == 1 and .[0].loved_count == 0 and .[0].want_to_listen_count == 0' "$smoke_tmp/album-state-aggregate.json" >/dev/null
+rpc "$conductor_token" list_canonical_album_rating_distribution \
+  "{\"p_canonical_album_id\":\"$album_canonical_id\"}" \
+  "$smoke_tmp/album-rating-distribution.json"
+jq -e 'length == 10 and (map(.rating_count) | add) == 1 and any(.[]; .rating == 2.0 and .rating_count == 1) and all(.[]; .rating == 2.0 or .rating_count == 0)' "$smoke_tmp/album-rating-distribution.json" >/dev/null
+rpc "$collaborator_token" delete_music_review \
+  "{\"p_review_id\":\"$newer_album_review_id\"}" \
+  "$smoke_tmp/deleted-newer-album-review.json"
+rest_get "$collaborator_token" \
+  "profile_album_subject_states?select=has_listened,default_rating,is_loved,want_to_listen&canonical_album_id=eq.$album_canonical_id" \
+  "$smoke_tmp/state-after-newer-album-review-delete.json"
+jq -e 'length == 1 and .[0].has_listened == true and .[0].default_rating == 2.0 and .[0].is_loved == false and .[0].want_to_listen == false' "$smoke_tmp/state-after-newer-album-review-delete.json" >/dev/null
+rpc "$conductor_token" get_canonical_album_state_aggregate \
+  "{\"p_canonical_album_id\":\"$album_canonical_id\"}" \
+  "$smoke_tmp/album-state-aggregate-after-newest-delete.json"
+jq -e 'length == 1 and .[0].rating_count == 1 and .[0].average_rating == 3.50 and .[0].loved_count == 1' "$smoke_tmp/album-state-aggregate-after-newest-delete.json" >/dev/null
+
+stage="album state empty-row normalization"
+rpc "$collaborator_token" set_my_album_subject_state \
+  "{\"p_canonical_album_id\":\"$canonical_only_album_id\",\"p_has_listened\":false,\"p_default_rating\":null,\"p_is_loved\":false,\"p_want_to_listen\":false}" \
+  "$smoke_tmp/cleared-album-state.json"
+jq -e '(if type == "array" then .[0] else . end) | .has_listened == false and .default_rating == null and .is_loved == false and .want_to_listen == false' "$smoke_tmp/cleared-album-state.json" >/dev/null
+rest_get "$collaborator_token" \
+  "profile_album_subject_states?select=canonical_album_id&canonical_album_id=eq.$canonical_only_album_id" \
+  "$smoke_tmp/removed-empty-album-state.json"
+[[ "$(jq 'length' "$smoke_tmp/removed-empty-album-state.json")" -eq 0 ]]
+
 album_diary_link_status="$(rpc_status "$collaborator_token" update_listening_diary_entry_with_rating \
   "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_visibility\":\"followers\",\"p_is_relisten\":true,\"p_tags\":[\"atomic\",\"night\"],\"p_review_id\":\"$album_review_id\",\"p_rating\":2.5}" \
   "$smoke_tmp/album-diary-link.json")"

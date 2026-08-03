@@ -929,6 +929,31 @@ final class HarmonyTests: XCTestCase {
         XCTAssertFalse(TrackSubjectStateDraft(defaultRating: 5.5).hasValidRating)
     }
 
+    func testAlbumSubjectDraftNormalizesIndependentAlbumOpinion() {
+        let rated = AlbumSubjectStateDraft(
+            hasListened: false,
+            defaultRating: 4.5,
+            isLoved: true,
+            wantToListen: true
+        ).normalizedForSubmission
+
+        XCTAssertTrue(rated.hasListened)
+        XCTAssertEqual(rated.defaultRating, 4.5)
+        XCTAssertTrue(rated.isLoved)
+        XCTAssertFalse(rated.wantToListen)
+        XCTAssertFalse(rated.isEmpty)
+    }
+
+    func testAlbumSubjectDraftValidatesHalfStarsAndEmptyState() {
+        XCTAssertTrue(AlbumSubjectStateDraft.empty.isEmpty)
+        XCTAssertTrue(AlbumSubjectStateDraft(defaultRating: 0.5).hasValidRating)
+        XCTAssertTrue(AlbumSubjectStateDraft(defaultRating: 5).hasValidRating)
+        XCTAssertFalse(AlbumSubjectStateDraft(defaultRating: 0).hasValidRating)
+        XCTAssertFalse(AlbumSubjectStateDraft(defaultRating: 3.7).hasValidRating)
+        XCTAssertFalse(AlbumSubjectStateDraft(defaultRating: 5.5).hasValidRating)
+        XCTAssertFalse(AlbumSubjectStateDraft(isLoved: true).isEmpty)
+    }
+
 #if DEBUG
     func testFixtureTrackDraftSaveNormalizesAndCommitsOnlyAfterSuccess() async {
         let store = HarmonySessionStore(seedSampleData: false)
@@ -1045,6 +1070,16 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(buckets.first, MusicRatingDistributionBucket(rating: 0.5, count: 1))
         XCTAssertEqual(buckets.first(where: { $0.rating == 4.0 })?.count, 2)
         XCTAssertEqual(buckets.last, MusicRatingDistributionBucket(rating: 5.0, count: 1))
+        XCTAssertEqual(buckets.map(\.count).reduce(0, +), 4)
+    }
+
+    func testMusicRatingDistributionCombinesSongAndAlbumRatings() {
+        let buckets = musicRatingDistribution(ratings: [1, 4.5, 4.5, 5])
+
+        XCTAssertEqual(buckets.count, 10)
+        XCTAssertEqual(buckets.first(where: { $0.rating == 1 })?.count, 1)
+        XCTAssertEqual(buckets.first(where: { $0.rating == 4.5 })?.count, 2)
+        XCTAssertEqual(buckets.first(where: { $0.rating == 5 })?.count, 1)
         XCTAssertEqual(buckets.map(\.count).reduce(0, +), 4)
     }
 

@@ -64,6 +64,17 @@ supabase functions deploy spotify-token-exchange
 
 `resolve_harmony_track(provider, provider_id, title, artist, ...)` resolves a provider catalog item to a canonical Harmony track before queue insertion. It is idempotent by provider and provider ID, so provider-specific search clients can contribute tracks even before a cross-provider matcher has added mappings for the other services.
 
+`profile_album_subject_states` stores an owner's current Listened, default
+half-star rating, Loved, and Want-to-listen relationship with a canonical album.
+It is owner-readable under RLS and writable only through
+`set_my_album_subject_state(...)`. `list_my_album_subject_states(...)` supplies
+filtered keyset pages for first-class album shelves. Album detail obtains only
+caller-visible review totals from `get_canonical_album_state_aggregate(...)`
+and the fixed ten-bin histogram from
+`list_canonical_album_rating_distribution(...)`;
+individual state rows remain private. Review and playback-history writes never
+mutate album state. The full contract is in `../Docs/ALBUM_SUBJECT_STATE.md`.
+
 ## Queue RPC contract
 
 Authenticated clients call `apply_queue_command` with:

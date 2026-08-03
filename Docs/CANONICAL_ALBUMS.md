@@ -109,8 +109,10 @@ security-invoker function, so existing review RLS remains the privacy authority.
 - Apple storefront was not retained in old reviews. The `us` fallback is stable
   and compatible but may need a repair job when authoritative storefront data
   becomes available.
-- Canonical albums do not yet model editions, release groups, track membership,
-  or owner-level album state. Those require an explicit product policy.
+- Canonical albums do not yet model editions, release groups, or track
+  membership. Migration 039 adds independent owner-level Listened, Rating,
+  Loved, and Want-to-listen state without changing release identity; see
+  `ALBUM_SUBJECT_STATE.md`.
 - A privileged consolidation RPC/job is intentionally absent. Its audit and
   review reassignment behavior should be designed before resolving conflicts.
 

@@ -36,6 +36,9 @@ struct SearchView: View {
     @State private var trackForList: HarmonyTrack?
     @State private var albumRating = 3.5
     @State private var albumReviewBody = ""
+    @State private var albumIsLoved = false
+    @State private var albumContainsSpoilers = false
+    @State private var albumReviewVisibility = SocialVisibilityOption.privateOnly
 
     private var tracks: [HarmonyTrack] {
         guard !query.isEmpty else { return store.catalog }
@@ -94,9 +97,18 @@ struct SearchView: View {
                                 .accessibilityLabel("Open \(track.title) in Spotify")
                             }
                             if let album = track.reviewableAlbum {
+                                NavigationLink {
+                                    ResolvableCanonicalAlbumView(album: album)
+                                } label: {
+                                    Label("View album", systemImage: "square.stack")
+                                        .font(.caption)
+                                }
                                 Button {
                                     albumRating = 3.5
                                     albumReviewBody = ""
+                                    albumIsLoved = false
+                                    albumContainsSpoilers = false
+                                    albumReviewVisibility = store.reviewsSocialVisibility
                                     reviewAlbum = album
                                 } label: {
                                     Label("Review album", systemImage: "star.bubble")
@@ -154,12 +166,18 @@ struct SearchView: View {
                             }
                         }
                         Section("Rating") {
-                            HStack {
-                                Slider(value: $albumRating, in: 0.5...5, step: 0.5)
-                                Text(String(format: "%.1f", albumRating)).monospacedDigit()
-                            }
+                            RatingPicker(rating: $albumRating)
                             TextField("Write a short review (optional)", text: $albumReviewBody, axis: .vertical)
                                 .lineLimit(3...8)
+                            Toggle("Loved", isOn: $albumIsLoved)
+                            Toggle("Contains spoilers", isOn: $albumContainsSpoilers)
+                        }
+                        Section("Visibility") {
+                            Picker("Audience", selection: $albumReviewVisibility) {
+                                ForEach(SocialVisibilityOption.allCases) { visibility in
+                                    Text(visibility.title).tag(visibility)
+                                }
+                            }
                         }
                     }
                     .navigationTitle("Review album")
@@ -169,10 +187,17 @@ struct SearchView: View {
                             Button("Cancel") { reviewAlbum = nil }
                         }
                         ToolbarItem(placement: .confirmationAction) {
-                            Button(store.reviewsSocialVisibility == .followers ? "Publish" : "Save") {
+                            Button(albumReviewVisibility == .followers ? "Publish" : "Save") {
                                 Task {
-                                    await store.publishAlbumReview(album, rating: albumRating, body: albumReviewBody)
-                                    reviewAlbum = nil
+                                    let didSave = await store.publishAlbumReview(
+                                        album,
+                                        rating: albumRating,
+                                        body: albumReviewBody,
+                                        isLoved: albumIsLoved,
+                                        containsSpoilers: albumContainsSpoilers,
+                                        visibility: albumReviewVisibility
+                                    )
+                                    if didSave { reviewAlbum = nil }
                                 }
                             }
                             .disabled(store.isPublishingMusicReview)

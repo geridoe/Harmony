@@ -155,6 +155,60 @@ struct TrackSubjectStateDraft: Equatable {
     }
 }
 
+/// Editable owner state for one canonical album release. Album state mirrors
+/// track state, but remains a separate opinion: changing an album rating never
+/// rewrites a song rating, a historical Diary entry, or an authored review.
+struct AlbumSubjectStateDraft: Equatable {
+    var hasListened: Bool
+    var defaultRating: Double?
+    var isLoved: Bool
+    var wantToListen: Bool
+
+    static let empty = AlbumSubjectStateDraft()
+
+    init(
+        hasListened: Bool = false,
+        defaultRating: Double? = nil,
+        isLoved: Bool = false,
+        wantToListen: Bool = false
+    ) {
+        self.hasListened = hasListened
+        self.defaultRating = defaultRating
+        self.isLoved = isLoved
+        self.wantToListen = wantToListen
+    }
+
+    init(state: RemoteAlbumSubjectState?) {
+        self.init(
+            hasListened: state?.hasListened ?? false,
+            defaultRating: state?.defaultRating,
+            isLoved: state?.isLoved ?? false,
+            wantToListen: state?.wantToListen ?? false
+        )
+    }
+
+    var normalizedForSubmission: AlbumSubjectStateDraft {
+        var result = self
+        if result.defaultRating != nil { result.hasListened = true }
+        if result.hasListened { result.wantToListen = false }
+        return result
+    }
+
+    var hasValidRating: Bool {
+        guard let defaultRating else { return true }
+        guard (0.5...5).contains(defaultRating) else { return false }
+        return (defaultRating * 2).rounded() == defaultRating * 2
+    }
+
+    var isEmpty: Bool {
+        let normalized = normalizedForSubmission
+        return !normalized.hasListened
+            && normalized.defaultRating == nil
+            && !normalized.isLoved
+            && !normalized.wantToListen
+    }
+}
+
 struct MusicListDraftEntry: Identifiable, Equatable {
     let id: UUID
     var track: HarmonyTrack
@@ -363,6 +417,16 @@ struct MusicListDetailState {
     var isRefreshing = false
 }
 
+struct CanonicalAlbumDetailState {
+    var album: RemoteCanonicalAlbum?
+    var ownerState: RemoteAlbumSubjectState?
+    var reviews = PaginatedShelfState<RemoteMusicReview>()
+    var aggregate: RemoteCanonicalAlbumStateAggregate?
+    var ratingDistribution: [RemoteCanonicalAlbumRatingBucket] = []
+    var isRefreshing = false
+    var errorMessage: String?
+}
+
 enum CatalogSearchPurpose: Hashable {
     case addMusic
     case reviews
@@ -423,6 +487,13 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var isLoadingMoreTrackSubjectShelf = false
     @Published private(set) var hasMoreTrackSubjectShelf = false
     @Published private(set) var mutatingTrackSubjectStateIDs: Set<UUID> = []
+    @Published private(set) var albumSubjectStates: [UUID: RemoteAlbumSubjectState] = [:]
+    @Published private(set) var albumSubjectShelf: [RemoteAlbumSubjectState] = []
+    @Published private(set) var isRefreshingAlbumSubjectShelf = false
+    @Published private(set) var isLoadingMoreAlbumSubjectShelf = false
+    @Published private(set) var hasMoreAlbumSubjectShelf = false
+    @Published private(set) var mutatingAlbumSubjectStateIDs: Set<UUID> = []
+    @Published private(set) var canonicalAlbumDetails: [UUID: CanonicalAlbumDetailState] = [:]
     @Published private(set) var isImportingSpotifyHistory = false
     @Published private(set) var spotifyHistoryImportMessage: String?
     @Published private(set) var musicReviews: [RemoteMusicReview] = []
@@ -473,6 +544,7 @@ final class HarmonySessionStore: ObservableObject {
     private var spotifyLoadedProviderID: String?
     private let journalPageSize = 50
     private let trackSubjectShelfPageSize = 50
+    private let albumSubjectShelfPageSize = 50
     private let socialShelfPageSize = 50
     private let musicListPageSize = 50
     private let musicListEntryPageSize = 100
@@ -1505,6 +1577,200 @@ final class HarmonySessionStore: ObservableObject {
         trackSubjectShelf.removeAll { $0.canonicalTrackID == canonicalTrackID }
     }
 
+    func albumSubjectState(for album: RemoteCanonicalAlbum) -> RemoteAlbumSubjectState? {
+        albumSubjectStates[album.id]
+            ?? albumSubjectShelf.first { $0.canonicalAlbumID == album.id }
+            ?? canonicalAlbumDetails[album.id]?.ownerState
+    }
+
+    func resolveCanonicalAlbum(_ album: ReviewableAlbum) async -> RemoteCanonicalAlbum? {
+        do {
+            return try await collaborationRepository.resolveCanonicalAlbum(album)
+        } catch {
+            collaborationMessage = "Could not open this album: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    func albumSubjectStateDraft(for album: RemoteCanonicalAlbum) -> AlbumSubjectStateDraft {
+        AlbumSubjectStateDraft(state: albumSubjectState(for: album))
+    }
+
+    func isSavingAlbumSubjectState(for albumID: UUID) -> Bool {
+        mutatingAlbumSubjectStateIDs.contains(albumID)
+    }
+
+    @discardableResult
+    func refreshAlbumSubjectState(for album: RemoteCanonicalAlbum) async -> RemoteAlbumSubjectState? {
+        do {
+            let state = try await collaborationRepository.albumSubjectState(canonicalAlbumID: album.id)
+            if let state {
+                let merged = state.preservingCanonicalAlbum(album)
+                albumSubjectStates[album.id] = merged
+                canonicalAlbumDetails[album.id, default: CanonicalAlbumDetailState()].ownerState = merged
+                replaceAlbumSubjectShelfState(merged)
+            } else {
+                removeAlbumSubjectState(canonicalAlbumID: album.id)
+            }
+            return state
+        } catch {
+            collaborationMessage = "Could not load your album status: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    func refreshAlbumSubjectShelf() async {
+#if DEBUG
+        if isDiaryEditorUITestFixtureActive { return }
+#endif
+        guard !isRefreshingAlbumSubjectShelf, !isLoadingMoreAlbumSubjectShelf else { return }
+        isRefreshingAlbumSubjectShelf = true
+        defer { isRefreshingAlbumSubjectShelf = false }
+        do {
+            let page = try await collaborationRepository.albumSubjectStatePage(
+                limit: albumSubjectShelfPageSize + 1
+            )
+            albumSubjectShelf = Array(page.prefix(albumSubjectShelfPageSize))
+            hasMoreAlbumSubjectShelf = page.count > albumSubjectShelfPageSize
+            for state in albumSubjectShelf { albumSubjectStates[state.canonicalAlbumID] = state }
+        } catch {
+            collaborationMessage = "Could not refresh your album shelf: \(error.localizedDescription)"
+        }
+    }
+
+    func loadMoreAlbumSubjectShelf() async {
+        guard hasMoreAlbumSubjectShelf,
+              !isRefreshingAlbumSubjectShelf,
+              !isLoadingMoreAlbumSubjectShelf,
+              let cursor = albumSubjectShelf.last else { return }
+        isLoadingMoreAlbumSubjectShelf = true
+        defer { isLoadingMoreAlbumSubjectShelf = false }
+        do {
+            let page = try await collaborationRepository.albumSubjectStatePage(
+                beforeUpdatedAt: cursor.updatedAt,
+                beforeCanonicalAlbumID: cursor.canonicalAlbumID,
+                limit: albumSubjectShelfPageSize + 1
+            )
+            let existingIDs = Set(albumSubjectShelf.map(\.canonicalAlbumID))
+            let newStates = page.prefix(albumSubjectShelfPageSize)
+                .filter { !existingIDs.contains($0.canonicalAlbumID) }
+            albumSubjectShelf.append(contentsOf: newStates)
+            hasMoreAlbumSubjectShelf = page.count > albumSubjectShelfPageSize
+            for state in newStates { albumSubjectStates[state.canonicalAlbumID] = state }
+        } catch {
+            collaborationMessage = "Could not load more album statuses: \(error.localizedDescription)"
+        }
+    }
+
+    @discardableResult
+    func saveAlbumSubjectStateDraft(
+        _ proposedDraft: AlbumSubjectStateDraft,
+        for album: RemoteCanonicalAlbum
+    ) async -> Bool {
+        let draft = proposedDraft.normalizedForSubmission
+        guard draft.hasValidRating else {
+            collaborationMessage = "Ratings must use half-star steps from 0.5 to 5.0."
+            return false
+        }
+        guard !mutatingAlbumSubjectStateIDs.contains(album.id) else { return false }
+        mutatingAlbumSubjectStateIDs.insert(album.id)
+        defer { mutatingAlbumSubjectStateIDs.remove(album.id) }
+        do {
+            let saved = try await collaborationRepository.updateAlbumSubjectState(
+                canonicalAlbumID: album.id,
+                draft: draft
+            ).preservingCanonicalAlbum(album)
+            if draft.isEmpty {
+                removeAlbumSubjectState(canonicalAlbumID: album.id)
+            } else {
+                albumSubjectStates[album.id] = saved
+                albumSubjectShelf.removeAll { $0.canonicalAlbumID == album.id }
+                albumSubjectShelf.insert(saved, at: 0)
+                canonicalAlbumDetails[album.id, default: CanonicalAlbumDetailState()].ownerState = saved
+            }
+            collaborationMessage = "Album status updated"
+            return true
+        } catch {
+            collaborationMessage = "Could not update album status: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func refreshCanonicalAlbumDetail(_ album: RemoteCanonicalAlbum) async {
+#if DEBUG
+        if isDiaryEditorUITestFixtureActive { return }
+#endif
+        guard canonicalAlbumDetails[album.id]?.isRefreshing != true else { return }
+        canonicalAlbumDetails[album.id, default: CanonicalAlbumDetailState()].album = album
+        canonicalAlbumDetails[album.id]?.isRefreshing = true
+        canonicalAlbumDetails[album.id]?.errorMessage = nil
+        defer { canonicalAlbumDetails[album.id]?.isRefreshing = false }
+        do {
+            async let ownerState = collaborationRepository.albumSubjectState(canonicalAlbumID: album.id)
+            async let reviews = collaborationRepository.canonicalAlbumReviews(
+                canonicalAlbumID: album.id,
+                limit: socialShelfPageSize + 1
+            )
+            async let aggregate = collaborationRepository.canonicalAlbumStateAggregate(
+                canonicalAlbumID: album.id
+            )
+            async let distribution = collaborationRepository.canonicalAlbumRatingDistribution(
+                canonicalAlbumID: album.id
+            )
+            let values = try await (ownerState, reviews, aggregate, distribution)
+            let mergedOwnerState = values.0?.preservingCanonicalAlbum(album)
+            canonicalAlbumDetails[album.id]?.ownerState = mergedOwnerState
+            canonicalAlbumDetails[album.id]?.reviews.items = Array(values.1.prefix(socialShelfPageSize))
+            canonicalAlbumDetails[album.id]?.reviews.hasMore = values.1.count > socialShelfPageSize
+            canonicalAlbumDetails[album.id]?.aggregate = values.2
+            canonicalAlbumDetails[album.id]?.ratingDistribution = values.3
+            if let mergedOwnerState { albumSubjectStates[album.id] = mergedOwnerState }
+        } catch {
+            canonicalAlbumDetails[album.id]?.errorMessage = error.localizedDescription
+        }
+    }
+
+    func loadMoreCanonicalAlbumReviews(_ albumID: UUID) async {
+        guard var detail = canonicalAlbumDetails[albumID],
+              detail.reviews.hasMore,
+              !detail.reviews.isLoadingMore,
+              let cursor = detail.reviews.items.last else { return }
+        canonicalAlbumDetails[albumID]?.reviews.isLoadingMore = true
+        defer { canonicalAlbumDetails[albumID]?.reviews.isLoadingMore = false }
+        do {
+            let page = try await collaborationRepository.canonicalAlbumReviews(
+                canonicalAlbumID: albumID,
+                beforeCreatedAt: cursor.createdAt,
+                beforeID: cursor.id,
+                limit: socialShelfPageSize + 1
+            )
+            let existingIDs = Set(detail.reviews.items.map(\.id))
+            detail.reviews.items.append(contentsOf: page.prefix(socialShelfPageSize).filter {
+                !existingIDs.contains($0.id)
+            })
+            detail.reviews.hasMore = page.count > socialShelfPageSize
+            detail.reviews.isLoadingMore = false
+            canonicalAlbumDetails[albumID] = detail
+        } catch {
+            canonicalAlbumDetails[albumID]?.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func replaceAlbumSubjectShelfState(_ state: RemoteAlbumSubjectState) {
+        guard let index = albumSubjectShelf.firstIndex(where: {
+            $0.canonicalAlbumID == state.canonicalAlbumID
+        }) else { return }
+        albumSubjectShelf[index] = state.preservingCanonicalAlbum(
+            albumSubjectShelf[index].canonicalAlbum
+        )
+    }
+
+    private func removeAlbumSubjectState(canonicalAlbumID: UUID) {
+        albumSubjectStates.removeValue(forKey: canonicalAlbumID)
+        albumSubjectShelf.removeAll { $0.canonicalAlbumID == canonicalAlbumID }
+        canonicalAlbumDetails[canonicalAlbumID]?.ownerState = nil
+    }
+
     func refreshFollowingActivity() async {
 #if DEBUG
         guard !isDiaryEditorUITestFixtureActive else { return }
@@ -2391,6 +2657,59 @@ final class HarmonySessionStore: ObservableObject {
         )
         trackSubjectStates[trackID] = subjectState
         trackSubjectShelf = [subjectState]
+
+        let albumID = UUID(uuidString: "70000000-0000-0000-0000-000000000007")!
+        let album = RemoteCanonicalAlbum(
+            id: albumID,
+            title: "Northern Lights",
+            artist: "Wolves at Noon",
+            releaseDate: "2026-01-16",
+            upc: nil,
+            albumType: "album",
+            totalTracks: 10,
+            artworkURL: nil,
+            providerAlbums: [
+                RemoteProviderAlbum(
+                    provider: "spotify",
+                    providerAlbumID: "spotify:album:ui-northern-lights",
+                    storefront: "global",
+                    deepLink: URL(string: "https://open.spotify.com/album/ui-northern-lights"),
+                    availability: "playable",
+                    identityBasis: "provider"
+                )
+            ]
+        )
+        let albumState = RemoteAlbumSubjectState(
+            profileID: profileID,
+            canonicalAlbumID: albumID,
+            hasListened: true,
+            defaultRating: 4.5,
+            isLoved: true,
+            wantToListen: false,
+            createdAt: Date(),
+            updatedAt: Date(),
+            canonicalAlbum: album
+        )
+        albumSubjectStates[albumID] = albumState
+        albumSubjectShelf = [albumState]
+        canonicalAlbumDetails[albumID] = CanonicalAlbumDetailState(
+            album: album,
+            ownerState: albumState,
+            aggregate: RemoteCanonicalAlbumStateAggregate(
+                canonicalAlbumID: albumID,
+                ratingCount: 2,
+                averageRating: 4.25,
+                listenedCount: 2,
+                lovedCount: 1,
+                wantToListenCount: 0
+            ),
+            ratingDistribution: (1...10).map {
+                RemoteCanonicalAlbumRatingBucket(
+                    rating: Double($0) / 2,
+                    ratingCount: $0 == 9 ? 2 : 0
+                )
+            }
+        )
     }
 
     func seedSocialActivityUITestFixture() {
@@ -2680,6 +2999,7 @@ final class HarmonySessionStore: ObservableObject {
                 ? "Album review published to approved followers"
                 : "Private album review saved"
             await refreshMusicReviews()
+            await refreshAlbumSubjectShelf()
             return true
         } catch {
             collaborationMessage = "Could not publish album review: \(error.localizedDescription)"
@@ -2752,6 +3072,7 @@ final class HarmonySessionStore: ObservableObject {
         successMessage: String,
         operation: @escaping () async throws -> Void
     ) async -> Bool {
+        let affectedAlbum = musicReviews.first(where: { $0.id == reviewID })?.canonicalAlbum
         guard !mutatingReviewIDs.contains(reviewID) else { return false }
         mutatingReviewIDs.insert(reviewID)
         defer { mutatingReviewIDs.remove(reviewID) }
@@ -2759,6 +3080,10 @@ final class HarmonySessionStore: ObservableObject {
             try await operation()
             collaborationMessage = successMessage
             await refreshMusicReviews()
+            if let affectedAlbum {
+                _ = await refreshAlbumSubjectState(for: affectedAlbum)
+                await refreshCanonicalAlbumDetail(affectedAlbum)
+            }
             return true
         } catch {
             collaborationMessage = "Could not update review: \(error.localizedDescription)"

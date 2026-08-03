@@ -117,9 +117,11 @@ mutating review, Diary, playback, queue, or catalog-search state.
 
 Ratings reads independent current song state and presents a ten-bucket
 half-star distribution. It does not infer a current rating from review text or
-rewrite historical Diary ratings. Album ratings remain review-backed until an
-owner album-state model exists. Canonical album release identity is defined by
-migration 038; it does not imply an edition/grouping or owner-state policy.
+rewrite historical Diary ratings. Migration 039 supplies the equivalent
+owner-private album state plus RLS-filtered visible-review aggregates and a stable
+ten-bucket histogram; the Swift album shelf/detail integration consumes that
+contract separately. Canonical album release identity remains defined by
+migration 038 and does not imply an edition/grouping policy.
 
 `HarmonySessionStore` is the `@MainActor` observable application state. It
 contains screen-facing state, transforms remote DTOs into domain types, makes

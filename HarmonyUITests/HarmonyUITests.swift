@@ -411,6 +411,36 @@ class HarmonyUITests: XCTestCase {
         XCTAssertFalse(fixtureEntry.exists)
     }
 
+    func testCanonicalAlbumIsFirstClassFromRatings() throws {
+        let app = XCUIApplication()
+        app.launchArguments.append("--ui-test-diary-editor")
+        app.launch()
+
+        let reviewsTab = app.tabBars.buttons["Reviews"]
+        XCTAssertTrue(reviewsTab.waitForExistence(timeout: 5))
+        reviewsTab.tap()
+        XCTAssertTrue(app.navigationBars["Reviews"].waitForExistence(timeout: 5))
+        app.buttons["Ratings"].tap()
+        app.buttons["Albums"].tap()
+
+        let albumID = "70000000-0000-0000-0000-000000000007"
+        let albumRow = app.descendants(matching: .any)["rating-open-album-\(albumID)"]
+        XCTAssertTrue(albumRow.waitForExistence(timeout: 5))
+        albumRow.tap()
+
+        XCTAssertTrue(app.navigationBars["Northern Lights"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["canonical-album-header"].exists)
+        XCTAssertTrue(app.staticTexts["Wolves at Noon"].exists)
+        XCTAssertEqual(app.switches["canonical-album-listened"].value as? String, "1")
+        XCTAssertEqual(app.switches["canonical-album-loved"].value as? String, "1")
+        XCTAssertEqual(app.switches["canonical-album-want"].value as? String, "0")
+        XCTAssertEqual(
+            app.descendants(matching: .any)["canonical-album-rating"].value as? String,
+            "4.5 out of 5"
+        )
+        XCTAssertTrue(app.staticTexts["Average across reviews visible to you"].exists)
+    }
+
     func testLaunchPerformance() throws {
         if #available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 7.0, *) {
             // This measures how long it takes to launch your application.

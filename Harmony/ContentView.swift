@@ -360,6 +360,13 @@ private enum ReviewsShelf: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+private enum RatingsSubjectScope: String, CaseIterable, Identifiable {
+    case all = "All"
+    case songs = "Songs"
+    case albums = "Albums"
+    var id: String { rawValue }
+}
+
 struct MusicRatingDistributionBucket: Equatable, Identifiable {
     let rating: Double
     let count: Int
@@ -369,7 +376,13 @@ struct MusicRatingDistributionBucket: Equatable, Identifiable {
 func musicRatingDistribution(
     _ states: [RemoteTrackSubjectState]
 ) -> [MusicRatingDistributionBucket] {
-    let counts = Dictionary(grouping: states.compactMap(\.defaultRating)) { rating in
+    musicRatingDistribution(ratings: states.compactMap(\.defaultRating))
+}
+
+func musicRatingDistribution(
+    ratings: [Double]
+) -> [MusicRatingDistributionBucket] {
+    let counts = Dictionary(grouping: ratings) { rating in
         min(10, max(1, Int((rating * 2).rounded())))
     }
     return (1...10).map { halfStars in
@@ -686,6 +699,7 @@ struct ReviewsView: View {
     @State private var journalBrowseFilter = JournalBrowseFilter()
     @State private var reviewBrowseFilter = ReviewBrowseFilter()
     @State private var followingActivityFilter = FollowingActivityFilter.all
+    @State private var ratingsSubjectScope = RatingsSubjectScope.all
     @State private var editingReview: RemoteMusicReview?
     @State private var editingRating = 4.0
     @State private var editingBody = ""
@@ -711,6 +725,14 @@ struct ReviewsView: View {
 
     private var visibleFollowingActivity: [RemoteFollowingActivityItem] {
         filteredFollowingActivity(store.followingActivity, using: followingActivityFilter)
+    }
+
+    private var ratedTrackStates: [RemoteTrackSubjectState] {
+        store.trackSubjectShelf.filter { $0.defaultRating != nil }
+    }
+
+    private var ratedAlbumStates: [RemoteAlbumSubjectState] {
+        store.albumSubjectShelf.filter { $0.defaultRating != nil }
     }
 
     var body: some View {
@@ -775,6 +797,7 @@ struct ReviewsView: View {
                 await store.refreshJournalEntries()
                 await store.refreshMusicReviews()
                 await store.refreshTrackSubjectShelf()
+                await store.refreshAlbumSubjectShelf()
                 await store.refreshFollowingActivity()
                 await store.activateSocialRealtime()
             }
@@ -783,6 +806,7 @@ struct ReviewsView: View {
                 await store.refreshJournalEntries()
                 await store.refreshMusicReviews()
                 await store.refreshTrackSubjectShelf()
+                await store.refreshAlbumSubjectShelf()
                 await store.refreshFollowingActivity()
             }
         }
@@ -1234,72 +1258,114 @@ struct ReviewsView: View {
     }
 
     private var personalRatings: some View {
-        let ratedStates = store.trackSubjectShelf.filter { $0.defaultRating != nil }
+        let visibleRatings = (ratingsSubjectScope == .all || ratingsSubjectScope == .songs
+            ? ratedTrackStates.compactMap(\.defaultRating)
+            : [])
+            + (ratingsSubjectScope == .all || ratingsSubjectScope == .albums
+                ? ratedAlbumStates.compactMap(\.defaultRating)
+                : [])
         return Group {
-            Section("Your song ratings") {
-                if store.isRefreshingTrackSubjectShelf && ratedStates.isEmpty {
-                    ProgressView("Loading ratings…")
-                } else if ratedStates.isEmpty {
+            Section {
+                Picker("Rating subject", selection: $ratingsSubjectScope) {
+                    ForEach(RatingsSubjectScope.allCases) { scope in
+                        Text(scope.rawValue).tag(scope)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("ratings-subject-scope")
+
+                if !visibleRatings.isEmpty {
+                    SubjectRatingDistributionView(
+                        ratings: visibleRatings,
+                        label: ratingsSubjectScope == .all
+                            ? "loaded song and album ratings"
+                            : "loaded \(ratingsSubjectScope.rawValue.lowercased()) ratings"
+                    )
+                }
+            }
+
+            if ratingsSubjectScope != .albums {
+                Section("Song ratings") {
+                    if store.isRefreshingTrackSubjectShelf && ratedTrackStates.isEmpty {
+                        ProgressView("Loading song ratings…")
+                    } else if ratedTrackStates.isEmpty {
+                        Text("No song ratings yet.").foregroundColor(.secondary)
+                    } else {
+                        ForEach(ratedTrackStates) { state in
+                            NavigationLink {
+                                OwnerTrackDetailView(initialState: state)
+                            } label: {
+                                TrackRatingRow(state: state)
+                            }
+                            .accessibilityIdentifier("rating-open-song-\(state.canonicalTrackID.uuidString)")
+                        }
+                    }
+
+                    if store.hasMoreTrackSubjectShelf {
+                        Button {
+                            Task { await store.loadMoreTrackSubjectShelf() }
+                        } label: {
+                            if store.isLoadingMoreTrackSubjectShelf {
+                                ProgressView().frame(maxWidth: .infinity)
+                            } else {
+                                Text("Load more song ratings").frame(maxWidth: .infinity)
+                            }
+                        }
+                        .disabled(store.isLoadingMoreTrackSubjectShelf)
+                        .accessibilityIdentifier("ratings-songs-load-more")
+                    }
+                }
+            }
+
+            if ratingsSubjectScope != .songs {
+                Section("Album ratings") {
+                    if store.isRefreshingAlbumSubjectShelf && ratedAlbumStates.isEmpty {
+                        ProgressView("Loading album ratings…")
+                    } else if ratedAlbumStates.isEmpty {
+                        Text("No album ratings yet.").foregroundColor(.secondary)
+                    } else {
+                        ForEach(ratedAlbumStates) { state in
+                            if let album = state.canonicalAlbum {
+                                NavigationLink {
+                                    CanonicalAlbumDetailView(album: album, initialState: state)
+                                } label: {
+                                    AlbumRatingRow(state: state)
+                                }
+                                .accessibilityIdentifier("rating-open-album-\(state.canonicalAlbumID.uuidString)")
+                            } else {
+                                AlbumRatingRow(state: state)
+                            }
+                        }
+                    }
+
+                    if store.hasMoreAlbumSubjectShelf {
+                        Button {
+                            Task { await store.loadMoreAlbumSubjectShelf() }
+                        } label: {
+                            if store.isLoadingMoreAlbumSubjectShelf {
+                                ProgressView().frame(maxWidth: .infinity)
+                            } else {
+                                Text("Load more album ratings").frame(maxWidth: .infinity)
+                            }
+                        }
+                        .disabled(store.isLoadingMoreAlbumSubjectShelf)
+                        .accessibilityIdentifier("ratings-albums-load-more")
+                    }
+                }
+            }
+
+            if visibleRatings.isEmpty
+                && !store.isRefreshingTrackSubjectShelf
+                && !store.isRefreshingAlbumSubjectShelf {
+                Section {
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("No song ratings yet").font(.headline)
-                        Text("Rate a song without writing a review, or add a rating while reviewing it. Ratings and Loved are independent.")
+                        Text("No ratings in this shelf").font(.headline)
+                        Text("Rate a song or album without writing a review. Reviews keep their own authored rating snapshots.")
                             .font(.footnote)
                             .foregroundColor(.secondary)
                     }
                     .accessibilityIdentifier("ratings-empty-state")
-                } else {
-                    RatingDistributionView(states: ratedStates)
-                    ForEach(ratedStates) { state in
-                        NavigationLink {
-                            OwnerTrackDetailView(initialState: state)
-                        } label: {
-                            HStack(spacing: 12) {
-                                if let track = state.canonicalTrack {
-                                    TrackArtwork(track: track.harmonyTrack, size: 44, cornerRadius: 8)
-                                }
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(state.canonicalTrack?.title ?? "Unavailable song")
-                                        .font(.headline)
-                                    Text(state.canonicalTrack?.artist ?? "Unknown artist")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                                Spacer()
-                                if let rating = state.defaultRating {
-                                    Text("\(rating, specifier: "%.1f") ★")
-                                        .font(.subheadline.weight(.semibold))
-                                        .foregroundColor(.orange)
-                                }
-                                if state.isLoved {
-                                    Image(systemName: "heart.fill")
-                                        .foregroundColor(.pink)
-                                        .accessibilityLabel("Loved")
-                                }
-                            }
-                        }
-                        .accessibilityIdentifier("rating-open-\(state.canonicalTrackID.uuidString)")
-                    }
                 }
-
-                if store.hasMoreTrackSubjectShelf {
-                    Button {
-                        Task { await store.loadMoreTrackSubjectShelf() }
-                    } label: {
-                        if store.isLoadingMoreTrackSubjectShelf {
-                            ProgressView().frame(maxWidth: .infinity)
-                        } else {
-                            Text("Load more ratings").frame(maxWidth: .infinity)
-                        }
-                    }
-                    .disabled(store.isLoadingMoreTrackSubjectShelf)
-                    .accessibilityIdentifier("ratings-load-more")
-                }
-            }
-
-            Section {
-                Text("Album ratings currently live with album reviews. A canonical album shelf will join this page when Harmony can identify the same album across providers.")
-                    .font(.footnote)
-                    .foregroundColor(.secondary)
             }
         }
     }
@@ -2494,7 +2560,7 @@ private struct OptionalDiaryRatingControl: View {
     }
 }
 
-private struct RatingPicker: View {
+struct RatingPicker: View {
     @Binding var rating: Double
 
     var body: some View {
@@ -2521,10 +2587,10 @@ private struct RatingPicker: View {
     }
 }
 
-private struct ReviewCard: View {
+struct ReviewCard: View {
     @EnvironmentObject private var store: HarmonySessionStore
     let review: RemoteMusicReview
-    let onEdit: (RemoteMusicReview) -> Void
+    let onEdit: ((RemoteMusicReview) -> Void)?
     @State private var showingDeleteConfirmation = false
 
     var body: some View {
@@ -2551,7 +2617,9 @@ private struct ReviewCard: View {
                 HStack {
                     Spacer()
                     Menu {
-                        Button("Edit review") { onEdit(review) }
+                        if let onEdit {
+                            Button("Edit review") { onEdit(review) }
+                        }
                         Button("Delete review", role: .destructive) { showingDeleteConfirmation = true }
                     } label: { Image(systemName: "ellipsis.circle") }
                     .accessibilityLabel("Review options")
@@ -2566,11 +2634,12 @@ private struct ReviewCard: View {
     }
 }
 
-private struct RatingDistributionView: View {
-    let states: [RemoteTrackSubjectState]
+private struct SubjectRatingDistributionView: View {
+    let ratings: [Double]
+    let label: String
 
     private var buckets: [MusicRatingDistributionBucket] {
-        musicRatingDistribution(states)
+        musicRatingDistribution(ratings: ratings)
     }
 
     private var maximumCount: Int {
@@ -2578,7 +2647,6 @@ private struct RatingDistributionView: View {
     }
 
     private var average: Double {
-        let ratings = states.compactMap(\.defaultRating)
         return ratings.reduce(0, +) / Double(max(1, ratings.count))
     }
 
@@ -2588,12 +2656,12 @@ private struct RatingDistributionView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(String(format: "%.2f", average))
                         .font(.title2.weight(.bold))
-                    Text("Average of loaded song ratings")
+                    Text("Average of \(label)")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
                 Spacer()
-                Text("\(states.count) rated")
+                Text("\(ratings.count) rated")
                     .font(.subheadline.weight(.semibold))
             }
 
@@ -2624,6 +2692,77 @@ private struct RatingDistributionView: View {
             .frame(height: 78, alignment: .bottom)
         }
         .accessibilityIdentifier("ratings-distribution")
+    }
+}
+
+private struct TrackRatingRow: View {
+    let state: RemoteTrackSubjectState
+
+    var body: some View {
+        HStack(spacing: 12) {
+            if let track = state.canonicalTrack {
+                TrackArtwork(track: track.harmonyTrack, size: 44, cornerRadius: 8)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(state.canonicalTrack?.title ?? "Unavailable song").font(.headline)
+                Text(state.canonicalTrack?.artist ?? "Unknown artist")
+                    .font(.caption).foregroundColor(.secondary)
+                Text("Song").font(.caption2).foregroundColor(.secondary)
+            }
+            Spacer()
+            RatingStatus(rating: state.defaultRating, isLoved: state.isLoved)
+        }
+    }
+}
+
+private struct AlbumRatingRow: View {
+    let state: RemoteAlbumSubjectState
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Group {
+                if let artwork = state.canonicalAlbum?.artworkURL {
+                    AsyncImage(url: artwork) { phase in
+                        if let image = phase.image { image.resizable().scaledToFill() }
+                        else { Image(systemName: "square.stack").foregroundColor(.secondary) }
+                    }
+                } else {
+                    Image(systemName: "square.stack").foregroundColor(.secondary)
+                }
+            }
+            .frame(width: 44, height: 44)
+            .background(Color.secondary.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(state.canonicalAlbum?.title ?? "Unavailable album").font(.headline)
+                Text(state.canonicalAlbum?.artist ?? "Unknown artist")
+                    .font(.caption).foregroundColor(.secondary)
+                Text("Album").font(.caption2).foregroundColor(.secondary)
+            }
+            Spacer()
+            RatingStatus(rating: state.defaultRating, isLoved: state.isLoved)
+        }
+    }
+}
+
+private struct RatingStatus: View {
+    let rating: Double?
+    let isLoved: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if let rating {
+                Text("\(rating, specifier: "%.1f") ★")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.orange)
+            }
+            if isLoved {
+                Image(systemName: "heart.fill")
+                    .foregroundColor(.pink)
+                    .accessibilityLabel("Loved")
+            }
+        }
     }
 }
 
@@ -2664,7 +2803,9 @@ private struct ReviewSubjectSummary: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            if let artworkURL = review.canonicalTrack?.artworkURL ?? review.subjectArtworkURL {
+            if let artworkURL = review.canonicalTrack?.artworkURL
+                ?? review.canonicalAlbum?.artworkURL
+                ?? review.subjectArtworkURL {
                 AsyncImage(url: artworkURL) { phase in
                     if let image = phase.image {
                         image.resizable().scaledToFill()
@@ -2678,9 +2819,9 @@ private struct ReviewSubjectSummary: View {
             }
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(review.canonicalTrack?.title ?? review.subjectTitle ?? "Unavailable music")
+                Text(review.canonicalTrack?.title ?? review.canonicalAlbum?.title ?? review.subjectTitle ?? "Unavailable music")
                     .font(.subheadline.weight(.semibold))
-                Text(review.canonicalTrack?.artist ?? review.subjectArtist ?? "Unknown artist")
+                Text(review.canonicalTrack?.artist ?? review.canonicalAlbum?.artist ?? review.subjectArtist ?? "Unknown artist")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Text(review.subjectKind.capitalized)
@@ -2697,7 +2838,7 @@ private struct ReviewDetailView: View {
     @Environment(\.dismiss) private var dismiss
     let reviewID: UUID
     let fallbackReview: RemoteMusicReview
-    let onEdit: (RemoteMusicReview) -> Void
+    let onEdit: ((RemoteMusicReview) -> Void)?
     @State private var commentDraft = ""
     @State private var isShowingSpoilers = false
     @State private var showingDeleteConfirmation = false
@@ -2709,7 +2850,19 @@ private struct ReviewDetailView: View {
     var body: some View {
         List {
             Section {
-                ReviewSubjectSummary(review: review)
+                if let album = review.canonicalAlbum {
+                    NavigationLink {
+                        CanonicalAlbumDetailView(
+                            album: album,
+                            initialState: store.albumSubjectState(for: album)
+                        )
+                    } label: {
+                        ReviewSubjectSummary(review: review)
+                    }
+                    .accessibilityIdentifier("review-open-canonical-album-\(album.id.uuidString)")
+                } else {
+                    ReviewSubjectSummary(review: review)
+                }
                 HStack(spacing: 8) {
                     Text(review.profile.displayName).font(.headline)
                     Text("\(String(format: "%.1f", review.rating)) ★")
@@ -2794,14 +2947,16 @@ private struct ReviewDetailView: View {
                 }
             }
         }
-        .navigationTitle(review.canonicalTrack?.title ?? review.subjectTitle ?? "Review")
+        .navigationTitle(review.canonicalTrack?.title ?? review.canonicalAlbum?.title ?? review.subjectTitle ?? "Review")
         .navigationBarTitleDisplayMode(.inline)
         .disabled(store.mutatingReviewIDs.contains(review.id))
         .toolbar {
             if store.isOwnReview(review) {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
-                        Button("Edit review") { onEdit(review) }
+                        if let onEdit {
+                            Button("Edit review") { onEdit(review) }
+                        }
                         Button("Delete review", role: .destructive) { showingDeleteConfirmation = true }
                     } label: {
                         Image(systemName: "ellipsis.circle")

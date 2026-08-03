@@ -1,7 +1,7 @@
 # Reviews and listening journal design
 
 **Decision date:** 2 August 2026  
-**Status:** first-class Reviews experience and canonical album identity deployed
+**Status:** first-class Reviews, canonical album pages, and album rating state deployed
 
 ## Why this is a separate product surface
 
@@ -115,8 +115,10 @@ Only the first stage should be described as implemented:
    title/artist/album/body search, Songs / Albums / Loved scopes, and Newest /
    Highest rated / Lowest rated ordering.
 7. **Current:** Ratings is a full shelf in the root Reviews page, backed by
-   independent current song state rather than inferred from review rows. It
-   presents a half-star distribution, average, count, and canonical song links.
+   independent current song and album state rather than inferred from review
+   rows. Its All / Songs / Albums scopes present half-star distributions and
+   link to canonical subject pages. Canonical album pages combine private owner
+   state with provider actions and RLS-filtered visible-review statistics.
 8. **Next:** a deliberate create-time opinion-linking interaction if the
    edit-first workflow proves too hidden, plus server-side filtered search if
    exhaustive results are required.
@@ -135,7 +137,8 @@ tags, lists, or stats already exist.
 | Listening journal | `listening_history_entries` | dated and repeatable; manual entries may carry Relisten/tags and a historical rating, while provider imports are deduplicated |
 | Opinion | `music_reviews` | authored 0.5–5.0 rating/Loved snapshot and optional review text |
 | Track state | `profile_track_subject_states` | authoritative private current Listened, default rating, Loved, and Want to listen state |
-| Review affinity snapshot | `music_reviews.is_loved` | the Loved value submitted with that review; saving a track review also updates current track state |
+| Album state | `profile_album_subject_states` | authoritative private current Listened, default rating, Loved, and Want to listen state for a canonical release |
+| Review affinity snapshot | `music_reviews.is_loved` | the Loved value submitted with that review; saving a canonical track or album review also updates its current subject state |
 | Spoiler disclosure | `music_reviews.contains_spoilers` | author-controlled metadata; clients conceal the body until the reader reveals it |
 | Community reaction | `review_reactions` | another listener reacting to a published review |
 
@@ -148,8 +151,9 @@ reader's response to that review.
 The fifth iOS tab has four full shelves and opens on Reviews:
 
 - **Reviews** contains the owner's published song and album opinions.
-- **Ratings** contains the owner's current song ratings independently of review
-  authorship, with a ten-bucket half-star distribution.
+- **Ratings** contains the owner's current song and album ratings independently
+  of review authorship, with All / Songs / Albums scopes and ten-bucket
+  half-star distributions.
 - **Diary** contains the owner's dated listening entries.
 - **Activity** contains shortcuts into the owner's journal plus
   follower-visible review activity.
@@ -160,10 +164,13 @@ position survive dismissal. The rating control supports half-star steps, and
 Loved remains independent of the score.
 
 Migration 038 introduces canonical album release identity and exact provider
-mappings. Existing album ratings remain review-backed because owner album state
-is a separate future decision. Provider snapshots are never merged by title or
-artist; cross-provider identity requires trusted UPC/EAN evidence. See
-`CANONICAL_ALBUMS.md` for the authority and migration contract.
+mappings. Migration 039 adds a separate owner album-state record and a
+caller-visible review aggregate contract. Migration 040 makes an album review
+update current Listened/default-rating/Loved/Want state while retaining every
+review's authored snapshot, and backfills the newest active canonical album
+review per owner/release. Provider snapshots are never merged by title or artist;
+cross-provider identity requires trusted UPC/EAN evidence. See
+`CANONICAL_ALBUMS.md` and `ALBUM_SUBJECT_STATE.md` for the authority contracts.
 
 ### Activity-volume policy for music
 
@@ -322,7 +329,8 @@ track review still exists. Direct client mutation is revoked and owner-only RLS
 protects reads. Track review creation/editing marks Listened, clears Want to
 listen, and makes the submitted rating/Loved the current track state. Album
 reviews do not have a canonical track relationship and therefore do not mutate
-track state.
+track state; canonical album reviews apply the equivalent transition to their
+album state.
 
 Hosted smoke covers half-step validation, owner isolation, foreign-entry
 rejection, state synchronization, independent Loved/Want-to-listen behavior,
@@ -383,6 +391,25 @@ history, and review writers with the same owner/track advisory lock. Clearing
 Listened is rejected while any history or active track review still proves the
 relationship; deleting a review does not roll current state backward. Direct
 current-state changes never rewrite a historical Diary or review snapshot.
+
+Migration 040 applies the same model to canonical albums. An active album
+review insert or rating/Loved edit marks Listened, clears Want to listen, and
+makes the submitted rating/Loved current. It shares the setter's owner/album
+advisory lock, and the setter rejects clearing Listened while an active album
+review exists. Deleting a review does not roll state backward. Existing album
+reviews are backfilled from the most recently updated active review per
+owner/release. Album aggregates reduce the caller-visible review set to its
+newest active row per profile, so multiple historical opinions from one member
+do not overweight the community rating.
+
+This behavior is based on Letterboxd's official
+[FAQ](https://letterboxd.com/about/faq/), which says a rating saved with a
+diary entry/review becomes the default film rating without rewriting ratings
+on older entries, and that watched/logged/reviewed/rated films leave Watchlist.
+The [Welcome guide](https://letterboxd.com/welcome/) independently describes
+moving watched or logged films from Watchlist. Harmony carries over that
+current-state-versus-snapshot rule for albums; it does not infer full-album
+listening from individual track playback.
 
 Album review creation remains available on Spotify/Apple catalog results in
 Add music. The server migration `202608020023_review_affinity.sql` adds the
