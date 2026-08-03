@@ -92,10 +92,17 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(chooseMusic.waitForExistence(timeout: 5))
         chooseMusic.tap()
         XCTAssertTrue(app.navigationBars["Choose music"].waitForExistence(timeout: 5))
-        let reviewSong = app.buttons["Review song"].firstMatch
+        XCTAssertTrue(app.buttons["Songs"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Albums"].waitForExistence(timeout: 5))
+        app.buttons["Albums"].tap()
+        XCTAssertTrue(app.staticTexts["No albums found for this search."].waitForExistence(timeout: 5))
+        app.buttons["Songs"].tap()
+        let reviewSong = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Review song '")).firstMatch
         XCTAssertTrue(reviewSong.waitForExistence(timeout: 5))
         reviewSong.tap()
         XCTAssertTrue(app.switches["Contains spoilers"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Audience"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Only me"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Choose different music"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["Your diary"].exists)
     }

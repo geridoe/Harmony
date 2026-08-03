@@ -29,6 +29,62 @@ These behaviors are documented in the [Letterboxd FAQ](https://letterboxd.com/ab
 Harmony adopts that information model, not Letterboxd's branding, colors,
 icons, poster grid, or copy.
 
+### Evidence from the actual Letterboxd product
+
+This design was checked against Letterboxd's current official product pages,
+not secondary mockups. Its [FAQ](https://letterboxd.com/about/faq/) separates
+marking a film watched from logging a dated Diary entry; logging may include an
+optional review, rating, Like, and tags. The same FAQ says Like and rating can
+be used together or independently, describes rewatch entries, spoiler-tagged
+reviews, follower activity, review comments, and member Likes/Profile pages.
+Letterboxd's [official apps page](https://letterboxd.com/apps/) presents Explore,
+Diary, and Social as separate jobs: members keep a diary while a following
+feed shows what friends watch, like, list, and discuss. The current
+[App Store listing](https://apps.apple.com/us/app/letterboxd/id1054271011)
+confirms dated logs with ratings/reviews/tags, review comments, lists, member
+profiles with Reviews and Diary entries, following activity, and statistics.
+
+The product pattern Harmony transfers is therefore:
+
+| Verified Letterboxd pattern | Harmony adaptation |
+| --- | --- |
+| Film page and review subject | Canonical track or provider-identified album |
+| Ten-position half-star rating scale | 0.5–5.0 music rating |
+| Like independent of rating | Loved affinity independent of score and social review reactions |
+| Dated Diary log, optionally reviewed | Dated listen distinct from the current opinion |
+| Rewatch flag | Future relisten context on an individual listen |
+| Optional review, tags, and spoiler metadata | Optional review and spoiler flag now; music-context tags later |
+| Dedicated review detail with likes/comments | Review detail with reaction and comment thread |
+| Member Reviews, Diary, and Likes surfaces | Future profile shelves for Reviews, Journal, and Loved music |
+| Following activity feed | Follower-visible review activity now; broader typed activity later |
+
+The information hierarchy matters as much as the fields. Harmony's Reviews
+experience remains the fifth root tab, with its own feed, composer, and review
+detail navigation. It must not regress into a small Diary section inside the
+Listen tab. Listen remains about people, notifications, eavesdropping, and
+listening history; Reviews is where authored music opinions and their
+conversation live.
+
+### Staged adaptation roadmap
+
+Only the first stage should be described as implemented:
+
+1. **Current:** first-class Reviews tab, follower review feed, song/album
+   composer, rating/Loved/spoiler/audience controls, compact cards, and review
+   detail with reactions/comments. Basic dated listening history exists, but
+   it is not yet a complete Letterboxd-style Diary product.
+2. **Next:** a dedicated Journal/Diary experience with explicit dates,
+   relisten context, optional linkage between a listen and an opinion, and
+   music-native tags such as setting, mood, event, or listening companions.
+3. **Later:** profile Reviews/Journal/Loved shelves and a richer typed following
+   activity feed. Bulk provider-history imports must not flood that feed.
+4. **After moderation and ranking policy:** popular/community discovery,
+   shareable lists/collections, and listening statistics/year summaries.
+
+This order emulates Letterboxd's durable separation of diary, opinion,
+affinity, and social activity without claiming that Harmony's later discovery,
+tags, lists, or stats already exist.
+
 ## Harmony model
 
 | Concept | Harmony representation | Behavior |
@@ -58,11 +114,11 @@ Album review creation remains available on Spotify/Apple catalog results in
 Add music. The server migration `202608020023_review_affinity.sql` adds the
 affinity field and updates owner-authorized create/edit RPCs.
 
-The Reviews composer now also has its own subject-picker sheet. It can select
-a track or album from a catalog result without adding it to a party queue. This
-is an implemented first pass; the dedicated local search model, segmented
-album display, and creation-time per-review audience described below remain
-follow-up work.
+The Reviews composer has its own subject-picker sheet. It selects a song or
+album without adding it to a party queue, starting playback, or writing a
+listening-history entry. Picker searches own their results independently of
+Add music, present separate Songs and Albums modes, and expose an explicit
+creation audience that is captured in the review draft.
 
 ## Implemented subject-picker slice
 
@@ -70,21 +126,21 @@ follow-up work.
 
 The composer no longer requires a user to add music to a party queue merely to
 write an opinion. **Choose a song or album** opens `ReviewSubjectPicker`, a
-sheet with one debounced search field. It currently presents each matching
-track with two independent actions:
+sheet with a debounced search field and a Songs/Albums segmented control:
 
-1. Search only connected catalogs after a short debounce.
-2. **Review song** selects that `HarmonyTrack`.
-3. **Review album** appears when the track supplies a `ReviewableAlbum`; its
-   provider, provider album ID, title, artist, artwork, and deep link travel
-   with the selection.
-4. The author sets half-star rating, optional body, and Loved, then saves.
+1. Search only connected catalogs after a short debounce, keeping the results
+   local to this picker.
+2. Songs displays selectable `HarmonyTrack` rows.
+3. Albums derives `ReviewableAlbum` rows from the returned tracks and
+   deduplicates by `(provider, provider album ID)`. Title or artist differences
+   do not split the same provider album, while identical IDs from different
+   providers remain distinct records.
+4. A selected album preserves its provider, provider album ID, title, artist,
+   artwork, and safe deep link.
+5. The author sets half-star rating, optional body, Loved, spoiler disclosure,
+   and audience, then saves.
    Selecting media never adds it to the room queue, starts playback, or creates
    a listening-journal entry.
-
-There is not yet a segmented Songs/Albums result mode or a deduplicated album
-shelf. The same album can therefore be offered below multiple matching tracks.
-Those are intentional follow-up refinements, not current behavior.
 
 ### Implemented state ownership and cancellation
 
@@ -92,23 +148,24 @@ The implemented ownership is:
 
 | Owner | State / responsibility |
 | --- | --- |
-| `ReviewsView` | picker presentation, selected `ReviewDraftSubject?`, rating, Loved, review body, and edit form state |
-| `ReviewSubjectPicker` | query text and the `Task.sleep` debounce tied to that query |
-| `HarmonySessionStore` | provider connection state plus shared `searchCatalog(query:)`, search loading/message, and `catalogSearchResults` |
+| `ReviewsView` | picker presentation, one `ReviewDraft`, and edit form state |
+| `ReviewSubjectPicker` | local query, selected Songs/Albums mode, debounce task, and album derivation |
+| `HarmonySessionStore` | provider connection state plus purpose-keyed results/loading/message and request tokens for `.addMusic` and `.reviews` |
 | Repository/providers | Spotify Edge Function or future MusicKit search, then canonical/provider resolution |
 
-`ReviewDraftSubject` is currently a small enum:
+`ReviewDraftSubject` remains a small enum:
 
 ```text
 track(HarmonyTrack) | album(ReviewableAlbum)
 ```
 
-Selecting a subject returns it through a closure, resets rating/Loved/body, and
-dismisses the picker. It performs no database write. Today the picker reuses
-`catalogSearchResults`; this means an Add music search and a Review picker
-search can replace each other’s result set. Swift task cancellation prevents
-cancelled debounce work from continuing, but there is no independent result
-generation/token or local picker model yet.
+Selecting a subject returns it through a closure and dismisses the picker. It
+performs no database write. The picker calls
+`searchCatalog(query:purpose: .reviews)` and reads only
+`catalogSearchState(for: .reviews)`. Add music continues through `.addMusic`
+and its compatibility accessors. Each purpose has an independent request UUID,
+so an older provider response is discarded without changing the other
+surface's results, loading indicator, or message.
 
 ### Persistence routing
 
@@ -120,12 +177,13 @@ the authority:
 | Track | `publishTrackReview` → `createTrackReview` → `create_music_review` | `canonical_track_id`; repository resolves it if necessary |
 | Album | `publishAlbumReview` → `createAlbumReview` → `create_music_review` | provider + provider album ID plus validated title/artwork/deep link |
 
-`ReviewsView` currently performs the small subject switch and calls the
+`ReviewsView` performs the small subject switch and calls the
 appropriate store method. The store methods apply the existing
 `isPublishingMusicReview` guard, refresh review lists on success, and return
-`Bool`. The composer resets body/Loved only when that result is true, so a
-failed request preserves the selected subject and the author’s text. It does
-not dismiss the Reviews tab or discard the selection after failure.
+`Bool`. The composer replaces its draft only when that result is true, so a
+failed request preserves subject, rating, body, Loved, spoiler disclosure, and
+audience. It does not dismiss the Reviews tab or discard picker context after
+failure.
 
 ### Loved, journal, and privacy semantics
 
@@ -150,10 +208,12 @@ accepts `containsSpoilers` on track/album creation and owner edits. The review
 composer and owner edit form expose the author-facing toggle, and cards require
 an explicit per-review reveal before rendering a flagged body.
 
-For a newly created review, the current store reads
-`reviewsSocialVisibility` at submission time. It does not yet show audience in
-the creation composer or snapshot a draft audience. Existing reviews do expose
-an owner-only edit audience picker. In all cases, the saved review visibility
+For a newly created review, the composer seeds `ReviewDraft.visibility` from
+`reviewsSocialVisibility` when the draft opens, then exposes Only me/Followers
+in the creation form. Submission uses that draft value—not a later read of the
+global profile setting—so changing Social privacy while the composer is open
+cannot silently widen or narrow the review's audience. Existing reviews expose
+the same owner-only edit audience picker. In all cases, saved review visibility
 controls both the body and Loved marker; RLS and `can_view_social` deny blocked
 viewers and viewers outside that audience. The picker never exposes provider
 tokens, library contents, raw playback state, or another person’s catalog.
@@ -166,16 +226,16 @@ live-presence or history record.
 | --- | --- |
 | Empty query or no results | use the store's catalog/empty result presentation; do not submit without a selected/current subject |
 | No provider / MusicKit unavailable | store provides existing catalog connection guidance; no picker-specific navigation yet |
-| Spotify reauthorization or transient error | display the shared catalog message and retain the current Reviews composer |
+| Spotify reauthorization or transient error | display the picker-local provider message and retain the current Reviews composer and search context |
 | Album lacks required provider metadata | no album button is offered when `reviewableAlbum` is absent; server validation remains final authority |
-| Canonical resolution/RPC/RLS error | store returns `false`, keeps subject/body/Loved/spoiler state in Reviews, and supplies `collaborationMessage` |
-| Success | refresh lists; clear body/Loved/spoiler state; retain the selected subject for a potential subsequent opinion |
+| Canonical resolution/RPC/RLS error | store returns `false`, keeps every `ReviewDraft` field, and supplies `collaborationMessage` |
+| Success | refresh lists and reset the creation draft from the current default audience |
 
 ### Tests for the implemented slice
 
 | Layer | Required coverage |
 | --- | --- |
-| Unit | `ReviewDraftSubject` routing; half-star bounds; Loved independence; `Bool` failure retains subject/body/Loved |
+| Unit | search-state isolation; album identity dedupe; audience snapshot; half-star bounds; Loved independence; `Bool` failure preserves every draft field; subject selection has no queue/history mutation |
 | Repository | track call contains canonical/provider mapping; album call preserves provider metadata; no direct table write is introduced |
 | UI | fifth tab opens; Choose music opens picker; per-result Review song/Review album actions; selected subject appears in composer; cancel preserves no write; error preserves draft; success appears in My reviews |
 | Backend smoke | both subject kinds respect owner-only edit/delete, follower/private visibility, and block enforcement |
@@ -208,16 +268,17 @@ network, validation, or RLS error occurs. Deletion navigates back only after
 the backend confirms it. Owner authorization remains enforced by the RPCs/RLS,
 not by the presence of SwiftUI menus.
 
-## Follow-up picker refactor
+## Picker and creation-draft invariants
 
-Introduce `ReviewMediaPickerModel` with local query, result mode, debounce,
-cancellation, loading/error state, and results. It should call a store search
-method that returns results rather than mutating `catalogSearchResults`; this
-prevents Add music and Reviews searches racing. Add a segmented Songs/Albums
-presentation and deduplicate albums by provider plus provider album ID, while
-requiring a provider ID and title before selection.
+`ReviewSubjectPicker` owns local query, result mode, and debounce cancellation.
+`HarmonySessionStore` owns `CatalogSearchState` and a request token separately
+for `.addMusic` and `.reviews`; a search or reset changes only its requested
+purpose. That prevents the two surfaces from racing while keeping provider
+connection and merge logic centralized. The Albums mode deduplicates by
+provider plus provider album ID and only permits provider-identified albums
+with a non-empty title.
 
-Replace the parallel creation fields with a `ReviewDraft` value:
+Creation state is represented by one `ReviewDraft` value:
 
 ```text
 subject: track(HarmonyTrack) | album(ReviewableAlbum)
@@ -227,11 +288,11 @@ isLoved: Bool
 visibility: SocialVisibilityOption
 ```
 
-Seed `visibility` from `reviewsSocialVisibility` when the composer opens,
-display Only me/Followers in the creation form, and retain that value through
+The draft snapshots `reviewsSocialVisibility` when the composer opens,
+displays Only me/Followers in the creation form, and retains that value through
 submission. A simultaneous Connections change must not silently alter an open
-draft. Add generation-based stale-response rejection, actionable
-provider-specific errors, and preserve all draft fields until success.
+draft. Provider-specific failures retain the existing local search results and
+the entire authored draft. Only confirmed publication resets it.
 
 ## Subsequent review-specific slices
 

@@ -226,6 +226,103 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(store.catalogSearchResults?.first?.availability(for: .appleMusic), .playable)
     }
 
+    func testReviewCatalogSearchDoesNotReplaceAddMusicSearchState() async {
+        let store = HarmonySessionStore()
+
+        await store.searchCatalog(query: "Afterglow", purpose: .addMusic)
+        let addMusicState = store.catalogSearchState(for: .addMusic)
+        await store.searchCatalog(query: "Neon Coast", purpose: .reviews)
+
+        XCTAssertEqual(store.catalogSearchState(for: .addMusic), addMusicState)
+        XCTAssertEqual(store.catalogSearchState(for: .reviews).query, "Neon Coast")
+        XCTAssertEqual(store.catalogSearchState(for: .reviews).results?.map(\.title), ["Neon Coast"])
+        XCTAssertEqual(store.catalogSearchResults?.map(\.title), ["Afterglow"], "The Add music compatibility accessor must stay purpose-scoped")
+    }
+
+    func testResettingReviewSearchDoesNotClearAddMusicResults() async {
+        let store = HarmonySessionStore()
+
+        await store.searchCatalog(query: "Afterglow", purpose: .addMusic)
+        await store.searchCatalog(query: "Neon Coast", purpose: .reviews)
+        store.resetCatalogSearch(.reviews)
+
+        XCTAssertEqual(store.catalogSearchState(for: .reviews), .idle)
+        XCTAssertEqual(store.catalogSearchState(for: .addMusic).results?.map(\.title), ["Afterglow"])
+    }
+
+    func testReviewAlbumDeduplicationUsesProviderAndProviderID() {
+        let spotifyAlbum = ReviewableAlbum(
+            provider: .spotify,
+            providerID: "shared-album-id",
+            title: "Original title",
+            artist: "Original artist",
+            artworkURL: nil,
+            deepLinkURL: nil
+        )
+        let changedSpotifyMetadata = ReviewableAlbum(
+            provider: .spotify,
+            providerID: "shared-album-id",
+            title: "Localized title",
+            artist: "Localized artist",
+            artworkURL: URL(string: "https://i.scdn.co/image/alternate"),
+            deepLinkURL: URL(string: "https://open.spotify.com/album/shared-album-id")
+        )
+        let appleAlbumWithSameID = ReviewableAlbum(
+            provider: .appleMusic,
+            providerID: "shared-album-id",
+            title: "Original title",
+            artist: "Original artist",
+            artworkURL: nil,
+            deepLinkURL: nil
+        )
+        let tracks = [
+            reviewTrack(title: "One", album: spotifyAlbum),
+            reviewTrack(title: "Two", album: changedSpotifyMetadata),
+            reviewTrack(title: "Three", album: appleAlbumWithSameID)
+        ]
+
+        let albums = deduplicatedReviewAlbums(from: tracks)
+
+        XCTAssertEqual(albums, [spotifyAlbum, appleAlbumWithSameID])
+    }
+
+    func testReviewDraftSnapshotsAudienceAndKeepsAllAuthoredFields() {
+        var profileDefault = SocialVisibilityOption.followers
+        let subject = ReviewDraftSubject.track(reviewTrack(title: "Snapshot song"))
+        let draft = ReviewDraft(
+            subject: subject,
+            rating: 3.5,
+            isLoved: true,
+            containsSpoilers: true,
+            body: "Keep this if publication fails",
+            visibility: profileDefault
+        )
+
+        profileDefault = .privateOnly
+
+        XCTAssertEqual(draft.subject, subject)
+        XCTAssertEqual(draft.rating, 3.5)
+        XCTAssertTrue(draft.isLoved)
+        XCTAssertTrue(draft.containsSpoilers)
+        XCTAssertEqual(draft.body, "Keep this if publication fails")
+        XCTAssertEqual(draft.visibility, .followers, "An open draft must not follow later profile-default changes")
+    }
+
+    func testChoosingReviewSubjectHasNoQueueOrHistorySideEffects() {
+        let store = HarmonySessionStore()
+        let initialQueue = store.queue
+        let initialHistory = store.listeningHistory
+
+        _ = ReviewDraft(
+            subject: .track(reviewTrack(title: "Opinion only")),
+            visibility: .followers
+        )
+
+        XCTAssertEqual(store.queue, initialQueue)
+        XCTAssertEqual(store.listeningHistory.map(\.id), initialHistory.map(\.id))
+        XCTAssertEqual(store.queueRevision, 12)
+    }
+
     func testClearingSessionRemovesRoomStateAndRestoresLocalOwnership() {
         let store = HarmonySessionStore()
 
@@ -242,6 +339,18 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(store.currentMember.role, .conductor)
         XCTAssertTrue(store.activeMemberIDs.isEmpty)
         XCTAssertEqual(store.collaborationMessage, "The Conductor ended this session")
+    }
+
+    private func reviewTrack(title: String, album: ReviewableAlbum? = nil) -> HarmonyTrack {
+        HarmonyTrack(
+            title: title,
+            artist: "Test artist",
+            album: album?.title ?? "Test album",
+            duration: 180,
+            symbol: "music.note",
+            mappings: [ProviderTrackMapping(provider: .spotify, providerID: "spotify:track:\(title)", availability: .playable)],
+            reviewableAlbum: album
+        )
     }
 }
 

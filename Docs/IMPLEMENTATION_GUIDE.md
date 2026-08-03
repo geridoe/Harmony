@@ -157,26 +157,28 @@ The UI offers Only me and Followers. The database supports `public` for a
 future intentional discovery feature, but no public-discovery product surface
 is implemented.
 
-### Implemented: Reviews subject picker
+### Implemented: isolated Reviews subject picker
 
-The Reviews tab now has a **Choose a song or album** action. `ReviewsView`
-owns a local `ReviewDraftSubject?` (`track(HarmonyTrack)` or
-`album(ReviewableAlbum)`), rating, body, Loved state, and sheet presentation.
+The Reviews tab has a **Choose a song or album** action. `ReviewsView` owns a
+single `ReviewDraft`: subject (`track(HarmonyTrack)` or
+`album(ReviewableAlbum)`), rating, body, Loved, spoiler disclosure, and an
+explicit per-review audience.
 If nothing is selected, the composer still falls back to `nowPlaying` for the
 quick-review path.
 
-`ReviewSubjectPicker` is a sheet with a debounced query and displays each
-`HarmonyTrack` result with **Review song** and, where available, **Review
-album** buttons. The selected subject returns through a closure, resets the
-composer's rating/Loved/body fields, and never adds a queue item, starts
-playback, or writes listening history.
+`ReviewSubjectPicker` is a sheet with a local debounced query and segmented
+**Songs / Albums** results. Song rows represent
+`HarmonyTrack`; album rows are deduplicated by provider plus provider album ID,
+not by mutable display metadata. The selected subject returns through a
+closure and never adds a queue item, starts playback, or writes listening
+history.
 
-Today the sheet calls `HarmonySessionStore.searchCatalog(query:)` and reads
-the store-wide `catalogSearchResults`, `isSearchingCatalog`, and search
-message. That is correct functional behavior but means it shares search state
-with Add music; opening both surfaces can replace each other’s results. The
-picker does not yet use a segmented Songs/Albums view or deduplicate album
-rows.
+The picker calls `searchCatalog(query:purpose: .reviews)` and reads
+`catalogSearchState(for: .reviews)`. Add music uses the independent `.addMusic`
+state (also exposed through its compatibility accessors
+`catalogSearchResults`, `isSearchingCatalog`, and `catalogSearchMessage`). Each
+purpose has its own request UUID, so an older provider response is discarded
+without replacing a newer query or changing the other surface's state.
 
 At publication, `publishTrackReview` routes to
 `createTrackReview(track:rating:body:visibility:isLoved:)`; the repository
@@ -188,10 +190,11 @@ selected subject and author text on failure. The existing create/update RPCs,
 RLS, and `is_loved` column are sufficient; this feature required no new schema
 migration.
 
-New reviews use the current global `reviewsSocialVisibility` at the moment of
-submission. A review can be individually changed after creation in Edit
-review, but the create composer does **not** yet snapshot or expose a
-per-review audience. “Loved” remains the author’s independent affinity field:
+New drafts snapshot `reviewsSocialVisibility` when the composer opens and show
+an explicit Only me/Followers audience picker. Submission passes that captured
+value; changing the Connections default while a draft is open does not change
+the pending review. A review can still be individually changed after creation
+in Edit review. “Loved” remains the author’s independent affinity field:
 it never creates a reaction, does not notify followers by itself, and is
 visible only where the enclosing review is visible.
 
@@ -231,24 +234,21 @@ The current reaction choice is heart only. Provider deep links from a detail
 are implemented; deep links *from notifications*, additional reaction kinds,
 and moderation workflows remain follow-up work.
 
-### Follow-up: isolate picker state and add creation audience
+### Reviews picker and draft guarantees
 
-The next refactor should introduce a `ReviewMediaPickerModel` that owns query,
-result mode, debounce/cancellation, loading/error state, and local results.
-It should call a store method that returns results rather than mutate
-`catalogSearchResults`, so Add music and Reviews cannot race. That refactor
-can add a segmented **Songs / Albums** result mode, deduplicating albums by
-provider plus provider album ID and only allowing provider-identified albums
-with a title to be selected.
+`ReviewSubjectPicker` owns query, result mode, and debounce cancellation.
+`HarmonySessionStore` owns purpose-keyed `CatalogSearchState` plus an
+independent request UUID for `.addMusic` and `.reviews`. Album identity is
+`(provider, provider album ID)`; two tracks on one provider album produce one
+album row, while Spotify and Apple Music records do not collapse merely
+because their display metadata matches.
 
-At the same time, replace the parallel `ReviewsView` fields with a small
-`ReviewDraft` value holding subject, rating, body, `isLoved`, and visibility.
-Seed visibility from `reviewsSocialVisibility` on composer open, allow an
-explicit Only me/Followers selection, and preserve that snapshot until save.
-A Connections privacy change must not silently change an already-open draft.
-Keep the existing `Bool` publication result behavior: dismiss/clear only after
-success and preserve draft/search context on a recoverable catalog, auth,
-validation, RPC, or RLS failure.
+`ReviewDraft` holds subject, rating, body, `isLoved`, spoiler disclosure, and
+visibility. Visibility is copied from the profile default at draft creation
+and is never re-read during submission. Existing `Bool` publication behavior
+remains: clear only after success and preserve the whole draft/search context
+on catalog, auth, validation, RPC, or RLS failure. Picker selection and
+publication do not enqueue media or create listening-history entries.
 
 ## 4. Supabase data model
 
@@ -424,15 +424,14 @@ does not print tokens, and needs a Node 22+ binary only for its native
 WebSocket assertion. It is an integration/security test, not a substitute for
 provider-device testing.
 
-The implemented picker needs UI coverage for choosing a subject, its per-result
-song/album actions, and preserving the composer after a failed `Bool` publish.
+The implemented picker has coverage for choosing a subject, switching its
+Songs/Albums result mode, provider-identity album deduplication, audience
+snapshotting, and preserving the composer after a failed `Bool` publish.
 Review-detail coverage should verify compact navigation, fresh-ID/fallback
 rendering after a refresh, concealed/revealed spoilers, owner edit/delete,
-and that failed edit/comment operations retain their drafts. The follow-up
-picker refactor needs unit coverage for album deduplication, visibility
-snapshotting, and stale/cancelled query rejection, plus UI coverage that
-Reviews search cannot alter Add music results and that a per-review audience
-survives an in-flight Connections change. Backend smoke coverage should
+and that failed edit/comment operations retain their drafts. Continue adding
+coverage for stale/cancelled query rejection and an end-to-end assertion that
+a Reviews search cannot alter Add music results. Backend smoke coverage should
 continue to prove owner-only edits and visibility/block enforcement for both
 subject kinds.
 
@@ -495,10 +494,9 @@ MusicKit library/playback authorization.
    now-playing share, search, and local App Remote playback on a physical
    iPhone. Capture server/function errors separately from App Remote transport
    errors.
-2. Refactor the implemented Reviews picker: isolate its catalog state from Add
-   music, add segmented/deduplicated album results, and add explicit
-   per-review audience snapshotting while retaining the current separate
-   journal/opinion/Loved model and no queue side effect.
+2. Extend the isolated Reviews picker with richer provider-specific empty and
+   recovery states while retaining its separate journal/opinion/Loved model
+   and no-queue/no-history guarantees.
 3. Review detail and spoiler conceal/reveal are implemented; extend that
    surface with additional reaction choices, comment moderation, and
    notification-to-review deep links.

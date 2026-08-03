@@ -155,6 +155,20 @@ enum SocialPrivacyCategory: Equatable {
     case reviews
 }
 
+enum CatalogSearchPurpose: Hashable {
+    case addMusic
+    case reviews
+}
+
+struct CatalogSearchState: Equatable {
+    var query = ""
+    var results: [HarmonyTrack]?
+    var isSearching = false
+    var message: String?
+
+    static let idle = CatalogSearchState()
+}
+
 @MainActor
 final class HarmonySessionStore: ObservableObject {
     @Published var queue: [QueueItem]
@@ -173,9 +187,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var spotifyPlaybackConnection: ProviderConnectionState = .disconnected
     @Published private(set) var spotifyPlaybackErrorMessage: String?
     @Published private(set) var activeMemberIDs: Set<UUID> = []
-    @Published private(set) var catalogSearchResults: [HarmonyTrack]?
-    @Published private(set) var isSearchingCatalog = false
-    @Published private(set) var catalogSearchMessage: String?
+    @Published private var catalogSearchStates: [CatalogSearchPurpose: CatalogSearchState] = [:]
     @Published private(set) var isClosingSession = false
     @Published private(set) var isUpdatingInvitePermissions = false
     @Published var allowsCollaboratorInvites = true
@@ -216,6 +228,7 @@ final class HarmonySessionStore: ObservableObject {
     private var pendingSocialRefreshTask: Task<Void, Never>?
     private var hasBootstrapped = false
     private var isBootstrapping = false
+    private var catalogSearchRequestIDs: [CatalogSearchPurpose: UUID] = [:]
     private let collaborationRepository = HarmonyCollaborationRepository()
     private let spotifyRemote: any SpotifyPlaybackProviding
     private let appleMusicProvider: any AppleMusicProviding
@@ -265,6 +278,9 @@ final class HarmonySessionStore: ObservableObject {
         }
     }
     var nowPlaying: QueueItem? { queue.first }
+    var catalogSearchResults: [HarmonyTrack]? { catalogSearchState(for: .addMusic).results }
+    var isSearchingCatalog: Bool { catalogSearchState(for: .addMusic).isSearching }
+    var catalogSearchMessage: String? { catalogSearchState(for: .addMusic).message }
     var isLiveSession: Bool { remoteSessionID != nil }
     var canShareInvite: Bool { isLiveSession && (currentMember.role == .conductor || allowsCollaboratorInvites) }
     var canControlPlayback: Bool { selectedPlaybackMode != .queueOnly && currentMember.role == .conductor }
@@ -499,37 +515,61 @@ final class HarmonySessionStore: ObservableObject {
             providerStates = [.appleMusic: .setupRequired, .spotify: .notConnected]
             spotifyPlaybackConnection = .disconnected
             spotifyLoadedProviderID = nil
-            catalogSearchResults = nil
+            resetCatalogSearch()
         } catch {
             collaborationMessage = "Could not delete account: \(error.localizedDescription)"
         }
     }
 
-    func searchCatalog(query: String) async {
+    func catalogSearchState(for purpose: CatalogSearchPurpose) -> CatalogSearchState {
+        catalogSearchStates[purpose] ?? .idle
+    }
+
+    func resetCatalogSearch(_ purpose: CatalogSearchPurpose? = nil) {
+        if let purpose {
+            catalogSearchRequestIDs[purpose] = UUID()
+            catalogSearchStates[purpose] = .idle
+        } else {
+            for purpose in [CatalogSearchPurpose.addMusic, .reviews] {
+                catalogSearchRequestIDs[purpose] = UUID()
+            }
+            catalogSearchStates.removeAll()
+        }
+    }
+
+    func searchCatalog(query: String, purpose: CatalogSearchPurpose = .addMusic) async {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !term.isEmpty else {
-            catalogSearchResults = nil
-            catalogSearchMessage = nil
-            isSearchingCatalog = false
+            resetCatalogSearch(purpose)
             return
         }
+
+        let requestID = UUID()
+        catalogSearchRequestIDs[purpose] = requestID
         let canSearchSpotify = providerState(for: .spotify) == .connected
         let canSearchAppleMusic = providerState(for: .appleMusic) == .connected
         guard canSearchSpotify || canSearchAppleMusic else {
-            catalogSearchResults = catalog.filter {
+            let results = catalog.filter {
                 "\($0.title) \($0.artist) \($0.album)".localizedCaseInsensitiveContains(term)
             }
-            catalogSearchMessage = "Connect Spotify or Apple Music to search its full catalog."
+            guard isCurrentCatalogSearch(requestID, for: purpose) else { return }
+            catalogSearchStates[purpose] = CatalogSearchState(
+                query: term,
+                results: results,
+                message: "Connect Spotify or Apple Music to search its full catalog."
+            )
             return
         }
-        isSearchingCatalog = true
-        defer { isSearchingCatalog = false }
-        catalogSearchMessage = nil
+        catalogSearchStates[purpose] = CatalogSearchState(query: term, isSearching: true)
         var results: [HarmonyTrack] = []
         var failures: [String] = []
         if canSearchAppleMusic {
             do { results += try await appleMusicProvider.search(query: term) }
             catch { failures.append("Apple Music: \(error.localizedDescription)") }
+        }
+        guard !Task.isCancelled else {
+            finishCancelledCatalogSearch(requestID, term: term, purpose: purpose)
+            return
         }
         if canSearchSpotify {
             do {
@@ -538,13 +578,33 @@ final class HarmonySessionStore: ObservableObject {
                 failures.append("Spotify: \(error.localizedDescription)")
             }
         }
-        guard !Task.isCancelled else { return }
-        catalogSearchResults = Self.mergeCatalogResults(results)
-        if catalogSearchResults?.isEmpty == true {
-            catalogSearchMessage = failures.isEmpty ? "No tracks found." : failures.joined(separator: "\n")
-        } else if !failures.isEmpty {
-            catalogSearchMessage = failures.joined(separator: "\n")
+        guard !Task.isCancelled else {
+            finishCancelledCatalogSearch(requestID, term: term, purpose: purpose)
+            return
         }
+        guard isCurrentCatalogSearch(requestID, for: purpose) else { return }
+        let mergedResults = Self.mergeCatalogResults(results)
+        catalogSearchStates[purpose] = CatalogSearchState(
+            query: term,
+            results: mergedResults,
+            message: Self.catalogSearchMessage(results: mergedResults, failures: failures)
+        )
+    }
+
+    private func isCurrentCatalogSearch(_ requestID: UUID, for purpose: CatalogSearchPurpose) -> Bool {
+        catalogSearchRequestIDs[purpose] == requestID
+    }
+
+    private func finishCancelledCatalogSearch(_ requestID: UUID, term: String, purpose: CatalogSearchPurpose) {
+        guard isCurrentCatalogSearch(requestID, for: purpose) else { return }
+        catalogSearchStates[purpose] = CatalogSearchState(query: term)
+    }
+
+    static func catalogSearchMessage(results: [HarmonyTrack], failures: [String]) -> String? {
+        if results.isEmpty {
+            return failures.isEmpty ? "No tracks found." : failures.joined(separator: "\n")
+        }
+        return failures.isEmpty ? nil : failures.joined(separator: "\n")
     }
 
     func handleSpotifyOpenURL(_ url: URL) {
@@ -1000,14 +1060,15 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     @discardableResult
-    func publishTrackReview(rating: Double, body: String, isLoved: Bool = false, containsSpoilers: Bool = false) async -> Bool {
+    func publishTrackReview(rating: Double, body: String, isLoved: Bool = false, containsSpoilers: Bool = false, visibility: SocialVisibilityOption? = nil) async -> Bool {
         guard let track = nowPlaying?.track else { return false }
-        return await publishTrackReview(track, rating: rating, body: body, isLoved: isLoved, containsSpoilers: containsSpoilers)
+        return await publishTrackReview(track, rating: rating, body: body, isLoved: isLoved, containsSpoilers: containsSpoilers, visibility: visibility)
     }
 
     @discardableResult
-    func publishTrackReview(_ track: HarmonyTrack, rating: Double, body: String, isLoved: Bool = false, containsSpoilers: Bool = false) async -> Bool {
+    func publishTrackReview(_ track: HarmonyTrack, rating: Double, body: String, isLoved: Bool = false, containsSpoilers: Bool = false, visibility: SocialVisibilityOption? = nil) async -> Bool {
         guard !isPublishingMusicReview else { return false }
+        let resolvedVisibility = visibility ?? reviewsSocialVisibility
         isPublishingMusicReview = true
         defer { isPublishingMusicReview = false }
         do {
@@ -1015,11 +1076,11 @@ final class HarmonySessionStore: ObservableObject {
                 track: track,
                 rating: rating,
                 body: body,
-                visibility: reviewsSocialVisibility,
+                visibility: resolvedVisibility,
                 isLoved: isLoved,
                 containsSpoilers: containsSpoilers
             )
-            collaborationMessage = reviewsSocialVisibility == .followers
+            collaborationMessage = resolvedVisibility == .followers
                 ? "Review published to approved followers"
                 : "Private review saved"
             await refreshMusicReviews()
@@ -1031,8 +1092,9 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     @discardableResult
-    func publishAlbumReview(_ album: ReviewableAlbum, rating: Double, body: String, isLoved: Bool = false, containsSpoilers: Bool = false) async -> Bool {
+    func publishAlbumReview(_ album: ReviewableAlbum, rating: Double, body: String, isLoved: Bool = false, containsSpoilers: Bool = false, visibility: SocialVisibilityOption? = nil) async -> Bool {
         guard !isPublishingMusicReview else { return false }
+        let resolvedVisibility = visibility ?? reviewsSocialVisibility
         isPublishingMusicReview = true
         defer { isPublishingMusicReview = false }
         do {
@@ -1040,11 +1102,11 @@ final class HarmonySessionStore: ObservableObject {
                 album: album,
                 rating: rating,
                 body: body,
-                visibility: reviewsSocialVisibility,
+                visibility: resolvedVisibility,
                 isLoved: isLoved,
                 containsSpoilers: containsSpoilers
             )
-            collaborationMessage = reviewsSocialVisibility == .followers
+            collaborationMessage = resolvedVisibility == .followers
                 ? "Album review published to approved followers"
                 : "Private album review saved"
             await refreshMusicReviews()
