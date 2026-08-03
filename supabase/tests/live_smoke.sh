@@ -196,10 +196,34 @@ jq -e --arg profile "$collaborator_id" 'length == 1 and .[0].profile_id == $prof
 rpc "$conductor_token" add_review_comment \
   "{\"p_review_id\":\"$review_id\",\"p_body\":\"Agreed.\"}" \
   "$smoke_tmp/review-comment.json"
+comment_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/review-comment.json")"
 rpc "$conductor_token" toggle_review_reaction \
   "{\"p_review_id\":\"$review_id\",\"p_kind\":\"heart\"}" \
   "$smoke_tmp/review-reaction.json"
 [[ "$(jq -er '.' "$smoke_tmp/review-reaction.json")" == "true" ]]
+rest_get "$conductor_token" \
+  "music_reviews?select=id,review_comments(id,author_id,body,created_at,profiles(display_name)),review_reactions(profile_id,kind)&id=eq.$review_id" \
+  "$smoke_tmp/review-social-detail.json"
+jq -e 'length == 1 and (.[] | .review_comments | length) == 1 and (.[] | .review_reactions | length) == 1' "$smoke_tmp/review-social-detail.json" >/dev/null
+unauthorized_review_update_status="$(rpc_status "$conductor_token" update_music_review \
+  "{\"p_review_id\":\"$review_id\",\"p_rating\":1.0,\"p_body\":\"Not mine\",\"p_visibility\":\"private\",\"p_contains_spoilers\":false}" \
+  "$smoke_tmp/unauthorized-review-update.json")"
+[[ "$unauthorized_review_update_status" == "400" || "$unauthorized_review_update_status" == "404" ]]
+rpc "$collaborator_token" update_music_review \
+  "{\"p_review_id\":\"$review_id\",\"p_rating\":5.0,\"p_body\":\"Updated Harmony smoke review.\",\"p_visibility\":\"followers\",\"p_contains_spoilers\":false}" \
+  "$smoke_tmp/review-update.json"
+rest_get "$conductor_token" \
+  "music_reviews?select=id,rating,body&id=eq.$review_id" \
+  "$smoke_tmp/updated-review.json"
+jq -e 'length == 1 and .[0].rating == 5.0 and .[0].body == "Updated Harmony smoke review."' "$smoke_tmp/updated-review.json" >/dev/null
+rpc "$conductor_token" delete_review_comment \
+  "{\"p_comment_id\":\"$comment_id\"}" \
+  "$smoke_tmp/comment-delete.json"
+[[ "$(jq -er '.' "$smoke_tmp/comment-delete.json")" == "true" ]]
+rest_get "$conductor_token" \
+  "review_comments?select=id&id=eq.$comment_id" \
+  "$smoke_tmp/deleted-comment.json"
+[[ "$(jq 'length' "$smoke_tmp/deleted-comment.json")" -eq 0 ]]
 
 stage="social block enforcement"
 rpc "$collaborator_token" block_social_profile \
@@ -228,6 +252,14 @@ rpc "$conductor_token" remove_social_follow \
   "{\"p_profile_id\":\"$collaborator_id\"}" \
   "$smoke_tmp/unfollow.json"
 [[ "$(jq -er '.' "$smoke_tmp/unfollow.json")" == "true" ]]
+rpc "$collaborator_token" delete_music_review \
+  "{\"p_review_id\":\"$review_id\"}" \
+  "$smoke_tmp/review-delete.json"
+[[ "$(jq -er '.' "$smoke_tmp/review-delete.json")" == "true" ]]
+rest_get "$collaborator_token" \
+  "music_reviews?select=id&id=eq.$review_id" \
+  "$smoke_tmp/deleted-review.json"
+[[ "$(jq 'length' "$smoke_tmp/deleted-review.json")" -eq 0 ]]
 
 stage="expired session rejection"
 expired_invite_code="EXP$(printf '%05d' "$((RANDOM % 100000))")"

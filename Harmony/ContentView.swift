@@ -35,6 +35,10 @@ struct SocialView: View {
     @EnvironmentObject private var store: HarmonySessionStore
     @State private var rating = 4.0
     @State private var reviewBody = ""
+    @State private var editingReview: RemoteMusicReview?
+    @State private var editingRating = 4.0
+    @State private var editingBody = ""
+    @State private var editingVisibility = SocialVisibilityOption.privateOnly
 
     var body: some View {
         NavigationView {
@@ -160,18 +164,11 @@ struct SocialView: View {
                         Text("No follower-visible reviews yet.").foregroundColor(.secondary)
                     } else {
                         ForEach(store.musicReviews) { review in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("\(review.profile.displayName) · \(String(format: "%.1f", review.rating)) ★").font(.headline)
-                                if let track = review.canonicalTrack {
-                                    Text("\(track.title) · \(track.artist)").font(.subheadline).foregroundColor(.secondary)
-                                }
-                                if !review.body.isEmpty { Text(review.body) }
-                                Button {
-                                    Task { await store.toggleReviewHeart(review.id) }
-                                } label: {
-                                    Label("React", systemImage: "heart")
-                                        .font(.caption)
-                                }
+                            ReviewCard(review: review) { selected in
+                                editingReview = selected
+                                editingRating = selected.rating
+                                editingBody = selected.body
+                                editingVisibility = selected.visibility
                             }
                         }
                     }
@@ -188,6 +185,38 @@ struct SocialView: View {
                 await store.refreshSocialProfiles()
                 await store.refreshListeningFeed()
                 await store.refreshMusicReviews()
+            }
+        }
+        .sheet(item: $editingReview) { review in
+            NavigationView {
+                Form {
+                    Section("Rating") {
+                        HStack {
+                            Slider(value: $editingRating, in: 0.5...5, step: 0.5)
+                            Text(String(format: "%.1f", editingRating)).monospacedDigit()
+                        }
+                    }
+                    Section("Review") {
+                        TextField("Review text", text: $editingBody, axis: .vertical).lineLimit(3...10)
+                    }
+                    Section("Visibility") {
+                        Picker("Audience", selection: $editingVisibility) {
+                            ForEach(SocialVisibilityOption.allCases) { visibility in
+                                Text(visibility.title).tag(visibility)
+                            }
+                        }
+                    }
+                }
+                .navigationTitle("Edit review")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { editingReview = nil } }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") {
+                            editingReview = nil
+                            Task { await store.updateReview(review.id, rating: editingRating, body: editingBody, visibility: editingVisibility) }
+                        }
+                    }
+                }
             }
         }
     }
@@ -259,6 +288,70 @@ struct SocialView: View {
 
     private func initials(for displayName: String) -> String {
         displayName.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined().uppercased()
+    }
+}
+
+private struct ReviewCard: View {
+    @EnvironmentObject private var store: HarmonySessionStore
+    let review: RemoteMusicReview
+    let onEdit: (RemoteMusicReview) -> Void
+    @State private var commentDraft = ""
+    @State private var showingDeleteConfirmation = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("\(review.profile.displayName) · \(String(format: "%.1f", review.rating)) ★").font(.headline)
+            if let track = review.canonicalTrack {
+                Text("\(track.title) · \(track.artist)").font(.subheadline).foregroundColor(.secondary)
+            }
+            if !review.body.isEmpty { Text(review.body) }
+            if !review.comments.isEmpty {
+                Divider()
+                ForEach(review.comments) { comment in
+                    HStack(alignment: .top) {
+                        Text("\(comment.profile.displayName):").font(.caption.bold())
+                        Text(comment.body).font(.caption)
+                        Spacer()
+                        if store.isOwnComment(comment) {
+                            Button(role: .destructive) {
+                                Task { await store.deleteReviewComment(comment.id, from: review.id) }
+                            } label: { Image(systemName: "trash").font(.caption) }
+                            .accessibilityLabel("Delete comment")
+                        }
+                    }
+                }
+            }
+            HStack {
+                TextField("Add a comment", text: $commentDraft)
+                    .textFieldStyle(.roundedBorder)
+                Button {
+                    let body = commentDraft
+                    commentDraft = ""
+                    Task { await store.addReviewComment(to: review.id, body: body) }
+                } label: { Image(systemName: "paperplane.fill") }
+                .disabled(commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityLabel("Post comment")
+            }
+            HStack {
+                Button { Task { await store.toggleReviewHeart(review.id) } } label: {
+                    Label("\(review.reactions.filter { $0.kind == "heart" }.count)", systemImage: store.hasHeart(on: review) ? "heart.fill" : "heart")
+                }
+                .font(.caption)
+                if store.isOwnReview(review) {
+                    Spacer()
+                    Menu {
+                        Button("Edit review") { onEdit(review) }
+                        Button("Delete review", role: .destructive) { showingDeleteConfirmation = true }
+                    } label: { Image(systemName: "ellipsis.circle") }
+                    .accessibilityLabel("Review options")
+                }
+            }
+        }
+        .disabled(store.mutatingReviewIDs.contains(review.id))
+        .confirmationDialog("Delete this review?", isPresented: $showingDeleteConfirmation, titleVisibility: .visible) {
+            Button("Delete review", role: .destructive) { Task { await store.deleteReview(review.id) } }
+            Button("Cancel", role: .cancel) {}
+        }
     }
 }
 

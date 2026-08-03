@@ -82,6 +82,16 @@ private struct CreateTrackReviewParameters: Encodable {
     let p_contains_spoilers = false
 }
 private struct ReviewReactionParameters: Encodable { let p_review_id: UUID; let p_kind = "heart" }
+private struct ReviewCommentParameters: Encodable { let p_review_id: UUID; let p_body: String }
+private struct ReviewIDParameters: Encodable { let p_review_id: UUID }
+private struct CommentIDParameters: Encodable { let p_comment_id: UUID }
+private struct UpdateReviewParameters: Encodable {
+    let p_review_id: UUID
+    let p_rating: Double
+    let p_body: String
+    let p_visibility: String
+    let p_contains_spoilers: Bool
+}
 private struct SocialProfileParameters: Encodable { let p_profile_id: UUID }
 private struct RespondToFollowParameters: Encodable { let p_requester_id: UUID; let p_accept: Bool }
 private struct UpdateAccountProfile: Encodable { let display_name: String }
@@ -243,15 +253,40 @@ struct RemoteMusicReview: Decodable, Identifiable {
     let rating: Double
     let body: String
     let createdAt: Date
+    let visibility: SocialVisibilityOption
     let canonicalTrack: RemoteCatalogTrack?
     let profile: RemoteProfile
+    let comments: [RemoteReviewComment]
+    let reactions: [RemoteReviewReaction]
     enum CodingKeys: String, CodingKey {
-        case id, rating, body
+        case id, rating, body, visibility
         case profileID = "profile_id"
         case createdAt = "created_at"
         case canonicalTrack = "canonical_tracks"
         case profile = "profiles"
+        case comments = "review_comments"
+        case reactions = "review_reactions"
     }
+}
+
+struct RemoteReviewComment: Decodable, Identifiable {
+    let id: UUID
+    let authorID: UUID
+    let body: String
+    let createdAt: Date
+    let profile: RemoteProfile
+    enum CodingKeys: String, CodingKey {
+        case id, body
+        case authorID = "author_id"
+        case createdAt = "created_at"
+        case profile = "profiles"
+    }
+}
+
+struct RemoteReviewReaction: Decodable {
+    let profileID: UUID
+    let kind: String
+    enum CodingKeys: String, CodingKey { case profileID = "profile_id"; case kind }
 }
 
 struct SpotifyAccessCredential: Decodable {
@@ -481,7 +516,7 @@ final class HarmonyCollaborationRepository {
     func musicReviews() async throws -> [RemoteMusicReview] {
         try await authenticate()
         return try await client.from("music_reviews")
-            .select("id,profile_id,rating,body,created_at,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)")
+            .select("id,profile_id,rating,body,visibility,created_at,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name),review_comments(id,author_id,body,created_at,profiles(display_name)),review_reactions(profile_id,kind)")
             .order("created_at", ascending: false).limit(50).execute().value
     }
 
@@ -598,6 +633,32 @@ final class HarmonyCollaborationRepository {
     func toggleHeart(on reviewID: UUID) async throws -> Bool {
         try await authenticate()
         return try await client.rpc("toggle_review_reaction", params: ReviewReactionParameters(p_review_id: reviewID)).execute().value
+    }
+
+    func addComment(to reviewID: UUID, body: String) async throws {
+        try await authenticate()
+        _ = try await client.rpc("add_review_comment", params: ReviewCommentParameters(p_review_id: reviewID, p_body: body)).execute()
+    }
+
+    func deleteComment(_ commentID: UUID) async throws {
+        try await authenticate()
+        _ = try await client.rpc("delete_review_comment", params: CommentIDParameters(p_comment_id: commentID)).execute()
+    }
+
+    func updateReview(_ reviewID: UUID, rating: Double, body: String, visibility: SocialVisibilityOption) async throws {
+        try await authenticate()
+        _ = try await client.rpc("update_music_review", params: UpdateReviewParameters(
+            p_review_id: reviewID,
+            p_rating: rating,
+            p_body: body,
+            p_visibility: visibility.rawValue,
+            p_contains_spoilers: false
+        )).execute()
+    }
+
+    func deleteReview(_ reviewID: UUID) async throws {
+        try await authenticate()
+        _ = try await client.rpc("delete_music_review", params: ReviewIDParameters(p_review_id: reviewID)).execute()
     }
 
     private func canonicalTrackID(for track: HarmonyTrack) async throws -> UUID {

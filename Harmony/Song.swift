@@ -180,6 +180,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var musicReviews: [RemoteMusicReview] = []
     @Published private(set) var isRefreshingMusicReviews = false
     @Published private(set) var isPublishingMusicReview = false
+    @Published private(set) var mutatingReviewIDs: Set<UUID> = []
     @Published private(set) var socialProfiles: [RemoteSocialProfile] = []
     @Published private(set) var isRefreshingSocialProfiles = false
     @Published private(set) var socialProfileActionIDs: Set<UUID> = []
@@ -783,7 +784,61 @@ final class HarmonySessionStore: ObservableObject {
         do {
             let added = try await collaborationRepository.toggleHeart(on: reviewID)
             collaborationMessage = added ? "Reaction added" : "Reaction removed"
+            await refreshMusicReviews()
         } catch { collaborationMessage = "Could not update reaction: \(error.localizedDescription)" }
+    }
+
+    func isOwnReview(_ review: RemoteMusicReview) -> Bool { review.profileID == authenticatedProfileID }
+    func isOwnComment(_ comment: RemoteReviewComment) -> Bool { comment.authorID == authenticatedProfileID }
+    func hasHeart(on review: RemoteMusicReview) -> Bool {
+        guard let authenticatedProfileID else { return false }
+        return review.reactions.contains { $0.profileID == authenticatedProfileID && $0.kind == "heart" }
+    }
+
+    func addReviewComment(to reviewID: UUID, body: String) async {
+        let comment = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (1...2000).contains(comment.count) else {
+            collaborationMessage = "Comments must contain 1 to 2,000 characters."
+            return
+        }
+        await performReviewMutation(reviewID, successMessage: "Comment added") {
+            try await self.collaborationRepository.addComment(to: reviewID, body: comment)
+        }
+    }
+
+    func deleteReviewComment(_ commentID: UUID, from reviewID: UUID) async {
+        await performReviewMutation(reviewID, successMessage: "Comment deleted") {
+            try await self.collaborationRepository.deleteComment(commentID)
+        }
+    }
+
+    func updateReview(_ reviewID: UUID, rating: Double, body: String, visibility: SocialVisibilityOption) async {
+        await performReviewMutation(reviewID, successMessage: "Review updated") {
+            try await self.collaborationRepository.updateReview(reviewID, rating: rating, body: body, visibility: visibility)
+        }
+    }
+
+    func deleteReview(_ reviewID: UUID) async {
+        await performReviewMutation(reviewID, successMessage: "Review deleted") {
+            try await self.collaborationRepository.deleteReview(reviewID)
+        }
+    }
+
+    private func performReviewMutation(
+        _ reviewID: UUID,
+        successMessage: String,
+        operation: @escaping () async throws -> Void
+    ) async {
+        guard !mutatingReviewIDs.contains(reviewID) else { return }
+        mutatingReviewIDs.insert(reviewID)
+        defer { mutatingReviewIDs.remove(reviewID) }
+        do {
+            try await operation()
+            collaborationMessage = successMessage
+            await refreshMusicReviews()
+        } catch {
+            collaborationMessage = "Could not update review: \(error.localizedDescription)"
+        }
     }
 
     func resumeLiveSession(id: UUID) async {
