@@ -582,10 +582,14 @@ conversation controls out of the scrolling feed while giving each opinion a
 first-class destination.
 
 The detail view is keyed by review ID and uses the navigation-time review only
-as a fallback. After a successful reaction, comment, edit, or deletion refresh,
-it reads the updated value from `HarmonySessionStore.musicReviews`; counts and
-threads therefore do not remain stale while the page is open. Spoiler reveal
-is per-page `@State` and defaults to concealed on every new navigation.
+as a fallback. Collection queries return the parent plus maintained exhaustive
+heart/comment counters, not embedded child arrays. Opening detail loads the
+newest 50 visible comments and a viewer-specific heart summary into a dedicated
+ID-keyed cache. “Load older comments” uses descending `(created_at, id)` keyset
+pagination, so large conversations remain bounded and deterministic. Successful
+mutations and Realtime child events refresh the first page and engagement state;
+notification navigation still targets the exact durable review UUID. Spoiler
+reveal is per-page `@State` and defaults to concealed on every new navigation.
 
 Review mutation helpers return `Bool`. Create/edit forms and the comment
 composer clear or dismiss only after success, preserving authored text when a

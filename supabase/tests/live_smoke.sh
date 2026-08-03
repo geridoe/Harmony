@@ -871,14 +871,61 @@ jq -e 'length == 1 and .[0].review_count == 2 and .[0].song_count == 1 and .[0].
 rpc "$conductor_token" get_my_music_review_stats '{}' "$smoke_tmp/empty-owner-review-stats.json"
 jq -e 'length == 1 and .[0].review_count == 0 and .[0].song_count == 0 and .[0].album_count == 0 and .[0].loved_count == 0 and .[0].average_rating == null' "$smoke_tmp/empty-owner-review-stats.json" >/dev/null
 
+rest_get "$collaborator_token" \
+  "music_reviews?select=updated_at,heart_count,comment_count&id=eq.$review_id" \
+  "$smoke_tmp/review-engagement-counters-before.json"
+review_updated_at_before_engagement="$(jq -er '.[0].updated_at' "$smoke_tmp/review-engagement-counters-before.json")"
+jq -e 'length == 1 and .[0].heart_count == 0 and .[0].comment_count == 0' \
+  "$smoke_tmp/review-engagement-counters-before.json" >/dev/null
 rpc "$conductor_token" add_review_comment \
   "{\"p_review_id\":\"$review_id\",\"p_body\":\"Agreed.\"}" \
   "$smoke_tmp/review-comment.json"
 comment_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/review-comment.json")"
+rpc "$collaborator_token" add_review_comment \
+  "{\"p_review_id\":\"$review_id\",\"p_body\":\"Author context for the second page.\"}" \
+  "$smoke_tmp/review-owner-comment.json"
+owner_comment_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/review-owner-comment.json")"
 rpc "$conductor_token" toggle_review_reaction \
   "{\"p_review_id\":\"$review_id\",\"p_kind\":\"heart\"}" \
   "$smoke_tmp/review-reaction.json"
 [[ "$(jq -er '.' "$smoke_tmp/review-reaction.json")" == "true" ]]
+stage="paginated review engagement"
+rest_get "$collaborator_token" \
+  "music_reviews?select=updated_at,heart_count,comment_count&id=eq.$review_id" \
+  "$smoke_tmp/review-engagement-counters-added.json"
+jq -e --arg updated_at "$review_updated_at_before_engagement" \
+  'length == 1 and .[0].heart_count == 1 and .[0].comment_count == 2 and .[0].updated_at == $updated_at' \
+  "$smoke_tmp/review-engagement-counters-added.json" >/dev/null
+rpc "$conductor_token" list_review_comments \
+  "{\"p_review_id\":\"$review_id\",\"p_before_created_at\":null,\"p_before_id\":null,\"p_limit\":1}" \
+  "$smoke_tmp/review-comments-first-page.json"
+review_comment_first_id="$(jq -er '.[0].id' "$smoke_tmp/review-comments-first-page.json")"
+review_comment_first_created_at="$(jq -er '.[0].created_at' "$smoke_tmp/review-comments-first-page.json")"
+[[ "$review_comment_first_id" == "$owner_comment_id" ]]
+rpc "$conductor_token" list_review_comments \
+  "{\"p_review_id\":\"$review_id\",\"p_before_created_at\":\"$review_comment_first_created_at\",\"p_before_id\":\"$review_comment_first_id\",\"p_limit\":1}" \
+  "$smoke_tmp/review-comments-second-page.json"
+jq -e --arg first "$review_comment_first_id" --arg older "$comment_id" \
+  'length == 1 and .[0].id == $older and .[0].id != $first' \
+  "$smoke_tmp/review-comments-second-page.json" >/dev/null
+partial_review_comment_cursor_status="$(rpc_status "$conductor_token" list_review_comments \
+  "{\"p_review_id\":\"$review_id\",\"p_before_created_at\":\"$review_comment_first_created_at\",\"p_before_id\":null,\"p_limit\":50}" \
+  "$smoke_tmp/partial-review-comment-cursor.json")"
+[[ "$partial_review_comment_cursor_status" == "400" ]]
+oversized_review_comment_page_status="$(rpc_status "$conductor_token" list_review_comments \
+  "{\"p_review_id\":\"$review_id\",\"p_before_created_at\":null,\"p_before_id\":null,\"p_limit\":101}" \
+  "$smoke_tmp/oversized-review-comment-page.json")"
+[[ "$oversized_review_comment_page_status" == "400" ]]
+rpc "$conductor_token" get_review_engagement \
+  "{\"p_review_id\":\"$review_id\"}" \
+  "$smoke_tmp/review-engagement-hearted-viewer.json"
+jq -e '.heart_count == 1 and .comment_count == 2 and .viewer_has_hearted == true' \
+  "$smoke_tmp/review-engagement-hearted-viewer.json" >/dev/null
+rpc "$collaborator_token" get_review_engagement \
+  "{\"p_review_id\":\"$review_id\"}" \
+  "$smoke_tmp/review-engagement-owner-viewer.json"
+jq -e '.heart_count == 1 and .comment_count == 2 and .viewer_has_hearted == false' \
+  "$smoke_tmp/review-engagement-owner-viewer.json" >/dev/null
 rest_get "$collaborator_token" \
   "social_notifications?select=kind,actor_id,review_id&actor_id=eq.$conductor_id&review_id=eq.$review_id&order=created_at.asc" \
   "$smoke_tmp/review-notifications.json"
@@ -886,7 +933,23 @@ jq -e 'length == 2 and ([.[].kind] | sort) == ["review_comment","review_reaction
 rest_get "$conductor_token" \
   "music_reviews?select=id,review_comments(id,author_id,body,created_at,profiles(display_name)),review_reactions(profile_id,kind)&id=eq.$review_id" \
   "$smoke_tmp/review-social-detail.json"
-jq -e 'length == 1 and (.[] | .review_comments | length) == 1 and (.[] | .review_reactions | length) == 1' "$smoke_tmp/review-social-detail.json" >/dev/null
+jq -e 'length == 1 and (.[] | .review_comments | length) == 2 and (.[] | .review_reactions | length) == 1' "$smoke_tmp/review-social-detail.json" >/dev/null
+rpc "$collaborator_token" update_music_review \
+  "{\"p_review_id\":\"$review_id\",\"p_rating\":4.5,\"p_body\":\"A great Harmony smoke review.\",\"p_visibility\":\"private\",\"p_contains_spoilers\":true,\"p_is_loved\":true}" \
+  "$smoke_tmp/private-review-for-engagement-authorization.json"
+hidden_review_comments_status="$(rpc_status "$conductor_token" list_review_comments \
+  "{\"p_review_id\":\"$review_id\",\"p_before_created_at\":null,\"p_before_id\":null,\"p_limit\":50}" \
+  "$smoke_tmp/hidden-review-comments.json")"
+[[ "$hidden_review_comments_status" == "400" || "$hidden_review_comments_status" == "403" || "$hidden_review_comments_status" == "404" ]]
+hidden_review_engagement_status="$(rpc_status "$conductor_token" get_review_engagement \
+  "{\"p_review_id\":\"$review_id\"}" \
+  "$smoke_tmp/hidden-review-engagement.json")"
+[[ "$hidden_review_engagement_status" == "400" || "$hidden_review_engagement_status" == "403" || "$hidden_review_engagement_status" == "404" ]]
+rpc "$collaborator_token" get_review_engagement \
+  "{\"p_review_id\":\"$review_id\"}" \
+  "$smoke_tmp/private-review-owner-engagement.json"
+jq -e '.heart_count == 1 and .comment_count == 2 and .viewer_has_hearted == false' \
+  "$smoke_tmp/private-review-owner-engagement.json" >/dev/null
 unauthorized_review_update_status="$(rpc_status "$conductor_token" update_music_review \
   "{\"p_review_id\":\"$review_id\",\"p_rating\":1.0,\"p_body\":\"Not mine\",\"p_visibility\":\"private\",\"p_contains_spoilers\":false}" \
   "$smoke_tmp/unauthorized-review-update.json")"
@@ -915,6 +978,36 @@ rest_get "$conductor_token" \
   "review_comments?select=id&id=eq.$comment_id" \
   "$smoke_tmp/deleted-comment.json"
 [[ "$(jq 'length' "$smoke_tmp/deleted-comment.json")" -eq 0 ]]
+rest_get "$collaborator_token" \
+  "music_reviews?select=heart_count,comment_count&id=eq.$review_id" \
+  "$smoke_tmp/review-engagement-counters-comment-deleted.json"
+jq -e 'length == 1 and .[0].heart_count == 1 and .[0].comment_count == 1' \
+  "$smoke_tmp/review-engagement-counters-comment-deleted.json" >/dev/null
+rpc "$conductor_token" list_review_comments \
+  "{\"p_review_id\":\"$review_id\",\"p_before_created_at\":null,\"p_before_id\":null,\"p_limit\":50}" \
+  "$smoke_tmp/review-comments-after-soft-delete.json"
+jq -e --arg remaining "$owner_comment_id" \
+  'length == 1 and .[0].id == $remaining' \
+  "$smoke_tmp/review-comments-after-soft-delete.json" >/dev/null
+rpc "$conductor_token" get_review_engagement \
+  "{\"p_review_id\":\"$review_id\"}" \
+  "$smoke_tmp/review-engagement-after-soft-delete.json"
+jq -e '.heart_count == 1 and .comment_count == 1 and .viewer_has_hearted == true' \
+  "$smoke_tmp/review-engagement-after-soft-delete.json" >/dev/null
+rpc "$conductor_token" toggle_review_reaction \
+  "{\"p_review_id\":\"$review_id\",\"p_kind\":\"heart\"}" \
+  "$smoke_tmp/review-heart-delete.json"
+[[ "$(jq -er '.' "$smoke_tmp/review-heart-delete.json")" == "false" ]]
+rest_get "$collaborator_token" \
+  "music_reviews?select=heart_count,comment_count&id=eq.$review_id" \
+  "$smoke_tmp/review-engagement-counters-heart-deleted.json"
+jq -e 'length == 1 and .[0].heart_count == 0 and .[0].comment_count == 1' \
+  "$smoke_tmp/review-engagement-counters-heart-deleted.json" >/dev/null
+rpc "$conductor_token" get_review_engagement \
+  "{\"p_review_id\":\"$review_id\"}" \
+  "$smoke_tmp/review-engagement-after-heart-delete.json"
+jq -e '.heart_count == 0 and .comment_count == 1 and .viewer_has_hearted == false' \
+  "$smoke_tmp/review-engagement-after-heart-delete.json" >/dev/null
 repeat_comment_delete_status="$(rpc_status "$collaborator_token" delete_review_comment \
   "{\"p_comment_id\":\"$comment_id\"}" \
   "$smoke_tmp/repeat-comment-delete.json")"

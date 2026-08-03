@@ -426,6 +426,12 @@ struct MusicListDetailState {
     var isRefreshing = false
 }
 
+struct ReviewDetailEngagementState {
+    var comments = PaginatedShelfState<RemoteReviewComment>()
+    var engagement: RemoteReviewEngagement?
+    var isRefreshing = false
+}
+
 struct CanonicalAlbumDetailState {
     var album: RemoteCanonicalAlbum?
     var ownerState: RemoteAlbumSubjectState?
@@ -621,6 +627,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var musicReviews: [RemoteMusicReview] = []
     @Published private(set) var ownerReviews: [RemoteMusicReview] = []
     @Published private(set) var reviewDetailsByID: [UUID: RemoteMusicReview] = [:]
+    @Published private(set) var reviewEngagementDetails: [UUID: ReviewDetailEngagementState] = [:]
     @Published private(set) var ownerReviewStats: RemoteOwnerReviewStats = .empty
     @Published private(set) var isRefreshingMusicReviews = false
     @Published private(set) var isRefreshingOwnerReviews = false
@@ -1414,9 +1421,10 @@ final class HarmonySessionStore: ObservableObject {
             async let history: Void = self.refreshListeningHistory()
             async let journal: Void = self.refreshJournalEntries()
             async let reviews: Void = self.refreshMusicReviews()
+            async let reviewDetails: Void = self.refreshCachedReviewDetails()
             async let notifications: Void = self.refreshSocialNotifications()
             async let followingActivity: Void = self.refreshFollowingActivity()
-            _ = await (profiles, feed, history, journal, reviews, notifications, followingActivity)
+            _ = await (profiles, feed, history, journal, reviews, reviewDetails, notifications, followingActivity)
         }
     }
 
@@ -2857,6 +2865,8 @@ final class HarmonySessionStore: ObservableObject {
             visibility: .privateOnly,
             containsSpoilers: false,
             isLoved: true,
+            heartCount: 0,
+            commentCount: 0,
             subjectKind: "track",
             subjectTitle: track.title,
             subjectArtist: track.artist,
@@ -2865,9 +2875,7 @@ final class HarmonySessionStore: ObservableObject {
             canonicalAlbumID: nil,
             canonicalTrack: track,
             canonicalAlbum: nil,
-            profile: profile,
-            comments: [],
-            reactions: []
+            profile: profile
         )
         authenticatedProfileID = profileID
         isDiaryEditorUITestFixtureActive = true
@@ -3277,6 +3285,114 @@ final class HarmonySessionStore: ObservableObject {
         }
     }
 
+    func reviewEngagementDetail(for reviewID: UUID) -> ReviewDetailEngagementState {
+        reviewEngagementDetails[reviewID] ?? ReviewDetailEngagementState()
+    }
+
+    @discardableResult
+    func refreshReviewDetail(_ reviewID: UUID) async -> Bool {
+#if DEBUG
+        if isDiaryEditorUITestFixtureActive {
+            reviewEngagementDetails[reviewID] = reviewEngagementDetails[reviewID]
+                ?? ReviewDetailEngagementState(
+                    engagement: RemoteReviewEngagement(
+                        heartCount: 0,
+                        commentCount: 0,
+                        viewerHasHearted: false
+                    )
+                )
+            return review(withID: reviewID) != nil
+        }
+#endif
+        var detail = reviewEngagementDetails[reviewID] ?? ReviewDetailEngagementState()
+        guard !detail.isRefreshing else { return false }
+        detail.isRefreshing = true
+        reviewEngagementDetails[reviewID] = detail
+        defer { reviewEngagementDetails[reviewID]?.isRefreshing = false }
+        do {
+            async let loadedReview = collaborationRepository.musicReview(id: reviewID)
+            async let comments = collaborationRepository.reviewCommentsPage(
+                reviewID: reviewID,
+                limit: socialShelfPageSize + 1
+            )
+            async let engagement = collaborationRepository.reviewEngagement(reviewID)
+            let values = try await (loadedReview, comments, engagement)
+            reviewDetailsByID[reviewID] = values.0
+            reviewEngagementDetails[reviewID]?.comments.items = Array(values.1.prefix(socialShelfPageSize))
+            reviewEngagementDetails[reviewID]?.comments.hasMore = values.1.count > socialShelfPageSize
+            reviewEngagementDetails[reviewID]?.engagement = values.2
+            return true
+        } catch {
+            collaborationMessage = "Could not load this review: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func refreshReviewComments(_ reviewID: UUID) async {
+        var detail = reviewEngagementDetails[reviewID] ?? ReviewDetailEngagementState()
+        guard !detail.comments.isRefreshing, !detail.comments.isLoadingMore else { return }
+        detail.comments.isRefreshing = true
+        reviewEngagementDetails[reviewID] = detail
+        defer { reviewEngagementDetails[reviewID]?.comments.isRefreshing = false }
+        do {
+            let page = try await collaborationRepository.reviewCommentsPage(
+                reviewID: reviewID,
+                limit: socialShelfPageSize + 1
+            )
+            reviewEngagementDetails[reviewID]?.comments.items = Array(page.prefix(socialShelfPageSize))
+            reviewEngagementDetails[reviewID]?.comments.hasMore = page.count > socialShelfPageSize
+            await refreshReviewEngagement(reviewID)
+        } catch {
+            collaborationMessage = "Could not refresh review comments."
+        }
+    }
+
+    func loadMoreReviewComments(_ reviewID: UUID) async {
+        guard var detail = reviewEngagementDetails[reviewID],
+              detail.comments.hasMore,
+              !detail.comments.isRefreshing,
+              !detail.comments.isLoadingMore,
+              let cursor = detail.comments.items.last else { return }
+        detail.comments.isLoadingMore = true
+        reviewEngagementDetails[reviewID] = detail
+        defer { reviewEngagementDetails[reviewID]?.comments.isLoadingMore = false }
+        do {
+            let page = try await collaborationRepository.reviewCommentsPage(
+                reviewID: reviewID,
+                beforeCreatedAt: cursor.createdAt,
+                beforeID: cursor.id,
+                limit: socialShelfPageSize + 1
+            )
+            let existingIDs = Set(detail.comments.items.map(\.id))
+            reviewEngagementDetails[reviewID]?.comments.items.append(
+                contentsOf: page.prefix(socialShelfPageSize)
+                    .filter { !existingIDs.contains($0.id) }
+            )
+            reviewEngagementDetails[reviewID]?.comments.hasMore = page.count > socialShelfPageSize
+        } catch {
+            collaborationMessage = "Could not load older review comments."
+        }
+    }
+
+    private func refreshReviewEngagement(_ reviewID: UUID) async {
+        do {
+            let engagement = try await collaborationRepository.reviewEngagement(reviewID)
+            var detail = reviewEngagementDetails[reviewID] ?? ReviewDetailEngagementState()
+            detail.engagement = engagement
+            reviewEngagementDetails[reviewID] = detail
+        } catch {
+            // The review and loaded comments remain usable when a count refresh
+            // races a visibility change or transient connection failure.
+        }
+    }
+
+    private func refreshCachedReviewDetails() async {
+        let reviewIDs = Array(reviewEngagementDetails.keys)
+        for reviewID in reviewIDs {
+            _ = await refreshReviewDetail(reviewID)
+        }
+    }
+
     @discardableResult
     func publishTrackReview(rating: Double, body: String, isLoved: Bool = false, containsSpoilers: Bool = false, visibility: SocialVisibilityOption? = nil) async -> Bool {
         guard let track = nowPlaying?.track else { return false }
@@ -3354,13 +3470,13 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     func toggleReviewHeart(_ reviewID: UUID) async {
+        guard !mutatingReviewIDs.contains(reviewID) else { return }
+        mutatingReviewIDs.insert(reviewID)
+        defer { mutatingReviewIDs.remove(reviewID) }
         do {
             let added = try await collaborationRepository.toggleHeart(on: reviewID)
             collaborationMessage = added ? "Reaction added" : "Reaction removed"
-            await refreshMusicReviews()
-            if ownerReviews.contains(where: { $0.id == reviewID }) {
-                await refreshOwnerReviews()
-            }
+            await refreshReviewEngagement(reviewID)
         } catch { collaborationMessage = "Could not update reaction: \(error.localizedDescription)" }
     }
 
@@ -3373,9 +3489,8 @@ final class HarmonySessionStore: ObservableObject {
             viewerID: authenticatedProfileID
         )
     }
-    func hasHeart(on review: RemoteMusicReview) -> Bool {
-        guard let authenticatedProfileID else { return false }
-        return review.reactions.contains { $0.profileID == authenticatedProfileID && $0.kind == "heart" }
+    func hasHeart(on reviewID: UUID) -> Bool {
+        reviewEngagementDetails[reviewID]?.engagement?.viewerHasHearted ?? false
     }
 
     @discardableResult
@@ -3385,8 +3500,17 @@ final class HarmonySessionStore: ObservableObject {
             collaborationMessage = "Comments must contain 1 to 2,000 characters."
             return false
         }
-        return await performReviewMutation(reviewID, successMessage: "Comment added") {
-            try await self.collaborationRepository.addComment(to: reviewID, body: comment)
+        guard !mutatingReviewIDs.contains(reviewID) else { return false }
+        mutatingReviewIDs.insert(reviewID)
+        defer { mutatingReviewIDs.remove(reviewID) }
+        do {
+            try await collaborationRepository.addComment(to: reviewID, body: comment)
+            collaborationMessage = "Comment added"
+            await refreshReviewComments(reviewID)
+            return true
+        } catch {
+            collaborationMessage = "Could not update review: \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -3396,8 +3520,17 @@ final class HarmonySessionStore: ObservableObject {
             collaborationMessage = "This comment could not be deleted."
             return false
         }
-        return await performReviewMutation(review.id, successMessage: "Comment deleted") {
-            try await self.collaborationRepository.deleteComment(comment.id)
+        guard !mutatingReviewIDs.contains(review.id) else { return false }
+        mutatingReviewIDs.insert(review.id)
+        defer { mutatingReviewIDs.remove(review.id) }
+        do {
+            try await collaborationRepository.deleteComment(comment.id)
+            collaborationMessage = "Comment deleted"
+            await refreshReviewComments(review.id)
+            return true
+        } catch {
+            collaborationMessage = "Could not update review: \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -3446,6 +3579,7 @@ final class HarmonySessionStore: ObservableObject {
                     reviewDetailsByID[reviewID] = refreshed
                 } else {
                     reviewDetailsByID.removeValue(forKey: reviewID)
+                    reviewEngagementDetails.removeValue(forKey: reviewID)
                 }
             }
             if let affectedAlbum {

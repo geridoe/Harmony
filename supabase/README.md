@@ -60,6 +60,14 @@ supabase functions deploy spotify-token-exchange
 
 `create_music_review(...)` creates a follower/private/public review of a canonical track or provider-addressed album. Owners can edit or soft-delete it through `update_music_review(...)` and `delete_music_review(...)`. Visible viewers can use `add_review_comment(...)` and `toggle_review_reaction(...)`; comment authors or the parent-review owner can soft-delete a comment through the guarded RPC. RLS reevaluates the review’s visibility and blocks before granting access.
 
+Review collections read transactionally maintained `heart_count` and
+`comment_count` columns instead of embedding every child row.
+`list_review_comments(review_id, before_created_at, before_id, limit)` returns
+newest-first active comments with a paired `(created_at, id)` keyset cursor and
+a 1–100 row bound. `get_review_engagement(review_id)` returns exhaustive totals
+plus the caller's `viewer_has_hearted` state. Both RPCs authenticate the caller
+and recheck parent-review visibility; comment/reaction mutations remain RPC-only.
+
 `create_track_review_with_optional_diary(...)` is the combined track-authoring
 contract. It always creates a review and may atomically create a separately
 visible manual Diary entry linked to that review. Review and Diary ratings are

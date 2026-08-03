@@ -386,6 +386,8 @@ final class HarmonyTests: XCTestCase {
           "visibility": "followers",
           "contains_spoilers": false,
           "is_loved": true,
+          "heart_count": 3,
+          "comment_count": 2,
           "created_at": "2026-08-03T12:00:00Z",
           "canonical_tracks": null,
           "canonical_albums": {
@@ -406,9 +408,7 @@ final class HarmonyTests: XCTestCase {
               "identity_basis": "provider"
             }]
           },
-          "profiles": {"display_name": "Listener"},
-          "review_comments": [],
-          "review_reactions": []
+          "profiles": {"display_name": "Listener"}
         }
         """
         let decoder = JSONDecoder()
@@ -422,6 +422,8 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(review.canonicalAlbum?.upc, "123456789012")
         XCTAssertEqual(review.canonicalAlbum?.providerAlbums.first?.storefront, "global")
         XCTAssertEqual(review.canonicalAlbum?.providerAlbums.first?.providerAlbumID, "provider-album")
+        XCTAssertEqual(review.heartCount, 3)
+        XCTAssertEqual(review.commentCount, 2)
     }
 
     func testMusicReviewStillDecodesLegacyPayloadWithoutCanonicalAlbumFields() throws {
@@ -439,11 +441,11 @@ final class HarmonyTests: XCTestCase {
           "visibility": "followers",
           "contains_spoilers": false,
           "is_loved": false,
+          "heart_count": 0,
+          "comment_count": 0,
           "created_at": "2026-08-03T12:00:00Z",
           "canonical_tracks": null,
-          "profiles": {"display_name": "Listener"},
-          "review_comments": [],
-          "review_reactions": []
+          "profiles": {"display_name": "Listener"}
         }
         """
         let decoder = JSONDecoder()
@@ -454,6 +456,49 @@ final class HarmonyTests: XCTestCase {
         XCTAssertNil(review.canonicalAlbumID)
         XCTAssertNil(review.canonicalAlbum)
         XCTAssertEqual(review.subjectTitle, "Legacy Album")
+    }
+
+    func testReviewEngagementDecodesHeartOnlyReaderAffinity() throws {
+        let json = """
+        {
+          "heart_count": 12,
+          "comment_count": 7,
+          "viewer_has_hearted": true
+        }
+        """
+
+        let engagement = try JSONDecoder().decode(
+            RemoteReviewEngagement.self,
+            from: Data(json.utf8)
+        )
+
+        XCTAssertEqual(engagement.heartCount, 12)
+        XCTAssertEqual(engagement.commentCount, 7)
+        XCTAssertTrue(engagement.viewerHasHearted)
+    }
+
+    func testReviewCommentDecodesStableReviewAndCursorIdentity() throws {
+        let reviewID = UUID(uuidString: "30000000-0000-0000-0000-000000000003")!
+        let commentID = UUID(uuidString: "40000000-0000-0000-0000-000000000004")!
+        let json = """
+        {
+          "id": "\(commentID.uuidString)",
+          "review_id": "\(reviewID.uuidString)",
+          "author_id": "50000000-0000-0000-0000-000000000005",
+          "body": "A paginated reply.",
+          "created_at": "2026-08-03T12:00:00Z",
+          "profiles": {"display_name": "Reader"}
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let comment = try decoder.decode(RemoteReviewComment.self, from: Data(json.utf8))
+
+        XCTAssertEqual(comment.id, commentID)
+        XCTAssertEqual(comment.reviewID, reviewID)
+        XCTAssertEqual(comment.profile.displayName, "Reader")
+        XCTAssertEqual(comment.createdAt, ISO8601DateFormatter().date(from: "2026-08-03T12:00:00Z"))
     }
 
     func testReviewNotificationDecodesDurableReviewIdentity() throws {
@@ -1369,6 +1414,8 @@ final class HarmonyTests: XCTestCase {
             visibility: .followers,
             containsSpoilers: false,
             isLoved: isLoved,
+            heartCount: 0,
+            commentCount: 0,
             subjectKind: subjectKind,
             subjectTitle: title,
             subjectArtist: artist,
@@ -1386,9 +1433,7 @@ final class HarmonyTests: XCTestCase {
                 providerTracks: nil
             ),
             canonicalAlbum: nil,
-            profile: RemoteProfile(displayName: "Test listener"),
-            comments: [],
-            reactions: []
+            profile: RemoteProfile(displayName: "Test listener")
         )
     }
 

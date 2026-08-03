@@ -140,6 +140,12 @@ private struct CreateCanonicalAlbumReviewParameters: Encodable {
 private struct ReviewReactionParameters: Encodable { let p_review_id: UUID; let p_kind = "heart" }
 private struct ReviewCommentParameters: Encodable { let p_review_id: UUID; let p_body: String }
 private struct ReviewIDParameters: Encodable { let p_review_id: UUID }
+private struct ReviewCommentsPageParameters: Encodable {
+    let p_review_id: UUID
+    let p_before_created_at: Date?
+    let p_before_id: UUID?
+    let p_limit: Int
+}
 private struct CommentIDParameters: Encodable { let p_comment_id: UUID }
 private struct NotificationIDParameters: Encodable { let p_notification_id: UUID? }
 private struct UpdateReviewParameters: Encodable {
@@ -842,6 +848,8 @@ struct RemoteMusicReview: Decodable, Identifiable {
     let visibility: SocialVisibilityOption
     let containsSpoilers: Bool
     let isLoved: Bool
+    let heartCount: Int
+    let commentCount: Int
     let subjectKind: String
     let subjectTitle: String?
     let subjectArtist: String?
@@ -851,12 +859,12 @@ struct RemoteMusicReview: Decodable, Identifiable {
     let canonicalTrack: RemoteCatalogTrack?
     let canonicalAlbum: RemoteCanonicalAlbum?
     let profile: RemoteProfile
-    let comments: [RemoteReviewComment]
-    let reactions: [RemoteReviewReaction]
     enum CodingKeys: String, CodingKey {
         case id, rating, body, visibility
         case containsSpoilers = "contains_spoilers"
         case isLoved = "is_loved"
+        case heartCount = "heart_count"
+        case commentCount = "comment_count"
         case subjectKind = "subject_kind"
         case subjectTitle = "subject_title"
         case subjectArtist = "subject_artist"
@@ -868,8 +876,6 @@ struct RemoteMusicReview: Decodable, Identifiable {
         case canonicalTrack = "canonical_tracks"
         case canonicalAlbum = "canonical_albums"
         case profile = "profiles"
-        case comments = "review_comments"
-        case reactions = "review_reactions"
     }
 }
 
@@ -967,22 +973,30 @@ struct RemoteCanonicalAlbumRatingBucket: Decodable, Equatable, Identifiable {
 
 struct RemoteReviewComment: Decodable, Identifiable {
     let id: UUID
+    let reviewID: UUID
     let authorID: UUID
     let body: String
     let createdAt: Date
     let profile: RemoteProfile
     enum CodingKeys: String, CodingKey {
         case id, body
+        case reviewID = "review_id"
         case authorID = "author_id"
         case createdAt = "created_at"
         case profile = "profiles"
     }
 }
 
-struct RemoteReviewReaction: Decodable {
-    let profileID: UUID
-    let kind: String
-    enum CodingKeys: String, CodingKey { case profileID = "profile_id"; case kind }
+struct RemoteReviewEngagement: Decodable, Equatable {
+    let heartCount: Int
+    let commentCount: Int
+    let viewerHasHearted: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case heartCount = "heart_count"
+        case commentCount = "comment_count"
+        case viewerHasHearted = "viewer_has_hearted"
+    }
 }
 
 /// An owner-authored, ordered collection of canonical tracks. Entry rows are
@@ -1162,8 +1176,8 @@ final class HarmonyCollaborationRepository {
     private static let musicListEntrySelection = "id,list_id,canonical_track_id,position,note,created_at,updated_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit,isrc,provider_tracks(provider,provider_id,storefront,availability,deep_link))"
     private static let musicListCommentSelection = "id,list_id,author_id,body,created_at,updated_at,deleted_at,author:profiles!music_list_comments_author_id_fkey(display_name)"
     private static let albumSubjectStateSelection = "profile_id,canonical_album_id,has_listened,default_rating,is_loved,want_to_listen,created_at,updated_at,canonical_albums(id,title,artist,release_date,upc,album_type,total_tracks,artwork_url,provider_albums(provider,provider_album_id,storefront,deep_link,availability,identity_basis))"
-    private static let legacyMusicReviewSelection = "id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,rating,body,visibility,contains_spoilers,is_loved,created_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name),review_comments(id,author_id,body,created_at,profiles(display_name)),review_reactions(profile_id,kind)"
-    private static let musicReviewSelection = "id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,canonical_album_id,rating,body,visibility,contains_spoilers,is_loved,created_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),canonical_albums(id,title,artist,release_date,upc,album_type,total_tracks,artwork_url,provider_albums(provider,provider_album_id,storefront,deep_link,availability,identity_basis)),profiles(display_name),review_comments(id,author_id,body,created_at,profiles(display_name)),review_reactions(profile_id,kind)"
+    private static let legacyMusicReviewSelection = "id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,rating,body,visibility,contains_spoilers,is_loved,heart_count,comment_count,created_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)"
+    private static let musicReviewSelection = "id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,canonical_album_id,rating,body,visibility,contains_spoilers,is_loved,heart_count,comment_count,created_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),canonical_albums(id,title,artist,release_date,upc,album_type,total_tracks,artwork_url,provider_albums(provider,provider_album_id,storefront,deep_link,availability,identity_basis)),profiles(display_name)"
 
     private static func isMissingCanonicalAlbumContract(_ error: Error) -> Bool {
         guard let error = error as? PostgrestError else { return false }
@@ -1975,6 +1989,34 @@ final class HarmonyCollaborationRepository {
                 .single()
                 .execute().value
         }
+    }
+
+    func reviewCommentsPage(
+        reviewID: UUID,
+        beforeCreatedAt: Date? = nil,
+        beforeID: UUID? = nil,
+        limit: Int = 51
+    ) async throws -> [RemoteReviewComment] {
+        try await authenticate()
+        return try await client.rpc(
+            "list_review_comments",
+            params: ReviewCommentsPageParameters(
+                p_review_id: reviewID,
+                p_before_created_at: beforeCreatedAt,
+                p_before_id: beforeID,
+                p_limit: limit
+            )
+        )
+        .select("id,review_id,author_id,body,created_at,profiles(display_name)")
+        .execute().value
+    }
+
+    func reviewEngagement(_ reviewID: UUID) async throws -> RemoteReviewEngagement {
+        try await authenticate()
+        return try await client.rpc(
+            "get_review_engagement",
+            params: ReviewIDParameters(p_review_id: reviewID)
+        ).execute().value
     }
 
     func ownerReviewStats() async throws -> RemoteOwnerReviewStats {

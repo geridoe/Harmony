@@ -2909,8 +2909,8 @@ struct ReviewCard: View {
             .buttonStyle(.plain)
 
             HStack {
-                Label("\(review.reactions.filter { $0.kind == "heart" }.count)", systemImage: "heart")
-                Label("\(review.comments.count)", systemImage: "bubble.left")
+                Label("\(review.heartCount)", systemImage: "heart")
+                Label("\(review.commentCount)", systemImage: "bubble.left")
                 Text(review.createdAt, format: .dateTime.month().day().year())
                 Spacer()
                 Text("Read review")
@@ -3153,6 +3153,10 @@ private struct ReviewDetailView: View {
         store.review(withID: reviewID) ?? fallbackReview
     }
 
+    private var engagementDetail: ReviewDetailEngagementState {
+        store.reviewEngagementDetail(for: reviewID)
+    }
+
     var body: some View {
         List {
             Section {
@@ -3211,21 +3215,28 @@ private struct ReviewDetailView: View {
             Section("Reactions") {
                 Button { Task { await store.toggleReviewHeart(review.id) } } label: {
                     Label(
-                        store.hasHeart(on: review) ? "Remove heart" : "Heart this review",
-                        systemImage: store.hasHeart(on: review) ? "heart.fill" : "heart"
+                        store.hasHeart(on: review.id) ? "Remove heart" : "Heart this review",
+                        systemImage: store.hasHeart(on: review.id) ? "heart.fill" : "heart"
                     )
                 }
-                Text("\(review.reactions.filter { $0.kind == "heart" }.count) hearts")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                if let engagement = engagementDetail.engagement {
+                    Text("\(engagement.heartCount) hearts")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    ProgressView("Loading reactions…")
+                }
             }
 
             Section("Comments") {
-                if review.comments.isEmpty {
+                if (engagementDetail.isRefreshing || engagementDetail.comments.isRefreshing)
+                    && engagementDetail.comments.items.isEmpty {
+                    ProgressView("Loading comments…")
+                } else if engagementDetail.comments.items.isEmpty {
                     Text("No comments yet. Start the conversation.")
                         .foregroundColor(.secondary)
                 } else {
-                    ForEach(review.comments) { comment in
+                    ForEach(engagementDetail.comments.items) { comment in
                         HStack(alignment: .top) {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(comment.profile.displayName).font(.caption.bold())
@@ -3249,6 +3260,20 @@ private struct ReviewDetailView: View {
                     }
                 }
 
+                if engagementDetail.comments.hasMore {
+                    Button {
+                        Task { await store.loadMoreReviewComments(review.id) }
+                    } label: {
+                        if engagementDetail.comments.isLoadingMore {
+                            ProgressView("Loading older comments…")
+                        } else {
+                            Label("Load older comments", systemImage: "arrow.down.circle")
+                        }
+                    }
+                    .disabled(engagementDetail.comments.isLoadingMore)
+                    .accessibilityIdentifier("review-comments-load-more")
+                }
+
                 HStack {
                     TextField("Add a comment", text: $commentDraft, axis: .vertical)
                         .lineLimit(1...4)
@@ -3270,6 +3295,9 @@ private struct ReviewDetailView: View {
         .navigationTitle(review.canonicalTrack?.title ?? review.canonicalAlbum?.title ?? review.subjectTitle ?? "Review")
         .navigationBarTitleDisplayMode(.inline)
         .disabled(store.mutatingReviewIDs.contains(review.id))
+        .task(id: reviewID) {
+            await store.refreshReviewDetail(reviewID)
+        }
         .toolbar {
             if store.isOwnReview(review) {
                 ToolbarItem(placement: .primaryAction) {

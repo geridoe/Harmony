@@ -239,11 +239,15 @@ heart/comment/date metadata. The summary is a `NavigationLink` to
 feed cards.
 
 The detail view receives the immutable `reviewID` plus the feed row as a
-fallback. Its computed review first looks up that ID in the latest
-`store.musicReviews`, then uses the fallback only until the refreshed/Realtime
-snapshot is available. Consequently a comment, reaction, edit, or deletion
-refresh changes the same detail screen without passing a stale copied review
-through several views.
+fallback. Review cards fetch only the parent row and its transactionally
+maintained `heart_count` and `comment_count`; they never embed an unbounded
+conversation. Opening the page refreshes a dedicated ID-keyed detail cache:
+the parent review, the first 50 newest comments through
+`list_review_comments`, and heart/comment totals plus viewer affinity through
+`get_review_engagement`. “Load older comments” advances a stable
+`(created_at, id)` keyset cursor. Realtime child-table changes reset cached
+detail pages and totals as well as refreshing the review shelves, including
+reviews opened from durable notification IDs.
 
 Spoiler handling is deliberately local presentation state. A typed
 `containsSpoilers` field flows from `music_reviews.contains_spoilers` into
@@ -255,7 +259,7 @@ that reader opts in. The flag does not change the review body or persist a
 reader-specific reveal choice. Feed summaries never show a spoiler excerpt.
 
 The detail screen owns the interactive social surface: the current heart
-reaction, full comment list, comment-author deletion, review-owner thread
+reaction, keyset-paginated comment thread, comment-author deletion, review-owner thread
 moderation, and an add-comment draft. A review owner sees Edit and Delete both from their compact card and in
 the detail toolbar; deletion dismisses the detail only after the server
 confirms success. `updateReview`, `deleteReview`, comment add/delete, and
@@ -662,7 +666,8 @@ The main social RPCs are `request_social_follow`,
 `list_following_activity`, `list_profile_listening_diary`,
 `list_profile_music_reviews`, `list_profile_loved_tracks`,
 `create_music_review`, `update_music_review`, `delete_music_review`,
-`add_review_comment`, `delete_review_comment`, `toggle_review_reaction`, and
+`list_review_comments`, `get_review_engagement`, `add_review_comment`,
+`delete_review_comment`, `toggle_review_reaction`, and
 `mark_social_notifications_read`.
 
 Database triggers create a profile/social-settings row at signup and create
