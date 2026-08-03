@@ -2982,6 +2982,25 @@ final class HarmonySessionStore: ObservableObject {
               let track = entry.canonicalTrack,
               let canonicalTrackID = track.id else { return }
         let actor = RemoteProfile(displayName: "UI Test Listener")
+        // `list_following_activity` suppresses a Diary event when the same
+        // publish action also produced its visible linked Review event. Keep
+        // the fixture's second card as a genuinely standalone Diary event so
+        // UI coverage reflects the server feed instead of presenting one
+        // atomic action twice. The member-profile fixture below deliberately
+        // retains the linked owner entry to cover safe review navigation.
+        let standaloneActivityEntry = RemoteListeningHistoryEntry(
+            id: UUID(uuidString: "80000000-0000-0000-0000-000000000008")!,
+            profileID: entry.profileID,
+            playedAt: entry.playedAt,
+            source: entry.source,
+            visibility: .followers,
+            isRelisten: entry.isRelisten,
+            tags: entry.tags,
+            rating: entry.rating,
+            reviewID: nil,
+            canonicalTrack: entry.canonicalTrack,
+            profile: entry.profile
+        )
         followingActivity = [
             RemoteFollowingActivityItem(
                 id: UUID(uuidString: "50000000-0000-0000-0000-000000000005")!,
@@ -2995,7 +3014,7 @@ final class HarmonySessionStore: ObservableObject {
                 actorID: entry.profileID,
                 publishedAt: entry.playedAt,
                 actor: actor,
-                payload: .diary(entry)
+                payload: .diary(standaloneActivityEntry)
             )
         ]
         followingActivityCursor = RemoteFollowingActivityCursor(

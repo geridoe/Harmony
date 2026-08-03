@@ -684,3 +684,11 @@ Loved shelves are deliberately narrow projections of public music metadata and
 cursor fields. Private Listened, Want-to-listen, default-rating, and other
 subject-state values never cross the profile boundary merely because Loved is
 shared.
+
+A combined **Review + Add to Diary** publish action creates both durable
+records, but Following Activity presents one Review card while both objects are
+visible. Coalescing occurs in the feed RPC before ordering and limiting, not in
+Swift and not by deleting either source event. If the Review later becomes
+private or is deleted, a still-shared Diary card reappears at its original
+activity position. Independent same-track Review and Diary actions remain two
+cards.

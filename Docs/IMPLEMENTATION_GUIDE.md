@@ -832,6 +832,16 @@ database may decode legacy/future `public` visibility rows, but iOS authoring
 continues to offer only Only me and Followers until public discovery,
 moderation, and abuse controls are designed.
 
+### Atomic Review and Diary activity
+
+The combined track composer still creates two durable objects and two source
+events. `list_following_activity` coalesces their presentation before applying
+its keyset cursor and page limit: when both linked objects are visible, the
+Review is the single canonical card. If that Review later becomes private or
+is deleted while its Diary remains shared, the original Diary event becomes
+visible again. This decision stays server-side because clients intentionally
+receive masked review links when they cannot open the review.
+
 ## 9. Delivery status and gates
 
 ### Implemented and deployable now

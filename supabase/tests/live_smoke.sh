@@ -1368,7 +1368,7 @@ rpc "$collaborator_token" list_my_listening_diary \
 jq -e --arg entry "$atomic_unrated_diary_id" 'map(select(.id == $entry)) | length == 1 and .[0].rating == 1.5 and .[0].review_id == null' \
   "$smoke_tmp/atomic-unrated-diary-after-review-delete.json" >/dev/null
 rpc "$collaborator_token" create_track_review_with_optional_diary \
-  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_provider\":\"apple_music\",\"p_provider_subject_id\":\"harmony-cross-isrc-apple\",\"p_rating\":4.5,\"p_body\":\"One action, two independent Harmony records.\",\"p_review_visibility\":\"followers\",\"p_contains_spoilers\":false,\"p_is_loved\":true,\"p_diary_played_at\":\"$atomic_played_at\",\"p_diary_visibility\":\"private\",\"p_is_relisten\":true,\"p_tags\":[\" Road Trip \",\"road trip\",\"NIGHT\"],\"p_diary_rating\":2.0}" \
+  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_provider\":\"apple_music\",\"p_provider_subject_id\":\"harmony-cross-isrc-apple\",\"p_rating\":4.5,\"p_body\":\"One action, two independent Harmony records.\",\"p_review_visibility\":\"followers\",\"p_contains_spoilers\":false,\"p_is_loved\":true,\"p_diary_played_at\":\"$atomic_played_at\",\"p_diary_visibility\":\"followers\",\"p_is_relisten\":true,\"p_tags\":[\" Road Trip \",\"road trip\",\"NIGHT\"],\"p_diary_rating\":2.0}" \
   "$smoke_tmp/atomic-review-diary.json"
 atomic_review_id="$(jq -er 'if type == "array" then .[0].review_id else .review_id end' "$smoke_tmp/atomic-review-diary.json")"
 atomic_diary_id="$(jq -er 'if type == "array" then .[0].diary_entry_id else .diary_entry_id end' "$smoke_tmp/atomic-review-diary.json")"
@@ -1382,7 +1382,7 @@ rpc "$collaborator_token" list_my_listening_diary \
   '{"p_before_played_at":null,"p_before_id":null,"p_limit":100}' \
   "$smoke_tmp/atomic-diary.json"
 jq -e --arg entry "$atomic_diary_id" --arg review "$atomic_review_id" --arg track "$cross_isrc_track_id" \
-  'map(select(.id == $entry)) | length == 1 and .[0].canonical_tracks.id == $track and .[0].review_id == $review and .[0].rating == 2.0 and .[0].visibility == "private" and .[0].is_relisten == true and .[0].source == "manual" and .[0].tags == ["road trip","night"]' \
+  'map(select(.id == $entry)) | length == 1 and .[0].canonical_tracks.id == $track and .[0].review_id == $review and .[0].rating == 2.0 and .[0].visibility == "followers" and .[0].is_relisten == true and .[0].source == "manual" and .[0].tags == ["road trip","night"]' \
   "$smoke_tmp/atomic-diary.json" >/dev/null
 atomic_persisted_played_at="$(jq -er --arg entry "$atomic_diary_id" '.[] | select(.id == $entry) | .played_at' "$smoke_tmp/atomic-diary.json")"
 rest_get "$collaborator_token" \
@@ -1390,6 +1390,39 @@ rest_get "$collaborator_token" \
   "$smoke_tmp/atomic-current-state.json"
 jq -e 'length == 1 and .[0].default_rating == 4.5 and .[0].is_loved == true and .[0].has_listened == true' \
   "$smoke_tmp/atomic-current-state.json" >/dev/null
+
+stage="linked review activity card deduplication"
+# Both raw events are durable, but the single atomic authoring action appears
+# as one review card. The RPC applies suppression before its one-row LIMIT.
+rest_get "$collaborator_token" \
+  "social_activity_events?select=id,kind,diary_entry_id&diary_entry_id=eq.$atomic_diary_id" \
+  "$smoke_tmp/atomic-diary-raw-activity.json"
+atomic_diary_activity_id="$(jq -er '.[0].id' "$smoke_tmp/atomic-diary-raw-activity.json")"
+jq -e --arg entry "$atomic_diary_id" 'length == 1 and .[0].kind == "diary_logged" and .[0].diary_entry_id == $entry' "$smoke_tmp/atomic-diary-raw-activity.json" >/dev/null
+rest_get "$collaborator_token" \
+  "social_activity_events?select=id,kind,review_id&review_id=eq.$atomic_review_id" \
+  "$smoke_tmp/atomic-review-raw-activity.json"
+atomic_review_activity_id="$(jq -er '.[0].id' "$smoke_tmp/atomic-review-raw-activity.json")"
+jq -e --arg review "$atomic_review_id" 'length == 1 and .[0].kind == "review_published" and .[0].review_id == $review' "$smoke_tmp/atomic-review-raw-activity.json" >/dev/null
+rpc "$conductor_token" list_following_activity \
+  '{"p_before_published_at":null,"p_before_id":null,"p_limit":1}' \
+  "$smoke_tmp/linked-activity-review-preferred.json"
+jq -e --arg event "$atomic_review_activity_id" 'length == 1 and .[0].id == $event and .[0].kind == "review_published"' "$smoke_tmp/linked-activity-review-preferred.json" >/dev/null
+
+rpc "$collaborator_token" update_music_review \
+  "{\"p_review_id\":\"$atomic_review_id\",\"p_rating\":4.5,\"p_body\":\"One action, two independent Harmony records.\",\"p_visibility\":\"private\",\"p_contains_spoilers\":false,\"p_is_loved\":true}" \
+  "$smoke_tmp/atomic-review-private-for-activity.json"
+rpc "$conductor_token" list_following_activity \
+  '{"p_before_published_at":null,"p_before_id":null,"p_limit":1}' \
+  "$smoke_tmp/linked-activity-diary-fallback.json"
+jq -e --arg event "$atomic_diary_activity_id" 'length == 1 and .[0].id == $event and .[0].kind == "diary_logged"' "$smoke_tmp/linked-activity-diary-fallback.json" >/dev/null
+rpc "$collaborator_token" update_music_review \
+  "{\"p_review_id\":\"$atomic_review_id\",\"p_rating\":4.5,\"p_body\":\"One action, two independent Harmony records.\",\"p_visibility\":\"followers\",\"p_contains_spoilers\":false,\"p_is_loved\":true}" \
+  "$smoke_tmp/atomic-review-restored-for-activity.json"
+rpc "$conductor_token" list_following_activity \
+  '{"p_before_published_at":null,"p_before_id":null,"p_limit":1}' \
+  "$smoke_tmp/linked-activity-review-restored.json"
+jq -e --arg event "$atomic_review_activity_id" 'length == 1 and .[0].id == $event and .[0].kind == "review_published"' "$smoke_tmp/linked-activity-review-restored.json" >/dev/null
 
 stage="atomic review and Diary validation"
 no_diary_metadata_status="$(rpc_status "$collaborator_token" create_track_review_with_optional_diary \
@@ -1531,12 +1564,16 @@ rpc "$collaborator_token" list_my_listening_diary \
   '{"p_before_played_at":null,"p_before_id":null,"p_limit":100}' \
   "$smoke_tmp/atomic-diary-after-review-delete.json"
 jq -e --arg entry "$atomic_diary_id" --arg track "$cross_isrc_track_id" --arg played "$atomic_persisted_played_at" \
-  'map(select(.id == $entry)) | length == 1 and .[0].canonical_tracks.id == $track and .[0].review_id == null and .[0].rating == 2.0 and .[0].visibility == "private" and .[0].is_relisten == true and .[0].source == "manual" and .[0].tags == ["road trip","night"] and .[0].played_at == $played' \
+  'map(select(.id == $entry)) | length == 1 and .[0].canonical_tracks.id == $track and .[0].review_id == null and .[0].rating == 2.0 and .[0].visibility == "followers" and .[0].is_relisten == true and .[0].source == "manual" and .[0].tags == ["road trip","night"] and .[0].played_at == $played' \
   "$smoke_tmp/atomic-diary-after-review-delete.json" >/dev/null
 rest_get "$collaborator_token" \
   "social_activity_events?select=id&review_id=eq.$atomic_review_id" \
   "$smoke_tmp/atomic-review-activity-after-delete.json"
 [[ "$(jq 'length' "$smoke_tmp/atomic-review-activity-after-delete.json")" -eq 0 ]]
+rpc "$collaborator_token" list_following_activity \
+  '{"p_before_published_at":null,"p_before_id":null,"p_limit":100}' \
+  "$smoke_tmp/linked-activity-after-review-delete.json"
+jq -e --arg event "$atomic_diary_activity_id" 'map(select(.id == $event)) | length == 1 and .[0].kind == "diary_logged"' "$smoke_tmp/linked-activity-after-review-delete.json" >/dev/null
 
 rpc "$collaborator_token" stop_listening_presence '{}' \
   "$smoke_tmp/stopped-eavesdrop.json"

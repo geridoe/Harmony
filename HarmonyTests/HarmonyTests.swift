@@ -1265,6 +1265,32 @@ final class HarmonyTests: XCTestCase {
         XCTAssertNil(store.trackSubjectState(for: track))
         XCTAssertFalse(store.trackSubjectShelf.contains { $0.canonicalTrackID == trackID })
     }
+
+    func testSocialActivityFixtureDoesNotPresentAtomicReviewAndDiaryTwice() {
+        let store = HarmonySessionStore(seedSampleData: false)
+        store.seedSocialActivityUITestFixture()
+
+        let visibleReviewIDs = Set(store.followingActivity.compactMap { item -> UUID? in
+            guard case .review(let review) = item.payload else { return nil }
+            return review.id
+        })
+        let linkedDiaryReviewIDs = Set(store.followingActivity.compactMap { item -> UUID? in
+            guard case .diary(let entry) = item.payload else { return nil }
+            return entry.reviewID
+        })
+
+        XCTAssertTrue(
+            visibleReviewIDs.isDisjoint(with: linkedDiaryReviewIDs),
+            "One atomic review-plus-Diary action must have only one Following Activity card"
+        )
+        XCTAssertEqual(store.followingActivity.count, 2, "The fixture still covers independent Review and Diary cards")
+        XCTAssertTrue(
+            store.publicProfileShelves.values
+                .flatMap(\.diary.items)
+                .contains(where: { $0.reviewID != nil }),
+            "Member Diary must retain separate linked-review navigation coverage"
+        )
+    }
 #endif
 
     func testFollowingActivityPayloadsKeepTheirTypedPresentation() {
