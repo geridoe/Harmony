@@ -182,20 +182,6 @@ struct SocialView: View {
                 }
 
                 Section("Listening history") {
-                    Button {
-                        Task { await store.recordCurrentTrackInHistory() }
-                    } label: {
-                        if store.isRecordingListeningHistory {
-                            ProgressView()
-                        } else {
-                            Label(
-                                store.historySocialVisibility == .followers ? "Log current track for followers" : "Log current track privately",
-                                systemImage: "clock.arrow.circlepath"
-                            )
-                        }
-                    }
-                    .disabled(store.nowPlaying == nil || store.isRecordingListeningHistory)
-
                     if store.isRefreshingListeningHistory && store.listeningHistory.isEmpty {
                         ProgressView("Loading listening history…")
                     } else if store.listeningHistory.isEmpty {
@@ -401,12 +387,34 @@ func deduplicatedReviewAlbums(from tracks: [HarmonyTrack]) -> [ReviewableAlbum] 
     }
 }
 
+struct DiaryEntryDraft: Equatable {
+    var track: HarmonyTrack?
+    var listenedOn = Date()
+    var isRelisten = false
+    var tagsText = ""
+    var visibility: SocialVisibilityOption = .privateOnly
+
+    var normalizedTags: [String] {
+        var seen = Set<String>()
+        return tagsText.split(separator: ",", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    var tagValidationMessage: String? {
+        if normalizedTags.count > 10 { return "Use no more than 10 tags." }
+        if normalizedTags.contains(where: { $0.count > 30 }) { return "Each tag must be 30 characters or fewer." }
+        return nil
+    }
+}
+
 struct ReviewsView: View {
     @EnvironmentObject private var store: HarmonySessionStore
     @State private var shelf = ReviewsShelf.community
     @State private var draft = ReviewDraft()
     @State private var hasSeededDraftVisibility = false
     @State private var isChoosingReviewSubject = false
+    @State private var isCreatingDiaryEntry = false
     @State private var editingReview: RemoteMusicReview?
     @State private var editingRating = 4.0
     @State private var editingBody = ""
@@ -509,6 +517,10 @@ struct ReviewsView: View {
                 isChoosingReviewSubject = false
             }
             .environmentObject(store)
+        }
+        .sheet(isPresented: $isCreatingDiaryEntry) {
+            DiaryEntryComposer(defaultVisibility: store.historySocialVisibility)
+                .environmentObject(store)
         }
     }
 
@@ -628,12 +640,18 @@ struct ReviewsView: View {
     private var listeningJournal: some View {
         Section("Listening journal") {
             Button {
+                isCreatingDiaryEntry = true
+            } label: {
+                Label("Log a listen", systemImage: "square.and.pencil")
+            }
+
+            Button {
                 Task { await store.recordCurrentTrackInHistory() }
             } label: {
                 if store.isRecordingListeningHistory {
                     ProgressView()
                 } else {
-                    Label("Log the current track", systemImage: "plus.circle")
+                    Label("Quick log the current track", systemImage: "plus.circle")
                 }
             }
             .disabled(store.nowPlaying == nil || store.isRecordingListeningHistory)
@@ -656,6 +674,18 @@ struct ReviewsView: View {
                             Text(entry.playedAt, format: .dateTime.month().day().year().hour().minute())
                                 .font(.caption)
                                 .foregroundColor(.secondary)
+                            if entry.isRelisten || !entry.tags.isEmpty {
+                                HStack(spacing: 5) {
+                                    if entry.isRelisten {
+                                        Label("Relisten", systemImage: "arrow.clockwise")
+                                    }
+                                    ForEach(entry.tags.prefix(3), id: \.self) { tag in
+                                        Text("#\(tag)")
+                                    }
+                                }
+                                .font(.caption2)
+                                .foregroundColor(.indigo)
+                            }
                         }
                         Spacer()
                         Image(systemName: entry.visibility == .followers ? "person.2.fill" : "lock.fill")
@@ -696,8 +726,19 @@ private struct ReviewSubjectPicker: View {
     @EnvironmentObject private var store: HarmonySessionStore
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
-    @State private var mode = ReviewPickerMode.songs
+    @State private var mode: ReviewPickerMode
+    let availableModes: [ReviewPickerMode]
     let onSelect: (ReviewDraftSubject) -> Void
+
+    init(
+        availableModes: [ReviewPickerMode] = ReviewPickerMode.allCases,
+        onSelect: @escaping (ReviewDraftSubject) -> Void
+    ) {
+        let modes = availableModes.isEmpty ? [.songs] : availableModes
+        self.availableModes = modes
+        self.onSelect = onSelect
+        _mode = State(initialValue: modes[0])
+    }
 
     private var searchState: CatalogSearchState {
         store.catalogSearchState(for: .reviews)
@@ -717,14 +758,16 @@ private struct ReviewSubjectPicker: View {
     var body: some View {
         NavigationStack {
             List {
-                Picker("Media type", selection: $mode) {
-                    ForEach(ReviewPickerMode.allCases) { option in
-                        Text(option.rawValue).tag(option)
+                if availableModes.count > 1 {
+                    Picker("Media type", selection: $mode) {
+                        ForEach(availableModes) { option in
+                            Text(option.rawValue).tag(option)
+                        }
                     }
+                    .pickerStyle(.segmented)
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
                 }
-                .pickerStyle(.segmented)
-                .listRowInsets(EdgeInsets())
-                .listRowBackground(Color.clear)
 
                 if searchState.isSearching {
                     ProgressView("Searching connected catalogs…")
@@ -802,6 +845,95 @@ private struct ReviewSubjectPicker: View {
                 await store.searchCatalog(query: query, purpose: .reviews)
             }
             .onDisappear { store.resetCatalogSearch(.reviews) }
+        }
+    }
+}
+
+private struct DiaryEntryComposer: View {
+    @EnvironmentObject private var store: HarmonySessionStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: DiaryEntryDraft
+    @State private var isChoosingTrack = false
+
+    init(defaultVisibility: SocialVisibilityOption) {
+        _draft = State(initialValue: DiaryEntryDraft(visibility: defaultVisibility))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Music") {
+                    Button {
+                        isChoosingTrack = true
+                    } label: {
+                        Label(draft.track == nil ? "Choose a song" : "Choose a different song", systemImage: "magnifyingglass")
+                    }
+                    if let track = draft.track {
+                        HStack(spacing: 12) {
+                            TrackArtwork(track: track, size: 46, cornerRadius: 9)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(track.title).font(.headline)
+                                Text(track.artist).font(.subheadline).foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
+
+                Section("Listen") {
+                    DatePicker("Listened on", selection: $draft.listenedOn, in: ...Date(), displayedComponents: .date)
+                    Toggle("Relisten", isOn: $draft.isRelisten)
+                    TextField("Tags, separated by commas", text: $draft.tagsText, axis: .vertical)
+                        .lineLimit(2...4)
+                        .textInputAutocapitalization(.never)
+                    if let message = draft.tagValidationMessage {
+                        Text(message).font(.footnote).foregroundColor(.red)
+                    } else if !draft.normalizedTags.isEmpty {
+                        Text(draft.normalizedTags.map { "#\($0)" }.joined(separator: "  "))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Section("Visibility") {
+                    Picker("Audience", selection: $draft.visibility) {
+                        ForEach(SocialVisibilityOption.allCases) { visibility in
+                            Text(visibility.title).tag(visibility)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Log a listen")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        guard let track = draft.track else { return }
+                        let submittedDraft = draft
+                        Task {
+                            let didSave = await store.createDiaryEntry(
+                                track: track,
+                                listenedOn: submittedDraft.listenedOn,
+                                isRelisten: submittedDraft.isRelisten,
+                                tags: submittedDraft.normalizedTags,
+                                visibility: submittedDraft.visibility
+                            )
+                            if didSave { dismiss() }
+                        }
+                    }
+                    .disabled(draft.track == nil || draft.tagValidationMessage != nil || store.isSavingDiaryEntry)
+                }
+            }
+        }
+        .sheet(isPresented: $isChoosingTrack) {
+            ReviewSubjectPicker(availableModes: [.songs]) { subject in
+                guard case .track(let track) = subject else { return }
+                draft.track = track
+                isChoosingTrack = false
+            }
+            .environmentObject(store)
         }
     }
 }

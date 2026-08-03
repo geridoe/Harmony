@@ -124,6 +124,44 @@ class HarmonyUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Post comment"].exists)
     }
 
+    func testJournalComposerCapturesDatedRelistenContext() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        let reviewsTab = app.tabBars.buttons["Reviews"]
+        XCTAssertTrue(reviewsTab.waitForExistence(timeout: 5))
+        reviewsTab.tap()
+        let reviewsNavigation = app.navigationBars["Reviews"]
+        if !reviewsNavigation.waitForExistence(timeout: 3) {
+            reviewsTab.tap()
+        }
+        XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
+        let journalShelf = app.buttons["My journal"]
+        XCTAssertTrue(journalShelf.waitForExistence(timeout: 5))
+        journalShelf.tap()
+
+        let logListen = app.buttons["Log a listen"]
+        for _ in 0..<3 where !logListen.exists { app.swipeUp() }
+        XCTAssertTrue(logListen.waitForExistence(timeout: 5))
+        logListen.tap()
+
+        XCTAssertTrue(app.navigationBars["Log a listen"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Choose a song"].exists)
+        XCTAssertTrue(app.staticTexts["Listened on"].exists)
+        XCTAssertTrue(app.switches["Relisten"].exists)
+        XCTAssertTrue(app.textFields["Tags, separated by commas"].exists)
+        XCTAssertTrue(app.staticTexts["Audience"].exists)
+        XCTAssertTrue(app.buttons["Save"].exists)
+
+        app.buttons["Choose a song"].tap()
+        XCTAssertTrue(app.navigationBars["Choose music"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Albums"].exists, "A diary log selects one track, not an album review subject")
+        let reviewSong = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Review song '")).firstMatch
+        XCTAssertTrue(reviewSong.waitForExistence(timeout: 5))
+        reviewSong.tap()
+        XCTAssertTrue(app.buttons["Choose a different song"].waitForExistence(timeout: 5))
+    }
+
     func testLaunchPerformance() throws {
         if #available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 7.0, *) {
             // This measures how long it takes to launch your application.

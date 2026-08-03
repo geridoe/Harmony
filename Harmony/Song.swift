@@ -203,6 +203,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var listeningHistory: [RemoteListeningHistoryEntry] = []
     @Published private(set) var isRefreshingListeningHistory = false
     @Published private(set) var isRecordingListeningHistory = false
+    @Published private(set) var isSavingDiaryEntry = false
     @Published private(set) var isImportingSpotifyHistory = false
     @Published private(set) var spotifyHistoryImportMessage: String?
     @Published private(set) var musicReviews: [RemoteMusicReview] = []
@@ -867,6 +868,36 @@ final class HarmonySessionStore: ObservableObject {
             return
         }
         await recordListeningHistory(track)
+    }
+
+    @discardableResult
+    func createDiaryEntry(
+        track: HarmonyTrack,
+        listenedOn: Date,
+        isRelisten: Bool,
+        tags: [String],
+        visibility: SocialVisibilityOption
+    ) async -> Bool {
+        guard !isSavingDiaryEntry else { return false }
+        isSavingDiaryEntry = true
+        defer { isSavingDiaryEntry = false }
+        do {
+            _ = try await collaborationRepository.createListeningDiaryEntry(
+                track: track,
+                listenedOn: listenedOn,
+                isRelisten: isRelisten,
+                tags: tags,
+                visibility: visibility
+            )
+            collaborationMessage = visibility == .followers
+                ? "Listen added to your follower-visible journal"
+                : "Private journal entry saved"
+            await refreshListeningHistory()
+            return true
+        } catch {
+            collaborationMessage = "Could not save journal entry: \(error.localizedDescription)"
+            return false
+        }
     }
 
     func deleteListeningHistoryEntry(_ entryID: UUID) async {

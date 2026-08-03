@@ -72,9 +72,10 @@ playback/catalog interaction.
   with a five-minute normal lifetime and a database-enforced ten-minute maximum.
   Users can stop it explicitly. Spotify “now playing” is an explicit snapshot,
   not a background polling system.
-- Listening history supports manual recording, opt-in Harmony skip logging,
-  and explicit import of up to 20 recently played Spotify tracks. Imported
-  plays are exactly deduplicated.
+- Listening history supports manual dated track logs with Relisten, normalized
+  tags, and a per-entry audience; opt-in Harmony skip logging; and explicit
+  import of up to 20 recently played Spotify tracks. Imported plays are exactly
+  deduplicated.
 - A review can concern a canonical track or a provider-addressed album. It
   supports 0.5–5.0 ratings, an independent Loved affinity signal, review text,
   spoiler flag, visibility, editing, soft deletion, comments, and reactions.
@@ -249,6 +250,40 @@ and is never re-read during submission. Existing `Bool` publication behavior
 remains: clear only after success and preserve the whole draft/search context
 on catalog, auth, validation, RPC, or RLS failure. Picker selection and
 publication do not enqueue media or create listening-history entries.
+
+### Implemented: manual dated music diary
+
+The authoring surface is **Reviews → My journal → Log a listen**. The Listen
+tab continues to show social listening history but does not own diary creation.
+`DiaryEntryComposer` uses the track-only form of `ReviewSubjectPicker`, so song
+selection reuses purpose-isolated `.reviews` catalog state without exposing an
+album choice or causing queue, playback, history, or review side effects.
+
+`DiaryEntryDraft` owns `track`, `listenedOn`, `isRelisten`, comma-separated
+`tagsText`, and `visibility`. `normalizedTags` trims, lowercases, removes empty
+values, and retains only the first occurrence of a duplicate. Client validation
+matches the backend limit of ten tags and thirty characters per tag. The date
+picker prevents a future selection. Audience snapshots `historySocialVisibility`
+when the sheet opens rather than following later Connections changes.
+
+Save calls
+`createDiaryEntry(track:listenedOn:isRelisten:tags:visibility:)`. The store's
+`isSavingDiaryEntry` guard prevents duplicate submission, the repository
+canonicalizes the track, and `Bool` success controls dismissal so a failed
+request retains every draft field.
+
+Migration `202608020025_music_diary_entries.sql` adds `is_relisten` and `tags`
+to `listening_history_entries`; the selected calendar date uses its existing
+`played_at` timestamp. It replaces the prior `record_listening_history` RPC
+with a single eight-argument signature whose two new trailing arguments have
+defaults. The server rejects future manual timestamps, normalizes and validates
+tags, and rejects Relisten/tags on non-manual history. Provider-import repeats
+remain governed by the pre-existing import-only unique index; separate manual
+listens remain repeatable.
+
+This slice supports create and the existing owner delete path. It does not yet
+edit diary metadata or link a dated listen to a review. Quick logging remains a
+separate unadorned history action and does not infer Relisten or tags.
 
 ## 4. Supabase data model
 
@@ -435,6 +470,13 @@ a Reviews search cannot alter Add music results. Backend smoke coverage should
 continue to prove owner-only edits and visibility/block enforcement for both
 subject kinds.
 
+Music-diary coverage should verify stable tag normalization/deduplication,
+client and server tag limits, rejection of future manual timestamps,
+manual-only Relisten/tag metadata, follower/private visibility, repeat manual
+listens, and preservation of the composer after a failed save. UI coverage
+should keep Log a listen in My journal and verify the track-only picker, date,
+Relisten, tags, audience, and disabled-until-valid Save flow.
+
 ### Local development and deployment
 
 ```bash
@@ -500,16 +542,18 @@ MusicKit library/playback authorization.
 3. Review detail and spoiler conceal/reveal are implemented; extend that
    surface with additional reaction choices, comment moderation, and
    notification-to-review deep links.
-4. Enroll/configure the Apple developer assets, enable MusicKit, and implement
+4. Extend manual diary entries with owner editing, optional review linkage,
+   and Journal filtering without moving authoring into the Listen tab.
+5. Enroll/configure the Apple developer assets, enable MusicKit, and implement
    the equivalent Apple catalog resolution, playback, and opted-in history
    source. Keep its adapter local and submit only canonical/provider metadata
    to the backend.
-5. Add server-owned APNs delivery from `social_notifications`; retain the
+6. Add server-owned APNs delivery from `social_notifications`; retain the
    database row as the source of truth and provide notification preference UI.
-6. Add production operational work: error reporting, scheduled cleanup of
+7. Add production operational work: error reporting, scheduled cleanup of
    expired presence, rate limiting/abuse reporting, privacy-policy copy,
    TestFlight build settings, and device-pair collaboration tests.
-7. If public discovery is desired, design moderation/reporting, profile
+8. If public discovery is desired, design moderation/reporting, profile
    discovery queries, rate limits, and explicit migration from follower-only
    UI before exposing the existing `public` data value.
 

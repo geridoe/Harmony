@@ -124,8 +124,10 @@ private struct RecordListeningHistoryParameters: Encodable {
     let p_provider: String?
     let p_provider_track_id: String?
     let p_played_at: Date
-    let p_source = "harmony_room"
+    let p_source: String
     let p_visibility: String
+    let p_is_relisten: Bool
+    let p_tags: [String]
 }
 private struct HistoryEntryIDParameters: Encodable { let p_entry_id: UUID }
 private struct RemovePayload: Encodable { let queue_item_id: UUID }
@@ -306,12 +308,15 @@ struct RemoteListeningHistoryEntry: Decodable, Identifiable {
     let playedAt: Date
     let source: String
     let visibility: SocialVisibilityOption
+    let isRelisten: Bool
+    let tags: [String]
     let canonicalTrack: RemoteCatalogTrack?
     let profile: RemoteProfile
     enum CodingKeys: String, CodingKey {
-        case id, source, visibility
+        case id, source, visibility, tags
         case profileID = "profile_id"
         case playedAt = "played_at"
+        case isRelisten = "is_relisten"
         case canonicalTrack = "canonical_tracks"
         case profile = "profiles"
     }
@@ -654,7 +659,7 @@ final class HarmonyCollaborationRepository {
     func listeningHistory() async throws -> [RemoteListeningHistoryEntry] {
         try await authenticate()
         return try await client.from("listening_history_entries")
-            .select("id,profile_id,played_at,source,visibility,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)")
+            .select("id,profile_id,played_at,source,visibility,is_relisten,tags,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)")
             .order("played_at", ascending: false)
             .limit(100).execute().value
     }
@@ -803,8 +808,52 @@ final class HarmonyCollaborationRepository {
             p_provider: mapping.map { $0.provider == .spotify ? "spotify" : "apple_music" },
             p_provider_track_id: mapping?.providerID,
             p_played_at: Date(),
-            p_visibility: visibility.rawValue
+            p_source: "harmony_room",
+            p_visibility: visibility.rawValue,
+            p_is_relisten: false,
+            p_tags: []
         )).execute()
+    }
+
+    func createListeningDiaryEntry(
+        track: HarmonyTrack,
+        playedAt: Date,
+        isRelisten: Bool,
+        tags: [String],
+        visibility: SocialVisibilityOption
+    ) async throws -> RemoteListeningHistoryEntry {
+        try await authenticate()
+        let mapping = track.mappings.first(where: { !$0.providerID.isEmpty })
+        let canonicalTrackID = try await canonicalTrackID(for: track)
+        return try await client.rpc(
+            "record_listening_history",
+            params: RecordListeningHistoryParameters(
+                p_canonical_track_id: canonicalTrackID,
+                p_provider: mapping.map { $0.provider == .spotify ? "spotify" : "apple_music" },
+                p_provider_track_id: mapping?.providerID,
+                p_played_at: playedAt,
+                p_source: "manual",
+                p_visibility: visibility.rawValue,
+                p_is_relisten: isRelisten,
+                p_tags: tags
+            )
+        ).execute().value
+    }
+
+    func createListeningDiaryEntry(
+        track: HarmonyTrack,
+        listenedOn: Date,
+        isRelisten: Bool,
+        tags: [String],
+        visibility: SocialVisibilityOption
+    ) async throws -> RemoteListeningHistoryEntry {
+        try await createListeningDiaryEntry(
+            track: track,
+            playedAt: listenedOn,
+            isRelisten: isRelisten,
+            tags: tags,
+            visibility: visibility
+        )
     }
 
     func deleteListeningHistoryEntry(_ entryID: UUID) async throws {
@@ -904,7 +953,6 @@ final class HarmonyCollaborationRepository {
             .value
         return trackID.id
     }
-
     func remove(queueItemID: UUID, from sessionID: UUID, expectedRevision: Int) async throws -> Int {
         try await executeCommand(QueueCommandParameters(p_session_id: sessionID, p_command_id: UUID(), p_expected_revision: expectedRevision, p_type: "remove", p_payload: RemovePayload(queue_item_id: queueItemID)))
     }

@@ -323,6 +323,36 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(store.queueRevision, 12)
     }
 
+    func testDiaryDraftNormalizesTagsAndPreservesJournalContext() {
+        let listenedOn = Date(timeIntervalSince1970: 1_722_470_400)
+        let track = reviewTrack(title: "Midnight reprise")
+        let draft = DiaryEntryDraft(
+            track: track,
+            listenedOn: listenedOn,
+            isRelisten: true,
+            tagsText: " Party, vinyl, PARTY, , late night ",
+            visibility: .followers
+        )
+
+        XCTAssertEqual(draft.track, track)
+        XCTAssertEqual(draft.listenedOn, listenedOn)
+        XCTAssertTrue(draft.isRelisten)
+        XCTAssertEqual(draft.normalizedTags, ["party", "vinyl", "late night"])
+        XCTAssertEqual(draft.visibility, .followers)
+        XCTAssertNil(draft.tagValidationMessage)
+    }
+
+    func testDiaryDraftEnforcesBackendTagLimits() {
+        var draft = DiaryEntryDraft(tagsText: (1...11).map { "tag\($0)" }.joined(separator: ","))
+        XCTAssertEqual(draft.tagValidationMessage, "Use no more than 10 tags.")
+
+        draft.tagsText = String(repeating: "x", count: 31)
+        XCTAssertEqual(draft.tagValidationMessage, "Each tag must be 30 characters or fewer.")
+
+        draft.tagsText = (1...10).map { "tag\($0)" }.joined(separator: ",")
+        XCTAssertNil(draft.tagValidationMessage)
+    }
+
     func testClearingSessionRemovesRoomStateAndRestoresLocalOwnership() {
         let store = HarmonySessionStore()
 

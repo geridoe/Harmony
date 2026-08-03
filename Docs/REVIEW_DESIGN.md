@@ -1,7 +1,7 @@
 # Reviews and listening journal design
 
 **Decision date:** 2 August 2026  
-**Status:** first dedicated iOS surface implemented; broader discovery work remains
+**Status:** dedicated reviews and manual music-diary entry implemented; broader discovery work remains
 
 ## Why this is a separate product surface
 
@@ -52,8 +52,8 @@ The product pattern Harmony transfers is therefore:
 | Ten-position half-star rating scale | 0.5–5.0 music rating |
 | Like independent of rating | Loved affinity independent of score and social review reactions |
 | Dated Diary log, optionally reviewed | Dated listen distinct from the current opinion |
-| Rewatch flag | Future relisten context on an individual listen |
-| Optional review, tags, and spoiler metadata | Optional review and spoiler flag now; music-context tags later |
+| Rewatch flag | Relisten context on an individual manual listen |
+| Optional review, tags, and spoiler metadata | Reviews keep spoiler metadata; manual listens accept music-context tags |
 | Dedicated review detail with likes/comments | Review detail with reaction and comment thread |
 | Member Reviews, Diary, and Likes surfaces | Future profile shelves for Reviews, Journal, and Loved music |
 | Following activity feed | Follower-visible review activity now; broader typed activity later |
@@ -70,12 +70,11 @@ conversation live.
 Only the first stage should be described as implemented:
 
 1. **Current:** first-class Reviews tab, follower review feed, song/album
-   composer, rating/Loved/spoiler/audience controls, compact cards, and review
-   detail with reactions/comments. Basic dated listening history exists, but
-   it is not yet a complete Letterboxd-style Diary product.
-2. **Next:** a dedicated Journal/Diary experience with explicit dates,
-   relisten context, optional linkage between a listen and an opinion, and
-   music-native tags such as setting, mood, event, or listening companions.
+   composer, rating/Loved/spoiler/audience controls, compact cards, review
+   detail with reactions/comments, and manual dated track logs with Relisten,
+   tags, and per-entry audience.
+2. **Next:** editing manual diary entries, optional linkage between a listen
+   and an opinion, and richer Journal browsing/filtering.
 3. **Later:** profile Reviews/Journal/Loved shelves and a richer typed following
    activity feed. Bulk provider-history imports must not flood that feed.
 4. **After moderation and ranking policy:** popular/community discovery,
@@ -90,7 +89,7 @@ tags, lists, or stats already exist.
 | Concept | Harmony representation | Behavior |
 | --- | --- | --- |
 | Playing now | queue/provider playback | ephemeral; not automatically a social post |
-| Listening journal | `listening_history_entries` | dated and repeatable; imports are deduplicated |
+| Listening journal | `listening_history_entries` | dated and repeatable; manual entries may carry Relisten/tags, while provider imports are deduplicated |
 | Opinion | `music_reviews` | current 0.5–5.0 rating and optional review |
 | Affinity | `music_reviews.is_loved` | independent Loved signal; not a social reaction |
 | Spoiler disclosure | `music_reviews.contains_spoilers` | author-controlled metadata; clients conceal the body until the reader reveals it |
@@ -108,7 +107,54 @@ The fifth iOS tab has two shelves:
   feed. The rating control supports half-star steps. The author can mark the
   music Loved independently of the score.
 - **My journal** contains the owner's dated listening entries and their own
-  reviews. The copy explicitly explains that logs and opinions are independent.
+  reviews. **Log a listen** creates a manual track entry with a selected date,
+  Relisten flag, tags, and audience. The copy explicitly explains that logs
+  and opinions are independent.
+
+## Implemented manual music-diary slice
+
+### Interaction and ownership
+
+Manual diary authoring lives in **Reviews → My journal**, not in Listen.
+Listen remains a read-only social/history surface. **Log a listen** opens a
+track-only composer with:
+
+1. a song selected through the isolated Reviews catalog search;
+2. **Listened on**, limited by the client to today or an earlier date;
+3. an independent **Relisten** flag;
+4. comma-separated tags; and
+5. an explicit Only me/Followers audience copied from the history default when
+   the composer opens.
+
+`DiaryEntryDraft` owns all pending values. It trims and lowercases tags,
+removes blanks, and stably deduplicates repeated values before submission.
+The client and database both limit entries to ten tags of at most thirty
+characters each. Save stays disabled without a song or while tag validation
+fails. A failed `createDiaryEntry(...) -> Bool` keeps the sheet and authored
+draft intact; only confirmed persistence dismisses it.
+
+Quick logging the current track remains available as a separate action. It is
+intentionally low friction and does not silently infer Relisten or tags.
+
+### Persistence and invariants
+
+Migration `202608020025_music_diary_entries.sql` extends
+`listening_history_entries` with `is_relisten` and `tags`. The selected calendar
+date is stored in the existing `played_at` timestamp; no second diary-date
+column exists. The migration replaces `record_listening_history` with one
+eight-parameter signature, retaining defaults for the new trailing
+`p_is_relisten` and `p_tags` inputs so existing named-parameter callers remain
+compatible.
+
+The RPC rejects future manual timestamps, normalizes tags again on the server,
+and allows Relisten/nonempty tags only when `source = 'manual'`. Harmony-room
+and provider-import writes explicitly submit `false` and an empty tag array.
+Manual repeats are allowed; the existing provider-import deduplication index
+continues to apply only to imported provider history.
+
+This slice is create/delete only. Editing a dated log and linking it to an
+existing review are deliberately follow-up work. A diary entry does not create
+or update `music_reviews`, enqueue its track, or start playback.
 
 Album review creation remains available on Spotify/Apple catalog results in
 Add music. The server migration `202608020023_review_affinity.sql` adds the
@@ -299,7 +345,8 @@ the entire authored draft. Only confirmed publication resets it.
 1. Expand the implemented detail page with additional reaction choices,
    comment moderation/reporting, and deep links from notifications.
 2. Add profile shelves for Journal, Reviews, Loved, and Collections.
-3. Add music-native context to journal entries (first listen, relisten, live,
-   mood, setting) without requiring it for a quick log.
+3. Extend the implemented dated-log context with edit support, optional review
+   linkage, and structured first-listen/live/setting fields without requiring
+   them for a quick log.
 4. Add discovery only after report/block/moderation and ranking policies are
    defined; bulk history imports should not flood follower activity.
