@@ -209,6 +209,10 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var isRecordingListeningHistory = false
     @Published private(set) var isSavingDiaryEntry = false
     @Published private(set) var trackSubjectStates: [UUID: RemoteTrackSubjectState] = [:]
+    @Published private(set) var trackSubjectShelf: [RemoteTrackSubjectState] = []
+    @Published private(set) var isRefreshingTrackSubjectShelf = false
+    @Published private(set) var isLoadingMoreTrackSubjectShelf = false
+    @Published private(set) var hasMoreTrackSubjectShelf = false
     @Published private(set) var mutatingTrackSubjectStateIDs: Set<UUID> = []
     @Published private(set) var isImportingSpotifyHistory = false
     @Published private(set) var spotifyHistoryImportMessage: String?
@@ -241,6 +245,7 @@ final class HarmonySessionStore: ObservableObject {
     private let appleMusicProvider: any AppleMusicProviding
     private var spotifyLoadedProviderID: String?
     private let journalPageSize = 50
+    private let trackSubjectShelfPageSize = 50
 #if DEBUG
     private var isDiaryEditorUITestFixtureActive = false
 #endif
@@ -1025,11 +1030,54 @@ final class HarmonySessionStore: ObservableObject {
     func refreshTrackSubjectState(for track: HarmonyTrack) async -> RemoteTrackSubjectState? {
         do {
             let state = try await collaborationRepository.trackSubjectState(for: track)
-            if let state { trackSubjectStates[state.canonicalTrackID] = state }
+            if let state {
+                trackSubjectStates[state.canonicalTrackID] = state
+                replaceTrackSubjectShelfState(state)
+            }
             return state
         } catch {
             collaborationMessage = "Could not load your track status: \(error.localizedDescription)"
             return nil
+        }
+    }
+
+    func refreshTrackSubjectShelf() async {
+        guard !isRefreshingTrackSubjectShelf, !isLoadingMoreTrackSubjectShelf else { return }
+        isRefreshingTrackSubjectShelf = true
+        defer { isRefreshingTrackSubjectShelf = false }
+        do {
+            let page = try await collaborationRepository.trackSubjectStatePage(
+                limit: trackSubjectShelfPageSize + 1
+            )
+            trackSubjectShelf = Array(page.prefix(trackSubjectShelfPageSize))
+            hasMoreTrackSubjectShelf = page.count > trackSubjectShelfPageSize
+            cacheTrackSubjectStates(trackSubjectShelf)
+        } catch {
+            collaborationMessage = "Could not refresh your music shelf."
+        }
+    }
+
+    func loadMoreTrackSubjectShelf() async {
+        guard hasMoreTrackSubjectShelf,
+              !isRefreshingTrackSubjectShelf,
+              !isLoadingMoreTrackSubjectShelf,
+              let cursor = trackSubjectShelf.last else { return }
+        isLoadingMoreTrackSubjectShelf = true
+        defer { isLoadingMoreTrackSubjectShelf = false }
+        do {
+            let page = try await collaborationRepository.trackSubjectStatePage(
+                beforeUpdatedAt: cursor.updatedAt,
+                beforeCanonicalTrackID: cursor.canonicalTrackID,
+                limit: trackSubjectShelfPageSize + 1
+            )
+            let existingIDs = Set(trackSubjectShelf.map(\.canonicalTrackID))
+            let visiblePage = page.prefix(trackSubjectShelfPageSize)
+                .filter { !existingIDs.contains($0.canonicalTrackID) }
+            trackSubjectShelf.append(contentsOf: visiblePage)
+            hasMoreTrackSubjectShelf = page.count > trackSubjectShelfPageSize
+            cacheTrackSubjectStates(visiblePage)
+        } catch {
+            collaborationMessage = "Could not load more of your music shelf."
         }
     }
 
@@ -1052,13 +1100,35 @@ final class HarmonySessionStore: ObservableObject {
                 isLoved: isLoved,
                 wantToListen: wantToListen
             )
-            trackSubjectStates[state.canonicalTrackID] = state
+            let shelfTrack = trackSubjectShelf.first {
+                $0.canonicalTrackID == state.canonicalTrackID
+            }?.canonicalTrack
+            let mergedState = state.preservingCanonicalTrack(shelfTrack)
+            trackSubjectStates[mergedState.canonicalTrackID] = mergedState
+            trackSubjectShelf.removeAll {
+                $0.canonicalTrackID == mergedState.canonicalTrackID
+            }
+            trackSubjectShelf.insert(mergedState, at: 0)
             collaborationMessage = "Track status updated"
             return true
         } catch {
             collaborationMessage = "Could not update track status: \(error.localizedDescription)"
             return false
         }
+    }
+
+    private func cacheTrackSubjectStates<S: Sequence>(_ states: S)
+    where S.Element == RemoteTrackSubjectState {
+        for state in states { trackSubjectStates[state.canonicalTrackID] = state }
+    }
+
+    private func replaceTrackSubjectShelfState(_ state: RemoteTrackSubjectState) {
+        guard let index = trackSubjectShelf.firstIndex(where: {
+            $0.canonicalTrackID == state.canonicalTrackID
+        }) else { return }
+        trackSubjectShelf[index] = state.preservingCanonicalTrack(
+            trackSubjectShelf[index].canonicalTrack
+        )
     }
 
 #if DEBUG

@@ -402,6 +402,26 @@ clearing the rating/default state, normalized companion fields, incompatible
 review rollback, and isolation from later review edits. The older diary update
 RPC remains available for installed-client compatibility.
 
+### Implemented: private owner Music shelf
+
+The Activity shelf's **Music shelf** link opens a dedicated owner collection
+for one-row-per-track state. `HarmonySessionStore.trackSubjectShelf` is separate
+from Diary occurrences and social feeds. Refresh requests 51 rows and keeps 50;
+Load more uses `(updatedAt, canonicalTrackID)`, deduplicates canonical IDs, and
+hydrates the single-track cache used by future subject-detail controls.
+
+The page offers All, Loved, Want to listen, Rated, and Listened scopes plus
+case/diacritic-insensitive title, artist, and album search. Filtering describes
+only loaded pages. Rows show canonical artwork and metadata, status badges, and
+the current default rating. No public profile exposure is implied yet; RLS and
+the RPC restrict this collection to its owner.
+
+Migration `202608030030_paginated_track_subject_states.sql` deploys
+`list_my_track_subject_states` with stable
+`updated_at DESC, canonical_track_id DESC` keyset pagination, paired cursor
+validation, a 1–100 limit, and a matching owner-first index. Hosted smoke covers
+owner isolation, continuation, partial-cursor rejection, and limit validation.
+
 ## 4. Supabase data model
 
 ### Collaboration tables
@@ -507,6 +527,7 @@ The main social RPCs are `request_social_follow`,
 `list_my_listening_diary`, `update_listening_diary_entry`,
 `update_listening_diary_entry_with_rating`,
 `set_listening_diary_rating`, `set_my_track_subject_state`,
+`list_my_track_subject_states`,
 `create_music_review`, `update_music_review`, `delete_music_review`,
 `add_review_comment`, `delete_review_comment`, `toggle_review_reaction`, and
 `mark_social_notifications_read`.

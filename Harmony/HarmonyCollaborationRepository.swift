@@ -151,6 +151,11 @@ private struct ListeningDiaryPageParameters: Encodable {
     let p_before_id: UUID?
     let p_limit: Int
 }
+private struct TrackSubjectStatePageParameters: Encodable {
+    let p_before_updated_at: Date?
+    let p_before_canonical_track_id: UUID?
+    let p_limit: Int
+}
 private struct HistoryEntryIDParameters: Encodable { let p_entry_id: UUID }
 private struct RemovePayload: Encodable { let queue_item_id: UUID }
 private struct MovePayload: Encodable { let queue_item_id: UUID; let position: Double }
@@ -383,6 +388,7 @@ struct RemoteTrackSubjectState: Decodable, Identifiable {
     let wantToListen: Bool
     let createdAt: Date
     let updatedAt: Date
+    let canonicalTrack: RemoteCatalogTrack?
 
     var id: UUID { canonicalTrackID }
 
@@ -395,6 +401,21 @@ struct RemoteTrackSubjectState: Decodable, Identifiable {
         case wantToListen = "want_to_listen"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+        case canonicalTrack = "canonical_tracks"
+    }
+
+    func preservingCanonicalTrack(_ fallback: RemoteCatalogTrack?) -> RemoteTrackSubjectState {
+        RemoteTrackSubjectState(
+            profileID: profileID,
+            canonicalTrackID: canonicalTrackID,
+            hasListened: hasListened,
+            defaultRating: defaultRating,
+            isLoved: isLoved,
+            wantToListen: wantToListen,
+            createdAt: createdAt,
+            updatedAt: updatedAt,
+            canonicalTrack: canonicalTrack ?? fallback
+        )
     }
 }
 
@@ -762,11 +783,29 @@ final class HarmonyCollaborationRepository {
         try await authenticate()
         let states: [RemoteTrackSubjectState] = try await client
             .from("profile_track_subject_states")
-            .select("profile_id,canonical_track_id,has_listened,default_rating,is_loved,want_to_listen,created_at,updated_at")
+            .select("profile_id,canonical_track_id,has_listened,default_rating,is_loved,want_to_listen,created_at,updated_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit)")
             .eq("canonical_track_id", value: canonicalTrackID.uuidString)
             .limit(1)
             .execute().value
         return states.first
+    }
+
+    func trackSubjectStatePage(
+        beforeUpdatedAt: Date? = nil,
+        beforeCanonicalTrackID: UUID? = nil,
+        limit: Int = 51
+    ) async throws -> [RemoteTrackSubjectState] {
+        try await authenticate()
+        return try await client.rpc(
+            "list_my_track_subject_states",
+            params: TrackSubjectStatePageParameters(
+                p_before_updated_at: beforeUpdatedAt,
+                p_before_canonical_track_id: beforeCanonicalTrackID,
+                p_limit: limit
+            )
+        )
+        .select("profile_id,canonical_track_id,has_listened,default_rating,is_loved,want_to_listen,created_at,updated_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit)")
+        .execute().value
     }
 
     func trackSubjectState(for track: HarmonyTrack) async throws -> RemoteTrackSubjectState? {

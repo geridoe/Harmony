@@ -132,6 +132,32 @@ class HarmonyUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Post comment"].exists)
     }
 
+    func testMusicShelfIsDedicatedSearchableDestination() throws {
+        let app = XCUIApplication()
+        app.launchArguments.append("--ui-test-diary-editor")
+        app.launch()
+
+        let reviewsTab = app.tabBars.buttons["Reviews"]
+        XCTAssertTrue(reviewsTab.waitForExistence(timeout: 5))
+        reviewsTab.tap()
+        let reviewsNavigation = app.navigationBars["Reviews"]
+        if !reviewsNavigation.waitForExistence(timeout: 3) { reviewsTab.tap() }
+        XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
+
+        let musicShelf = app.buttons["Music shelf"]
+        XCTAssertTrue(musicShelf.waitForExistence(timeout: 5))
+        musicShelf.tap()
+
+        XCTAssertTrue(app.navigationBars["Music shelf"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textFields["music-shelf-search"].exists)
+        XCTAssertTrue(app.segmentedControls["music-shelf-scope"].exists)
+        XCTAssertTrue(app.buttons["All"].exists)
+        XCTAssertTrue(app.buttons["Loved"].exists)
+        XCTAssertTrue(app.buttons["Want to listen"].exists)
+        XCTAssertTrue(app.buttons["Rated"].exists)
+        XCTAssertTrue(app.buttons["Listened"].exists)
+    }
+
     func testJournalComposerCapturesDatedRelistenContext() throws {
         let app = XCUIApplication()
         app.launch()

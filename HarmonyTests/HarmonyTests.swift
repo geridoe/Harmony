@@ -481,6 +481,49 @@ final class HarmonyTests: XCTestCase {
         )
     }
 
+    func testMusicShelfSearchesMetadataAndAppliesEveryScope() {
+        let ordinary = trackSubjectState(title: "Ordinary")
+        let loved = trackSubjectState(title: "Halo", artist: "Beyoncé", album: "Café Bleu", isLoved: true)
+        let wanted = trackSubjectState(title: "Future song", wantToListen: true)
+        let rated = trackSubjectState(title: "Rated song", defaultRating: 3.5)
+        let listened = trackSubjectState(title: "Heard song", hasListened: true)
+        let states = [ordinary, loved, wanted, rated, listened]
+
+        for query in ["HALO", "beyonce", "cafe bleu"] {
+            XCTAssertEqual(
+                browseTrackSubjectShelf(states, using: MusicShelfFilter(query: query)).map(\.id),
+                [loved.id]
+            )
+        }
+        XCTAssertEqual(browseTrackSubjectShelf(states, using: MusicShelfFilter(scope: .loved)).map(\.id), [loved.id])
+        XCTAssertEqual(browseTrackSubjectShelf(states, using: MusicShelfFilter(scope: .wantToListen)).map(\.id), [wanted.id])
+        XCTAssertEqual(browseTrackSubjectShelf(states, using: MusicShelfFilter(scope: .rated)).map(\.id), [rated.id])
+        XCTAssertEqual(browseTrackSubjectShelf(states, using: MusicShelfFilter(scope: .listened)).map(\.id), [listened.id])
+    }
+
+    func testMusicShelfUsesStableBackendUpdatedOrder() {
+        let older = trackSubjectState(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000003")!,
+            title: "Older",
+            updatedAt: Date(timeIntervalSince1970: 100)
+        )
+        let tiedLowerID = trackSubjectState(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+            title: "Tie one",
+            updatedAt: Date(timeIntervalSince1970: 200)
+        )
+        let tiedHigherID = trackSubjectState(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!,
+            title: "Tie two",
+            updatedAt: Date(timeIntervalSince1970: 200)
+        )
+
+        XCTAssertEqual(
+            browseTrackSubjectShelf([older, tiedLowerID, tiedHigherID], using: MusicShelfFilter()).map(\.id),
+            [tiedHigherID.id, tiedLowerID.id, older.id]
+        )
+    }
+
     func testClearingSessionRemovesRoomStateAndRestoresLocalOwnership() {
         let store = HarmonySessionStore()
 
@@ -542,6 +585,39 @@ final class HarmonyTests: XCTestCase {
                 providerTracks: nil
             ),
             profile: RemoteProfile(displayName: "Test listener")
+        )
+    }
+
+    private func trackSubjectState(
+        id: UUID = UUID(),
+        title: String,
+        artist: String = "Test artist",
+        album: String = "Test album",
+        hasListened: Bool = false,
+        defaultRating: Double? = nil,
+        isLoved: Bool = false,
+        wantToListen: Bool = false,
+        updatedAt: Date = Date(timeIntervalSince1970: 1_700_000_000)
+    ) -> RemoteTrackSubjectState {
+        RemoteTrackSubjectState(
+            profileID: UUID(),
+            canonicalTrackID: id,
+            hasListened: hasListened,
+            defaultRating: defaultRating,
+            isLoved: isLoved,
+            wantToListen: wantToListen,
+            createdAt: updatedAt.addingTimeInterval(-60),
+            updatedAt: updatedAt,
+            canonicalTrack: RemoteCatalogTrack(
+                id: id,
+                title: title,
+                artist: artist,
+                album: album,
+                durationMilliseconds: 180_000,
+                artworkURL: nil,
+                isExplicit: false,
+                providerTracks: nil
+            )
         )
     }
 }

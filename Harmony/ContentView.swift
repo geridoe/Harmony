@@ -438,6 +438,53 @@ struct JournalBrowseFilter: Equatable {
     var sort = JournalBrowseSort.newest
 }
 
+enum MusicShelfScope: String, CaseIterable, Identifiable {
+    case all = "All"
+    case loved = "Loved"
+    case wantToListen = "Want to listen"
+    case rated = "Rated"
+    case listened = "Listened"
+
+    var id: String { rawValue }
+    var compactTitle: String { self == .wantToListen ? "Want" : rawValue }
+}
+
+struct MusicShelfFilter: Equatable {
+    var query = ""
+    var scope = MusicShelfScope.all
+}
+
+func browseTrackSubjectShelf(
+    _ states: [RemoteTrackSubjectState],
+    using filter: MusicShelfFilter
+) -> [RemoteTrackSubjectState] {
+    let query = journalSearchKey(filter.query.trimmingCharacters(in: .whitespacesAndNewlines))
+    return states.filter { state in
+        switch filter.scope {
+        case .all: true
+        case .loved: state.isLoved
+        case .wantToListen: state.wantToListen
+        case .rated: state.defaultRating != nil
+        case .listened: state.hasListened
+        }
+    }
+    .filter { state in
+        guard !query.isEmpty else { return true }
+        let values = [
+            state.canonicalTrack?.title,
+            state.canonicalTrack?.artist,
+            state.canonicalTrack?.album
+        ].compactMap { $0 }
+        return values.contains { journalSearchKey($0).contains(query) }
+    }
+    .sorted { left, right in
+        if left.updatedAt == right.updatedAt {
+            return left.canonicalTrackID.uuidString > right.canonicalTrackID.uuidString
+        }
+        return left.updatedAt > right.updatedAt
+    }
+}
+
 func browseJournalEntries(
     _ entries: [RemoteListeningHistoryEntry],
     using filter: JournalBrowseFilter
@@ -782,6 +829,13 @@ struct ReviewsView: View {
                 .buttonStyle(.bordered)
             }
             .accessibilityIdentifier("reviews-personal-summary")
+
+            NavigationLink {
+                MusicShelfView()
+            } label: {
+                Label("Music shelf", systemImage: "books.vertical")
+            }
+            .accessibilityIdentifier("open-music-shelf")
         }
     }
 
@@ -952,6 +1006,130 @@ struct ReviewsView: View {
             editingIsLoved = selected.isLoved
             editingContainsSpoilers = selected.containsSpoilers
         }
+    }
+}
+
+private struct MusicShelfView: View {
+    @EnvironmentObject private var store: HarmonySessionStore
+    @State private var filter = MusicShelfFilter()
+
+    private var visibleStates: [RemoteTrackSubjectState] {
+        browseTrackSubjectShelf(store.trackSubjectShelf, using: filter)
+    }
+
+    var body: some View {
+        List {
+            Section {
+                TextField("Search by song, artist, or album", text: $filter.query)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .accessibilityIdentifier("music-shelf-search")
+
+                Picker("Music shelf scope", selection: $filter.scope) {
+                    ForEach(MusicShelfScope.allCases) { scope in
+                        Text(scope.compactTitle)
+                            .tag(scope)
+                            .accessibilityLabel(scope.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("music-shelf-scope")
+            }
+
+            Section("Your tracks") {
+                if store.isRefreshingTrackSubjectShelf && store.trackSubjectShelf.isEmpty {
+                    ProgressView("Loading music shelf…")
+                } else if visibleStates.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(filter.query.isEmpty && filter.scope == .all ? "Your music shelf is empty" : "No matching music")
+                            .font(.headline)
+                        Text(filter.query.isEmpty && filter.scope == .all
+                            ? "Music you rate, love, save, or mark listened will appear here."
+                            : "Try another search or shelf filter. Your saved music has not been removed.")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    }
+                    .accessibilityIdentifier("music-shelf-empty-state")
+                } else {
+                    ForEach(visibleStates) { state in
+                        MusicShelfRow(state: state)
+                    }
+                }
+
+                if store.hasMoreTrackSubjectShelf {
+                    Button {
+                        Task { await store.loadMoreTrackSubjectShelf() }
+                    } label: {
+                        if store.isLoadingMoreTrackSubjectShelf {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            Text("Load more")
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .disabled(store.isLoadingMoreTrackSubjectShelf)
+                    .accessibilityIdentifier("music-shelf-load-more")
+                }
+            }
+        }
+        .navigationTitle("Music shelf")
+        .navigationBarTitleDisplayMode(.inline)
+        .accessibilityIdentifier("music-shelf-page")
+        .task { await store.refreshTrackSubjectShelf() }
+        .refreshable { await store.refreshTrackSubjectShelf() }
+    }
+}
+
+private struct MusicShelfRow: View {
+    let state: RemoteTrackSubjectState
+
+    var body: some View {
+        HStack(spacing: 12) {
+            if let track = state.canonicalTrack {
+                TrackArtwork(track: track.harmonyTrack, size: 48, cornerRadius: 9)
+            } else {
+                Image(systemName: "music.note")
+                    .foregroundColor(.indigo)
+                    .frame(width: 48, height: 48)
+                    .background(Color.indigo.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 9))
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(state.canonicalTrack?.title ?? "Unavailable track")
+                    .font(.headline)
+                if let track = state.canonicalTrack {
+                    Text(([track.artist] + [track.album].compactMap { $0 }).filter { !$0.isEmpty }.joined(separator: " · "))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+                HStack(spacing: 8) {
+                    if state.hasListened { MusicShelfBadge(title: "Listened", systemImage: "checkmark.circle.fill") }
+                    if state.isLoved { MusicShelfBadge(title: "Loved", systemImage: "heart.fill") }
+                    if state.wantToListen { MusicShelfBadge(title: "Want to listen", systemImage: "bookmark.fill") }
+                    if let rating = state.defaultRating {
+                        MusicShelfBadge(title: String(format: "%.1f", rating), systemImage: "star.fill")
+                            .accessibilityLabel(Text("Rated \(rating, specifier: "%.1f") out of 5"))
+                    }
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("music-shelf-row-\(state.canonicalTrackID.uuidString)")
+    }
+}
+
+private struct MusicShelfBadge: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        Label(title, systemImage: systemImage)
+            .font(.caption2.weight(.semibold))
+            .foregroundColor(.indigo)
+            .lineLimit(1)
     }
 }
 

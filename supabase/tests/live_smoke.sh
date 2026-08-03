@@ -379,6 +379,31 @@ rest_get "$collaborator_token" \
   "profile_track_subject_states?select=default_rating,is_loved&canonical_track_id=eq.$canonical_track_id" \
   "$smoke_tmp/atomic-default-rating.json"
 jq -e 'length == 1 and .[0].default_rating == 2.5 and .[0].is_loved == true' "$smoke_tmp/atomic-default-rating.json" >/dev/null
+
+stage="owner track-state shelf keyset pagination"
+rpc "$collaborator_token" list_my_track_subject_states \
+  '{"p_before_updated_at":null,"p_before_canonical_track_id":null,"p_limit":1}' \
+  "$smoke_tmp/track-state-first-page.json"
+track_state_first_id="$(jq -er '.[0].canonical_track_id' "$smoke_tmp/track-state-first-page.json")"
+track_state_first_updated_at="$(jq -er '.[0].updated_at' "$smoke_tmp/track-state-first-page.json")"
+[[ "$track_state_first_id" == "$canonical_track_id" ]]
+rpc "$collaborator_token" list_my_track_subject_states \
+  "{\"p_before_updated_at\":\"$track_state_first_updated_at\",\"p_before_canonical_track_id\":\"$track_state_first_id\",\"p_limit\":10}" \
+  "$smoke_tmp/track-state-second-page.json"
+jq -e --arg first "$track_state_first_id" --arg expected "$spotify_url_track_id" 'length == 1 and .[0].canonical_track_id != $first and .[0].canonical_track_id == $expected' "$smoke_tmp/track-state-second-page.json" >/dev/null
+rpc "$conductor_token" list_my_track_subject_states \
+  '{"p_before_updated_at":null,"p_before_canonical_track_id":null,"p_limit":50}' \
+  "$smoke_tmp/foreign-track-state-page.json"
+[[ "$(jq 'length' "$smoke_tmp/foreign-track-state-page.json")" -eq 0 ]]
+partial_track_state_cursor_status="$(rpc_status "$collaborator_token" list_my_track_subject_states \
+  "{\"p_before_updated_at\":\"$track_state_first_updated_at\",\"p_before_canonical_track_id\":null,\"p_limit\":50}" \
+  "$smoke_tmp/partial-track-state-cursor.json")"
+[[ "$partial_track_state_cursor_status" == "400" ]]
+oversized_track_state_page_status="$(rpc_status "$collaborator_token" list_my_track_subject_states \
+  '{"p_before_updated_at":null,"p_before_canonical_track_id":null,"p_limit":101}' \
+  "$smoke_tmp/oversized-track-state-page.json")"
+[[ "$oversized_track_state_page_status" == "400" ]]
+stage="owner diary editing and review linkage"
 invalid_album_link_status="$(rpc_status "$collaborator_token" create_music_review \
   '{"p_subject_kind":"album","p_provider":"spotify","p_provider_subject_id":"spotify:album:invalid","p_subject_title":"Invalid Link Album","p_subject_deep_link":"https://example.com/not-spotify","p_rating":3.0}' \
   "$smoke_tmp/invalid-album-link.json")"

@@ -80,8 +80,8 @@ Only the first stage should be described as implemented:
    owner-only pagination.
 4. **Current backend foundation:** historical ratings can belong to individual
    Diary entries, while Listened, default rating, Loved, and Want to listen are
-   independent owner/track state. The existing review UI remains compatible
-   while the new fields are wired into the client.
+   independent owner/track state. A private Music shelf exposes those states
+   with search, scopes, and stable pagination.
 5. **Next:** a deliberate create-time opinion-linking interaction if the
    edit-first workflow proves too hidden, plus server-side filtered search if
    exhaustive results are required.
@@ -268,6 +268,24 @@ control. An unrated log remains `nil` with a disabled scale; enabling it starts
 at 4.0 and uses the same half-star picker as reviews. Journal rows display only ratings actually
 stored on that listen. Swift also decodes/caches the new private track state,
 but Loved/Listened/Want-to-listen UI remains a later subject-detail slice.
+
+### Owner Music shelf
+
+Reviews → Activity now links to a dedicated **Music shelf**. It is not another
+Diary list: each canonical track appears once with its current Listened, Loved,
+Want-to-listen, and default-rating state. All, Loved, Want to listen, Rated,
+and Listened scopes sit alongside local title/artist/album search. Rows show
+artwork and compact state badges, while filtered-empty copy distinguishes “no
+match in loaded pages” from an empty account.
+
+Migration `202608030030_paginated_track_subject_states.sql` deploys the
+owner-only `list_my_track_subject_states` RPC. It uses the stable
+`(updated_at DESC, canonical_track_id DESC)` cursor, requires both cursor
+parts, limits pages to 1–100, and is backed by a matching owner-first index.
+The app requests 51 rows, displays 50, and exposes Load more when the sentinel
+exists. Search and scopes intentionally apply to loaded pages, as in Diary.
+Hosted smoke covers owner isolation, continuation, partial-cursor rejection,
+and the page-size cap.
 
 Album review creation remains available on Spotify/Apple catalog results in
 Add music. The server migration `202608020023_review_affinity.sql` adds the
