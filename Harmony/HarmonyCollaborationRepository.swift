@@ -81,6 +81,7 @@ private struct CreateTrackReviewParameters: Encodable {
     let p_visibility = "followers"
     let p_contains_spoilers = false
 }
+private struct ReviewReactionParameters: Encodable { let p_review_id: UUID; let p_kind = "heart" }
 private struct RemovePayload: Encodable { let queue_item_id: UUID }
 private struct MovePayload: Encodable { let queue_item_id: UUID; let position: Double }
 private struct PlaybackPayload: Encodable { let status: String }
@@ -433,6 +434,11 @@ final class HarmonyCollaborationRepository {
             p_rating: rating,
             p_body: body
         )).execute()
+    }
+
+    func toggleHeart(on reviewID: UUID) async throws -> Bool {
+        try await authenticate()
+        return try await client.rpc("toggle_review_reaction", params: ReviewReactionParameters(p_review_id: reviewID)).execute().value
     }
 
     private func canonicalTrackID(for track: HarmonyTrack) async throws -> UUID {

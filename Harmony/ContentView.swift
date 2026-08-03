@@ -133,6 +133,12 @@ struct SocialView: View {
                                     Text("\(track.title) · \(track.artist)").font(.subheadline).foregroundColor(.secondary)
                                 }
                                 if !review.body.isEmpty { Text(review.body) }
+                                Button {
+                                    Task { await store.toggleReviewHeart(review.id) }
+                                } label: {
+                                    Label("React", systemImage: "heart")
+                                        .font(.caption)
+                                }
                             }
                         }
                     }

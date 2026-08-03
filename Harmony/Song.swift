@@ -606,6 +606,13 @@ final class HarmonySessionStore: ObservableObject {
         } catch { collaborationMessage = "Could not publish review: \(error.localizedDescription)" }
     }
 
+    func toggleReviewHeart(_ reviewID: UUID) async {
+        do {
+            let added = try await collaborationRepository.toggleHeart(on: reviewID)
+            collaborationMessage = added ? "Reaction added" : "Reaction removed"
+        } catch { collaborationMessage = "Could not update reaction: \(error.localizedDescription)" }
+    }
+
     func resumeLiveSession(id: UUID) async {
         collaborationMessage = "Opening session…"
         do {
