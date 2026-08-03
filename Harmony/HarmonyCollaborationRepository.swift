@@ -923,6 +923,29 @@ final class HarmonyCollaborationRepository {
         return LiveSessionSubscription(channel: channel, token: token)
     }
 
+    func observeSocialActivity(onChange: @escaping @Sendable () -> Void) async throws -> LiveSocialSubscription {
+        try await authenticate()
+        let profileID = try await currentUserID()
+        let channel = client.channel("social-\(profileID.uuidString)")
+        let tables = [
+            "profiles",
+            "social_follows",
+            "profile_blocks",
+            "listening_presence",
+            "listening_history_entries",
+            "music_reviews",
+            "review_comments",
+            "review_reactions",
+        ]
+        let tokens = tables.map { table in
+            channel.onPostgresChange(AnyAction.self, schema: "public", table: table) { _ in
+                onChange()
+            }
+        }
+        try await channel.subscribeWithError()
+        return LiveSocialSubscription(channel: channel, tokens: tokens)
+    }
+
     func observePresence(
         sessionID: UUID,
         profileID: UUID,
@@ -1002,5 +1025,15 @@ final class LivePresenceSubscription {
     init(channel: RealtimeChannelV2, token: RealtimeSubscription) {
         self.channel = channel
         self.token = token
+    }
+}
+
+final class LiveSocialSubscription {
+    let channel: RealtimeChannelV2
+    let tokens: [RealtimeSubscription]
+
+    init(channel: RealtimeChannelV2, tokens: [RealtimeSubscription]) {
+        self.channel = channel
+        self.tokens = tokens
     }
 }

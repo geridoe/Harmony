@@ -14,6 +14,7 @@ class HarmonyUITests: XCTestCase {
 
         // In UI tests it is usually best to stop immediately when a failure occurs.
         continueAfterFailure = false
+        XCUIDevice.shared.orientation = .portrait
 
         // In UI tests it’s important to set the initial state - such as interface orientation - required for your tests before they run. The setUp method is a good place to do this.
     }
@@ -56,8 +57,9 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Listen"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["People"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Eavesdrop"].waitForExistence(timeout: 5))
-        app.swipeUp()
-        XCTAssertTrue(app.staticTexts["Listening history"].waitForExistence(timeout: 5))
+        let listeningHistory = app.staticTexts["Listening history"]
+        for _ in 0..<4 where !listeningHistory.exists { app.swipeUp() }
+        XCTAssertTrue(listeningHistory.waitForExistence(timeout: 5))
     }
 
     func testLaunchPerformance() throws {

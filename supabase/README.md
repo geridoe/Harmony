@@ -95,11 +95,15 @@ Run the disposable-user smoke test against the configured project with:
 ./supabase/tests/live_smoke.sh
 ```
 
-It exercises anonymous authentication, social follow/block enforcement, session creation/joining, provider-track canonicalization, member-role reads, Conductor-only invite-permission updates, collaborator add/remove ownership, queue-only playback rejection, Conductor-only reorder/playback/lifecycle enforcement, revision conflicts, command idempotency, session ending, and account cleanup. It reads the public project URL/key from the app plist and never prints access tokens.
+Set `HARMONY_NODE_BINARY` to a Node.js 22+ executable to include the native
+WebSocket assertion that proves a follower-graph insert is delivered through
+Supabase Realtime. The database/RLS suite still runs when Node is unavailable.
+
+It exercises anonymous authentication, social follow/block enforcement, optional social Realtime delivery, session creation/joining, provider-track canonicalization, member-role reads, Conductor-only invite-permission updates, collaborator add/remove ownership, queue-only playback rejection, Conductor-only reorder/playback/lifecycle enforcement, revision conflicts, command idempotency, session ending, and account cleanup. It reads the public project URL/key from the app plist and never prints access tokens.
 
 ## Important notes
 
 - Direct client writes to sessions, members, queue items, and events are intentionally revoked. Creation, joining, ending, leaving, and queue mutations use dedicated RPCs; invitation-policy changes need a dedicated Conductor-only RPC before exposing that control.
 - Collaboration read policies call `is_session_member(session_id)`, a boolean security-definer helper bound to the caller's JWT identity. This avoids recursive `session_members` RLS evaluation without exposing another profile's membership.
 - `provider_connections.encrypted_refresh_token` is never intended for client reads. Use Edge Functions or a service-role worker to write encrypted Spotify refresh tokens.
-- The schema publishes session, member, queue-item, and queue-event changes for Supabase Realtime. Use Broadcast for short-lived presence data; update `last_seen_at` through a small dedicated RPC when that feature is wired.
+- The schema publishes session, queue, follower graph, listening activity, reviews, comments, and reactions for Supabase Realtime. Short-lived room membership uses Realtime Presence and social eavesdrop cards remain durable, expiring rows protected by RLS.

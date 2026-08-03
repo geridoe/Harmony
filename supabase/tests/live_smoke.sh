@@ -125,6 +125,20 @@ conductor_id="$(jq -er '.user.id' "$smoke_tmp/conductor-auth.json")"
 collaborator_id="$(jq -er '.user.id' "$smoke_tmp/collaborator-auth.json")"
 invite_code="SMK$(printf '%05d' "$((RANDOM % 100000))")"
 
+stage="social Realtime delivery"
+realtime_node="${HARMONY_NODE_BINARY:-$(command -v node || true)}"
+if [[ -n "$realtime_node" ]]; then
+  HARMONY_SUPABASE_URL="$supabase_url" \
+  HARMONY_PUBLISHABLE_KEY="$publishable_key" \
+  HARMONY_OBSERVER_TOKEN="$conductor_token" \
+  HARMONY_ACTOR_TOKEN="$collaborator_token" \
+  HARMONY_OBSERVER_ID="$conductor_id" \
+  HARMONY_ACTOR_ID="$collaborator_id" \
+    "$realtime_node" "$repo_root/supabase/tests/realtime_smoke.mjs"
+else
+  printf 'Harmony Realtime smoke skipped: set HARMONY_NODE_BINARY to Node.js 22 or newer\n'
+fi
+
 stage="Spotify history import authentication boundary"
 spotify_history_status="$(function_status "$conductor_token" spotify-history-import '{}' "$smoke_tmp/spotify-history.json")"
 [[ "$spotify_history_status" == "404" ]]

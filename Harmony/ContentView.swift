@@ -241,6 +241,7 @@ struct SocialView: View {
                 await store.refreshListeningFeed()
                 await store.refreshListeningHistory()
                 await store.refreshMusicReviews()
+                await store.activateSocialRealtime()
             }
             .refreshable {
                 await store.refreshSocialProfiles()

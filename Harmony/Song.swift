@@ -211,6 +211,8 @@ final class HarmonySessionStore: ObservableObject {
     private var liveQueueSubscription: LiveQueueSubscription?
     private var liveSessionSubscription: LiveSessionSubscription?
     private var livePresenceSubscription: LivePresenceSubscription?
+    private var liveSocialSubscription: LiveSocialSubscription?
+    private var pendingSocialRefreshTask: Task<Void, Never>?
     private let collaborationRepository = HarmonyCollaborationRepository()
     private let spotifyRemote: any SpotifyPlaybackProviding
     private let appleMusicProvider: any AppleMusicProviding
@@ -433,6 +435,7 @@ final class HarmonySessionStore: ObservableObject {
         defer { isDeletingAccount = false }
         do {
             await detachLiveSubscriptions()
+            await detachSocialSubscription()
             spotifyRemote.disconnect()
             try await collaborationRepository.deleteAccount()
             clearSessionState(message: "Harmony account deleted")
@@ -686,6 +689,30 @@ final class HarmonySessionStore: ObservableObject {
             isEavesdropping = activity.contains(where: { $0.profileID == userID })
         } catch {
             collaborationMessage = "Could not refresh listening activity."
+        }
+    }
+
+    func activateSocialRealtime() async {
+        guard liveSocialSubscription == nil else { return }
+        do {
+            liveSocialSubscription = try await collaborationRepository.observeSocialActivity { [weak self] in
+                Task { @MainActor in self?.scheduleSocialRefresh() }
+            }
+        } catch {
+            // Pull to refresh remains available when Realtime cannot connect.
+        }
+    }
+
+    private func scheduleSocialRefresh() {
+        pendingSocialRefreshTask?.cancel()
+        pendingSocialRefreshTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled, let self else { return }
+            async let profiles: Void = self.refreshSocialProfiles()
+            async let feed: Void = self.refreshListeningFeed()
+            async let history: Void = self.refreshListeningHistory()
+            async let reviews: Void = self.refreshMusicReviews()
+            _ = await (profiles, feed, history, reviews)
         }
     }
 
@@ -1220,6 +1247,13 @@ final class HarmonySessionStore: ObservableObject {
         liveQueueSubscription = nil
         liveSessionSubscription = nil
         livePresenceSubscription = nil
+    }
+
+    private func detachSocialSubscription() async {
+        pendingSocialRefreshTask?.cancel()
+        pendingSocialRefreshTask = nil
+        await liveSocialSubscription?.channel.unsubscribe()
+        liveSocialSubscription = nil
     }
 
     private static func providerMapping(_ remote: RemoteProviderTrack) -> ProviderTrackMapping? {
