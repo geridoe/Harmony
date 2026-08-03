@@ -22,6 +22,8 @@ struct ContentView: View {
             SocialView().tag(3)
                 .tabItem { Label("Listen", systemImage: "ear") }
                 .badge(store.unreadSocialNotificationCount)
+            ReviewsView().tag(4)
+                .tabItem { Label("Reviews", systemImage: "text.book.closed") }
         }
         .tint(.indigo)
     }
@@ -35,12 +37,6 @@ struct ContentView_Previews: PreviewProvider {
 
 struct SocialView: View {
     @EnvironmentObject private var store: HarmonySessionStore
-    @State private var rating = 4.0
-    @State private var reviewBody = ""
-    @State private var editingReview: RemoteMusicReview?
-    @State private var editingRating = 4.0
-    @State private var editingBody = ""
-    @State private var editingVisibility = SocialVisibilityOption.privateOnly
 
     var body: some View {
         NavigationView {
@@ -237,46 +233,6 @@ struct SocialView: View {
                     }
                 }
 
-                Section("Your diary") {
-                    if let track = store.nowPlaying?.track {
-                        Text("Reviewing: \(track.title) · \(track.artist)")
-                            .font(.subheadline)
-                        HStack {
-                            Text("Rating")
-                            Slider(value: $rating, in: 0.5...5, step: 0.5)
-                            Text(String(format: "%.1f", rating))
-                                .monospacedDigit()
-                        }
-                        TextField("Write a short review (optional)", text: $reviewBody, axis: .vertical)
-                            .lineLimit(2...5)
-                        Button(store.reviewsSocialVisibility == .followers ? "Publish review to followers" : "Save private review") {
-                            Task {
-                                await store.publishTrackReview(rating: rating, body: reviewBody)
-                                reviewBody = ""
-                            }
-                        }
-                        .disabled(store.isPublishingMusicReview)
-                    } else {
-                        Text("Start a Harmony track to write a review.").foregroundColor(.secondary)
-                    }
-                }
-
-                Section("Reviews") {
-                    if store.isRefreshingMusicReviews && store.musicReviews.isEmpty {
-                        ProgressView("Loading reviews…")
-                    } else if store.musicReviews.isEmpty {
-                        Text("No follower-visible reviews yet.").foregroundColor(.secondary)
-                    } else {
-                        ForEach(store.musicReviews) { review in
-                            ReviewCard(review: review) { selected in
-                                editingReview = selected
-                                editingRating = selected.rating
-                                editingBody = selected.body
-                                editingVisibility = selected.visibility
-                            }
-                        }
-                    }
-                }
             }
             .navigationTitle("Listen")
             .task {
@@ -285,7 +241,6 @@ struct SocialView: View {
                 await store.refreshSocialProfiles()
                 await store.refreshListeningFeed()
                 await store.refreshListeningHistory()
-                await store.refreshMusicReviews()
                 await store.activateSocialRealtime()
             }
             .refreshable {
@@ -293,39 +248,6 @@ struct SocialView: View {
                 await store.refreshSocialProfiles()
                 await store.refreshListeningFeed()
                 await store.refreshListeningHistory()
-                await store.refreshMusicReviews()
-            }
-        }
-        .sheet(item: $editingReview) { review in
-            NavigationView {
-                Form {
-                    Section("Rating") {
-                        HStack {
-                            Slider(value: $editingRating, in: 0.5...5, step: 0.5)
-                            Text(String(format: "%.1f", editingRating)).monospacedDigit()
-                        }
-                    }
-                    Section("Review") {
-                        TextField("Review text", text: $editingBody, axis: .vertical).lineLimit(3...10)
-                    }
-                    Section("Visibility") {
-                        Picker("Audience", selection: $editingVisibility) {
-                            ForEach(SocialVisibilityOption.allCases) { visibility in
-                                Text(visibility.title).tag(visibility)
-                            }
-                        }
-                    }
-                }
-                .navigationTitle("Edit review")
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { editingReview = nil } }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Save") {
-                            editingReview = nil
-                            Task { await store.updateReview(review.id, rating: editingRating, body: editingBody, visibility: editingVisibility) }
-                        }
-                    }
-                }
             }
         }
     }
@@ -424,6 +346,254 @@ struct SocialView: View {
     }
 }
 
+private enum ReviewsShelf: String, CaseIterable, Identifiable {
+    case community = "Community"
+    case journal = "My journal"
+    var id: String { rawValue }
+}
+
+struct ReviewsView: View {
+    @EnvironmentObject private var store: HarmonySessionStore
+    @State private var shelf = ReviewsShelf.community
+    @State private var rating = 4.0
+    @State private var isLoved = false
+    @State private var reviewBody = ""
+    @State private var editingReview: RemoteMusicReview?
+    @State private var editingRating = 4.0
+    @State private var editingBody = ""
+    @State private var editingVisibility = SocialVisibilityOption.privateOnly
+    @State private var editingIsLoved = false
+
+    private var ownReviews: [RemoteMusicReview] {
+        store.musicReviews.filter(store.isOwnReview)
+    }
+
+    private var ownHistory: [RemoteListeningHistoryEntry] {
+        store.listeningHistory.filter(store.isOwnHistoryEntry)
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Picker("Reviews shelf", selection: $shelf) {
+                        ForEach(ReviewsShelf.allCases) { option in
+                            Text(option.rawValue).tag(option)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+                }
+
+                if shelf == .community {
+                    reviewComposer
+                    communityReviews
+                } else {
+                    listeningJournal
+                    personalReviews
+                }
+            }
+            .navigationTitle("Reviews")
+            .task {
+                await store.refreshAccountSettings()
+                await store.refreshListeningHistory()
+                await store.refreshMusicReviews()
+                await store.activateSocialRealtime()
+            }
+            .refreshable {
+                await store.refreshListeningHistory()
+                await store.refreshMusicReviews()
+            }
+        }
+        .sheet(item: $editingReview) { review in
+            NavigationStack {
+                Form {
+                    Section("Rating") {
+                        RatingPicker(rating: $editingRating)
+                    }
+                    Section("Review") {
+                        TextField("Review text", text: $editingBody, axis: .vertical)
+                            .lineLimit(3...10)
+                        Toggle("Loved", isOn: $editingIsLoved)
+                    }
+                    Section("Visibility") {
+                        Picker("Audience", selection: $editingVisibility) {
+                            ForEach(SocialVisibilityOption.allCases) { visibility in
+                                Text(visibility.title).tag(visibility)
+                            }
+                        }
+                    }
+                }
+                .navigationTitle("Edit review")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { editingReview = nil }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") {
+                            editingReview = nil
+                            Task {
+                                await store.updateReview(
+                                    review.id,
+                                    rating: editingRating,
+                                    body: editingBody,
+                                    visibility: editingVisibility,
+                                    isLoved: editingIsLoved
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var reviewComposer: some View {
+        Section("Review what is playing") {
+            if let track = store.nowPlaying?.track {
+                HStack(spacing: 12) {
+                    TrackArtwork(track: track, size: 48, cornerRadius: 10)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(track.title).font(.headline)
+                        Text(track.artist).font(.subheadline).foregroundColor(.secondary)
+                    }
+                }
+                RatingPicker(rating: $rating)
+                Toggle(isOn: $isLoved) {
+                    Label("Loved", systemImage: isLoved ? "heart.fill" : "heart")
+                }
+                TextField("Write your review (optional)", text: $reviewBody, axis: .vertical)
+                    .lineLimit(3...8)
+                Button(store.reviewsSocialVisibility == .followers ? "Publish to followers" : "Save private review") {
+                    let body = reviewBody
+                    reviewBody = ""
+                    let loved = isLoved
+                    Task { await store.publishTrackReview(rating: rating, body: body, isLoved: loved) }
+                }
+                .disabled(store.isPublishingMusicReview)
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "text.book.closed")
+                        .font(.title2)
+                        .foregroundColor(.secondary)
+                    Text("Nothing queued").font(.headline)
+                    Text("Add a song or start playback, then return here to rate and review it.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+            }
+        }
+    }
+
+    private var communityReviews: some View {
+        Section("Recent reviews") {
+            if store.isRefreshingMusicReviews && store.musicReviews.isEmpty {
+                ProgressView("Loading reviews…")
+            } else if store.musicReviews.isEmpty {
+                Text("No follower-visible reviews yet.").foregroundColor(.secondary)
+            } else {
+                ForEach(store.musicReviews) { review in reviewCard(review) }
+            }
+        }
+    }
+
+    private var listeningJournal: some View {
+        Section("Listening journal") {
+            Button {
+                Task { await store.recordCurrentTrackInHistory() }
+            } label: {
+                if store.isRecordingListeningHistory {
+                    ProgressView()
+                } else {
+                    Label("Log the current track", systemImage: "plus.circle")
+                }
+            }
+            .disabled(store.nowPlaying == nil || store.isRecordingListeningHistory)
+
+            if store.isRefreshingListeningHistory && ownHistory.isEmpty {
+                ProgressView("Loading your journal…")
+            } else if ownHistory.isEmpty {
+                Text("Your dated listens will appear here. Logging and reviewing are separate, so you can revisit music without rewriting your opinion.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(ownHistory.prefix(25)) { entry in
+                    HStack(spacing: 12) {
+                        if let track = entry.canonicalTrack {
+                            TrackArtwork(track: track.harmonyTrack, size: 40, cornerRadius: 8)
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(entry.canonicalTrack.map { "\($0.title) · \($0.artist)" } ?? "Unavailable track")
+                                .font(.subheadline.weight(.semibold))
+                            Text(entry.playedAt, format: .dateTime.month().day().year().hour().minute())
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: entry.visibility == .followers ? "person.2.fill" : "lock.fill")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .accessibilityLabel(entry.visibility.title)
+                    }
+                }
+            }
+        }
+    }
+
+    private var personalReviews: some View {
+        Section("My reviews") {
+            if ownReviews.isEmpty {
+                Text("Your ratings and reviews will appear here independently of your listening journal.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(ownReviews) { review in reviewCard(review) }
+            }
+        }
+    }
+
+    private func reviewCard(_ review: RemoteMusicReview) -> some View {
+        ReviewCard(review: review) { selected in
+            editingReview = selected
+            editingRating = selected.rating
+            editingBody = selected.body
+            editingVisibility = selected.visibility
+            editingIsLoved = selected.isLoved
+        }
+    }
+}
+
+private struct RatingPicker: View {
+    @Binding var rating: Double
+
+    var body: some View {
+        Stepper(value: $rating, in: 0.5...5, step: 0.5) {
+            HStack(spacing: 8) {
+                HStack(spacing: 2) {
+                    ForEach(1...5, id: \.self) { star in
+                        Image(systemName: symbol(for: Double(star)))
+                            .foregroundColor(.orange)
+                    }
+                }
+                Text(String(format: "%.1f", rating))
+                    .font(.subheadline.monospacedDigit().weight(.semibold))
+            }
+        }
+        .accessibilityLabel("Rating")
+        .accessibilityValue("\(String(format: "%.1f", rating)) out of 5")
+    }
+
+    private func symbol(for star: Double) -> String {
+        if rating >= star { return "star.fill" }
+        if rating >= star - 0.5 { return "star.leadinghalf.filled" }
+        return "star"
+    }
+}
+
 private struct ReviewCard: View {
     @EnvironmentObject private var store: HarmonySessionStore
     let review: RemoteMusicReview
@@ -433,7 +603,15 @@ private struct ReviewCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("\(review.profile.displayName) · \(String(format: "%.1f", review.rating)) ★").font(.headline)
+            HStack(spacing: 6) {
+                Text("\(review.profile.displayName) · \(String(format: "%.1f", review.rating)) ★")
+                    .font(.headline)
+                if review.isLoved {
+                    Label("Loved", systemImage: "heart.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.pink)
+                }
+            }
             if let track = review.canonicalTrack {
                 Text("\(track.title) · \(track.artist)").font(.subheadline).foregroundColor(.secondary)
             } else if let title = review.subjectTitle {

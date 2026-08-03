@@ -9,12 +9,13 @@ import SwiftUI
 
 @main
 struct HarmonyApp: App {
-    @StateObject private var sessionStore = HarmonySessionStore()
+    @StateObject private var sessionStore = HarmonySessionStore(seedSampleData: false)
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(sessionStore)
+                .task { await sessionStore.bootstrap() }
                 .onOpenURL { url in
                     sessionStore.handleOpenURL(url)
                 }

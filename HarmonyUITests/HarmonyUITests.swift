@@ -31,6 +31,15 @@ class HarmonyUITests: XCTestCase {
         // Use XCTAssert and related functions to verify your tests produce the correct results.
     }
 
+    func testProductionLaunchHasNoPrototypeSession() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        XCTAssertTrue(app.navigationBars["Harmony"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Build a queue, then start or join a live session"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Friday Night Finds"].exists)
+    }
+
     func testConnectionsTabLoadsWithoutCrashing() throws {
         let app = XCUIApplication()
         app.launch()
@@ -61,6 +70,25 @@ class HarmonyUITests: XCTestCase {
         let listeningHistory = app.staticTexts["Listening history"]
         for _ in 0..<4 where !listeningHistory.exists { app.swipeUp() }
         XCTAssertTrue(listeningHistory.waitForExistence(timeout: 5))
+    }
+
+    func testReviewsTabIsAFirstClassDestination() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        let reviewsTab = app.tabBars.buttons["Reviews"]
+        XCTAssertTrue(reviewsTab.waitForExistence(timeout: 5))
+        reviewsTab.tap()
+
+        let reviewsNavigation = app.navigationBars["Reviews"]
+        if !reviewsNavigation.waitForExistence(timeout: 3) {
+            reviewsTab.tap()
+        }
+        XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Community"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["My journal"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Review what is playing"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Your diary"].exists)
     }
 
     func testLaunchPerformance() throws {

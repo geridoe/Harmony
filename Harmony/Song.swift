@@ -214,6 +214,8 @@ final class HarmonySessionStore: ObservableObject {
     private var livePresenceSubscription: LivePresenceSubscription?
     private var liveSocialSubscription: LiveSocialSubscription?
     private var pendingSocialRefreshTask: Task<Void, Never>?
+    private var hasBootstrapped = false
+    private var isBootstrapping = false
     private let collaborationRepository = HarmonyCollaborationRepository()
     private let spotifyRemote: any SpotifyPlaybackProviding
     private let appleMusicProvider: any AppleMusicProviding
@@ -225,19 +227,42 @@ final class HarmonySessionStore: ObservableObject {
         self.init(spotifyRemote: SpotifyAppRemoteProvider(), appleMusicProvider: AppleMusicProvider())
     }
 
+    convenience init(seedSampleData: Bool) {
+        self.init(
+            spotifyRemote: SpotifyAppRemoteProvider(),
+            appleMusicProvider: AppleMusicProvider(),
+            seedSampleData: seedSampleData
+        )
+    }
+
     convenience init(spotifyRemote: any SpotifyPlaybackProviding) {
         self.init(spotifyRemote: spotifyRemote, appleMusicProvider: AppleMusicProvider())
     }
 
-    init(spotifyRemote: any SpotifyPlaybackProviding, appleMusicProvider: any AppleMusicProviding) {
+    init(spotifyRemote: any SpotifyPlaybackProviding, appleMusicProvider: any AppleMusicProviding, seedSampleData: Bool = true) {
         self.spotifyRemote = spotifyRemote
         self.appleMusicProvider = appleMusicProvider
         spotifyPlaybackConnection = spotifyRemote.connectionState
-        let alex = SessionMember(name: "Alex Morgan", initials: "AM", role: .conductor, providers: [.appleMusic, .spotify])
-        let sam = SessionMember(name: "Sam Lee", initials: "SL", role: .collaborator, providers: [.spotify])
-        let priya = SessionMember(name: "Priya Shah", initials: "PS", role: .collaborator, providers: [.appleMusic])
-        currentMember = alex; members = [alex, sam, priya]; catalog = SampleCatalog.tracks
-        queue = [QueueItem(track: catalog[0], addedBy: sam), QueueItem(track: catalog[2], addedBy: priya), QueueItem(track: catalog[1], addedBy: alex)]
+        catalog = SampleCatalog.tracks
+        if seedSampleData {
+            let alex = SessionMember(name: "Alex Morgan", initials: "AM", role: .conductor, providers: [.appleMusic, .spotify])
+            let sam = SessionMember(name: "Sam Lee", initials: "SL", role: .collaborator, providers: [.spotify])
+            let priya = SessionMember(name: "Priya Shah", initials: "PS", role: .collaborator, providers: [.appleMusic])
+            currentMember = alex
+            members = [alex, sam, priya]
+            queue = [QueueItem(track: catalog[0], addedBy: sam), QueueItem(track: catalog[2], addedBy: priya), QueueItem(track: catalog[1], addedBy: alex)]
+        } else {
+            let listener = SessionMember(name: "You", initials: "YOU", role: .conductor, providers: [])
+            currentMember = listener
+            members = [listener]
+            queue = []
+            queueRevision = 0
+            playbackState = .paused
+            sessionName = "My Harmony Session"
+            inviteCode = ""
+            collaborationMessage = "Ready to start a session"
+            providerStates = [.appleMusic: .notConnected, .spotify: .notConnected]
+        }
     }
     var nowPlaying: QueueItem? { queue.first }
     var isLiveSession: Bool { remoteSessionID != nil }
@@ -272,6 +297,36 @@ final class HarmonySessionStore: ObservableObject {
         } catch {
             collaborationMessage = "Could not load connection status: \(error.localizedDescription)"
         }
+    }
+
+    func bootstrap() async {
+        guard !hasBootstrapped, !isBootstrapping else { return }
+        isBootstrapping = true
+        defer { isBootstrapping = false }
+        await refreshAccountSettings()
+        guard let profile = accountProfile else { return }
+        hasBootstrapped = true
+        if !isLiveSession {
+            let name = profile.displayName
+            let initials = name.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined().uppercased()
+            let previousID = currentMember.id
+            let hydratedMember = SessionMember(
+                id: profile.id,
+                name: name,
+                initials: initials.isEmpty ? "YOU" : initials,
+                role: .conductor,
+                providers: currentMember.providers
+            )
+            currentMember = hydratedMember
+            members = [hydratedMember]
+            queue = queue.map { item in
+                QueueItem(id: item.id, track: item.track, addedBy: item.addedBy.id == previousID ? hydratedMember : item.addedBy)
+            }
+        }
+        async let providers: Void = refreshProviderConnections()
+        async let sessions: Void = refreshRecentSessions()
+        async let notifications: Void = refreshSocialNotifications()
+        _ = await (providers, sessions, notifications)
     }
 
     func refreshAccountSettings() async {
@@ -618,6 +673,7 @@ final class HarmonySessionStore: ObservableObject {
             collaborationMessage = "Give this session a name of up to 120 characters."
             return
         }
+        let draftTracks = queue.map(\.track)
         sessionName = title
         collaborationMessage = "Connecting…"
         do {
@@ -635,11 +691,29 @@ final class HarmonySessionStore: ObservableObject {
             sessionExpiresAt = remoteSession.expiresAt
             remoteSessionID = remoteSession.id
             collaborationMessage = "Live Supabase session"
+            var draftRevision = remoteSession.queueRevision
+            var draftUploadFailed = false
+            for track in draftTracks {
+                do {
+                    draftRevision = try await collaborationRepository.add(
+                        track: track,
+                        to: remoteSession.id,
+                        expectedRevision: draftRevision
+                    )
+                } catch {
+                    draftUploadFailed = true
+                    break
+                }
+            }
+            queueRevision = draftRevision
             await refreshRemoteQueue()
             await subscribeToRemoteQueue(remoteSession.id)
             await subscribeToSessionLifecycle(remoteSession.id)
             await subscribeToPresence(remoteSession.id)
             await refreshRecentSessions()
+            if draftUploadFailed {
+                collaborationMessage = "Session started, but some draft tracks could not be added."
+            }
         } catch {
             collaborationMessage = "Connection failed: \(error.localizedDescription)"
         }
@@ -909,8 +983,8 @@ final class HarmonySessionStore: ObservableObject {
             }
             let trackDescription = [response.title, response.artist].compactMap { $0 }.joined(separator: " — ")
             collaborationMessage = liveSocialVisibility == .followers
-                ? "Sharing (trackDescription) with approved followers for five minutes"
-                : "Saved (trackDescription) as a private now-listening entry"
+                ? "Sharing \(trackDescription) with approved followers for five minutes"
+                : "Saved \(trackDescription) as a private now-listening entry"
             await refreshListeningFeed()
         } catch {
             collaborationMessage = "Could not share Spotify activity: \(error.localizedDescription)"
@@ -925,12 +999,18 @@ final class HarmonySessionStore: ObservableObject {
         catch { collaborationMessage = "Could not refresh reviews." }
     }
 
-    func publishTrackReview(rating: Double, body: String) async {
+    func publishTrackReview(rating: Double, body: String, isLoved: Bool = false) async {
         guard let track = nowPlaying?.track, !isPublishingMusicReview else { return }
         isPublishingMusicReview = true
         defer { isPublishingMusicReview = false }
         do {
-            try await collaborationRepository.createTrackReview(track: track, rating: rating, body: body, visibility: reviewsSocialVisibility)
+            try await collaborationRepository.createTrackReview(
+                track: track,
+                rating: rating,
+                body: body,
+                visibility: reviewsSocialVisibility,
+                isLoved: isLoved
+            )
             collaborationMessage = reviewsSocialVisibility == .followers
                 ? "Review published to approved followers"
                 : "Private review saved"
@@ -983,9 +1063,15 @@ final class HarmonySessionStore: ObservableObject {
         }
     }
 
-    func updateReview(_ reviewID: UUID, rating: Double, body: String, visibility: SocialVisibilityOption) async {
+    func updateReview(_ reviewID: UUID, rating: Double, body: String, visibility: SocialVisibilityOption, isLoved: Bool) async {
         await performReviewMutation(reviewID, successMessage: "Review updated") {
-            try await self.collaborationRepository.updateReview(reviewID, rating: rating, body: body, visibility: visibility)
+            try await self.collaborationRepository.updateReview(
+                reviewID,
+                rating: rating,
+                body: body,
+                visibility: visibility,
+                isLoved: isLoved
+            )
         }
     }
 

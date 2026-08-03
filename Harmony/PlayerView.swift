@@ -81,7 +81,7 @@ struct SessionView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("LIVE SESSION").font(.caption.weight(.bold)).foregroundColor(.secondary)
                 Text(store.sessionName).font(.title2.bold())
-                Text(store.isLiveSession ? "\(store.members.count) members · \(store.activeMemberIDs.count) here now" : "\(store.members.count) sample members").foregroundColor(.secondary)
+                Text(store.isLiveSession ? "\(store.members.count) members · \(store.activeMemberIDs.count) here now" : "Build a queue, then start or join a live session").foregroundColor(.secondary)
                 Text(store.collaborationMessage).font(.caption).foregroundColor(.secondary)
                 memberAndInviteRow
                 inviteSharingControl

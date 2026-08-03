@@ -3,6 +3,22 @@ import XCTest
 
 @MainActor
 final class HarmonyTests: XCTestCase {
+    func testProductionStoreStartsWithoutPrototypeSessionData() {
+        let store = HarmonySessionStore(
+            spotifyRemote: RecordingSpotifyProvider(),
+            appleMusicProvider: RecordingAppleMusicProvider(),
+            seedSampleData: false
+        )
+
+        XCTAssertTrue(store.queue.isEmpty)
+        XCTAssertEqual(store.queueRevision, 0)
+        XCTAssertEqual(store.playbackState, .paused)
+        XCTAssertEqual(store.members.count, 1)
+        XCTAssertEqual(store.currentMember.name, "You")
+        XCTAssertEqual(store.sessionName, "My Harmony Session")
+        XCTAssertFalse(store.isLiveSession)
+    }
+
     func testSocialHistoryRecordingStartsDisabled() {
         XCTAssertFalse(HarmonySessionStore().recordsHarmonyPlays)
     }

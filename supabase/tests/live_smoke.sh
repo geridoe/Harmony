@@ -245,13 +245,13 @@ jq -e 'length == 1 and .[0].canonical_tracks.title == "Harmony Smoke Track" and 
 
 stage="follower music reviews"
 rpc "$collaborator_token" create_music_review \
-  "{\"p_subject_kind\":\"track\",\"p_canonical_track_id\":\"$canonical_track_id\",\"p_provider\":\"apple_music\",\"p_provider_subject_id\":null,\"p_rating\":4.5,\"p_body\":\"A great Harmony smoke review.\",\"p_visibility\":\"followers\",\"p_contains_spoilers\":false}" \
+  "{\"p_subject_kind\":\"track\",\"p_canonical_track_id\":\"$canonical_track_id\",\"p_provider\":\"apple_music\",\"p_provider_subject_id\":null,\"p_rating\":4.5,\"p_body\":\"A great Harmony smoke review.\",\"p_visibility\":\"followers\",\"p_contains_spoilers\":false,\"p_is_loved\":true}" \
   "$smoke_tmp/review.json"
 review_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/review.json")"
 rest_get "$conductor_token" \
-  "music_reviews?select=id,profile_id,subject_kind,subject_title,subject_artist,rating,body&id=eq.$review_id" \
+  "music_reviews?select=id,profile_id,subject_kind,subject_title,subject_artist,rating,is_loved,body&id=eq.$review_id" \
   "$smoke_tmp/follower-review.json"
-jq -e --arg profile "$collaborator_id" 'length == 1 and .[0].profile_id == $profile and .[0].subject_kind == "track" and .[0].subject_title == "Harmony Smoke Track" and .[0].rating == 4.5' "$smoke_tmp/follower-review.json" >/dev/null
+jq -e --arg profile "$collaborator_id" 'length == 1 and .[0].profile_id == $profile and .[0].subject_kind == "track" and .[0].subject_title == "Harmony Smoke Track" and .[0].rating == 4.5 and .[0].is_loved == true' "$smoke_tmp/follower-review.json" >/dev/null
 invalid_album_link_status="$(rpc_status "$collaborator_token" create_music_review \
   '{"p_subject_kind":"album","p_provider":"spotify","p_provider_subject_id":"spotify:album:invalid","p_subject_title":"Invalid Link Album","p_subject_deep_link":"https://example.com/not-spotify","p_rating":3.0}' \
   "$smoke_tmp/invalid-album-link.json")"
@@ -285,12 +285,12 @@ unauthorized_review_update_status="$(rpc_status "$conductor_token" update_music_
   "$smoke_tmp/unauthorized-review-update.json")"
 [[ "$unauthorized_review_update_status" == "400" || "$unauthorized_review_update_status" == "404" ]]
 rpc "$collaborator_token" update_music_review \
-  "{\"p_review_id\":\"$review_id\",\"p_rating\":5.0,\"p_body\":\"Updated Harmony smoke review.\",\"p_visibility\":\"followers\",\"p_contains_spoilers\":false}" \
+  "{\"p_review_id\":\"$review_id\",\"p_rating\":5.0,\"p_body\":\"Updated Harmony smoke review.\",\"p_visibility\":\"followers\",\"p_contains_spoilers\":false,\"p_is_loved\":false}" \
   "$smoke_tmp/review-update.json"
 rest_get "$conductor_token" \
-  "music_reviews?select=id,rating,body&id=eq.$review_id" \
+  "music_reviews?select=id,rating,is_loved,body&id=eq.$review_id" \
   "$smoke_tmp/updated-review.json"
-jq -e 'length == 1 and .[0].rating == 5.0 and .[0].body == "Updated Harmony smoke review."' "$smoke_tmp/updated-review.json" >/dev/null
+jq -e 'length == 1 and .[0].rating == 5.0 and .[0].is_loved == false and .[0].body == "Updated Harmony smoke review."' "$smoke_tmp/updated-review.json" >/dev/null
 rpc "$conductor_token" delete_review_comment \
   "{\"p_comment_id\":\"$comment_id\"}" \
   "$smoke_tmp/comment-delete.json"
