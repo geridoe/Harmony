@@ -190,9 +190,9 @@ jq -e '.error == "spotify_not_connected"' "$smoke_tmp/spotify-presence.json" >/d
 
 stage="private profile defaults and account settings"
 rest_get "$conductor_token" \
-  "profile_social_settings?select=profile_id,live_visibility,history_visibility,reviews_visibility,shelf_visibility,record_harmony_plays&profile_id=eq.$conductor_id" \
+  "profile_social_settings?select=profile_id,live_visibility,history_visibility,reviews_visibility,shelf_visibility,rating_visibility,record_harmony_plays&profile_id=eq.$conductor_id" \
   "$smoke_tmp/private-settings.json"
-jq -e 'length == 1 and .[0].live_visibility == "private" and .[0].history_visibility == "private" and .[0].reviews_visibility == "private" and .[0].shelf_visibility == "private" and .[0].record_harmony_plays == false' "$smoke_tmp/private-settings.json" >/dev/null
+jq -e 'length == 1 and .[0].live_visibility == "private" and .[0].history_visibility == "private" and .[0].reviews_visibility == "private" and .[0].shelf_visibility == "private" and .[0].rating_visibility == "private" and .[0].record_harmony_plays == false' "$smoke_tmp/private-settings.json" >/dev/null
 rest_patch "$conductor_token" \
   "profiles?id=eq.$conductor_id" \
   '{"display_name":"Harmony Smoke Conductor"}' \
@@ -1871,6 +1871,194 @@ rest_get "$collaborator_token" \
 [[ "$(jq 'length' "$smoke_tmp/atomic-rollback-reviews.json")" -eq 0 ]]
 [[ "$(jq 'length' "$smoke_tmp/atomic-rollback-diary.json")" -eq 0 ]]
 [[ "$(jq 'length' "$smoke_tmp/atomic-rollback-state.json")" -eq 0 ]]
+
+stage="privacy-safe member profile overview and Ratings"
+# Exercise the unified Loved shelf with a real album as well as loved tracks.
+rpc "$collaborator_token" set_my_album_subject_state \
+  "{\"p_canonical_album_id\":\"$album_canonical_id\",\"p_has_listened\":true,\"p_default_rating\":2.0,\"p_is_loved\":true,\"p_want_to_listen\":false}" \
+  "$smoke_tmp/member-loved-album-state.json"
+# The owner always sees current ratings, while the accepted follower still
+# sees an empty Ratings shelf until the owner explicitly publishes it.
+rpc "$collaborator_token" get_member_profile_overview \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/member-overview-owner.json"
+jq -e --arg profile "$collaborator_id" '
+  (if type == "array" then .[0] else . end)
+  | .profile_id == $profile and .is_self == true
+  and .ratings_visible == true and .rating_count > 0 and .average_rating != null
+  and .written_review_count > 0 and .diary_entry_count > 0
+  and .loved_music_count > 0 and .music_list_count > 0
+' "$smoke_tmp/member-overview-owner.json" >/dev/null
+rpc "$conductor_token" get_member_profile_overview \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/member-overview-private-ratings.json"
+jq -e --arg profile "$collaborator_id" '
+  (if type == "array" then .[0] else . end)
+  | .profile_id == $profile and .is_self == false
+  and .viewer_follows == true and .outgoing_follow_state == "accepted"
+  and .ratings_visible == false and .rating_count == 0 and .average_rating == null
+  and .written_review_count > 0
+  and .diary_entry_count > 0 and .loved_music_count > 0
+  and .music_list_count > 0
+' "$smoke_tmp/member-overview-private-ratings.json" >/dev/null
+rpc "$conductor_token" list_profile_ratings \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_subject_kind\":\"all\",\"p_before_updated_at\":null,\"p_before_subject_kind\":null,\"p_before_subject_id\":null,\"p_limit\":100}" \
+  "$smoke_tmp/member-private-ratings-page.json"
+[[ "$(jq 'length' "$smoke_tmp/member-private-ratings-page.json")" -eq 0 ]]
+rpc "$conductor_token" get_profile_rating_distribution \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_subject_kind\":\"all\"}" \
+  "$smoke_tmp/member-private-rating-distribution.json"
+[[ "$(jq 'length' "$smoke_tmp/member-private-rating-distribution.json")" -eq 0 ]]
+
+# Owner pages are narrow projections. In particular, none of the owner-only
+# has_listened/is_loved/want_to_listen fields cross the RPC boundary.
+rpc "$collaborator_token" list_profile_ratings \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_subject_kind\":\"all\",\"p_before_updated_at\":null,\"p_before_subject_kind\":null,\"p_before_subject_id\":null,\"p_limit\":100}" \
+  "$smoke_tmp/member-owner-ratings-page.json"
+jq -e '
+  length > 1
+  and all(.[];
+    (keys | sort) == ["profile_id","rating","subject","subject_id","subject_kind","updated_at"]
+    and (.subject_kind == "track" or .subject_kind == "album")
+    and .rating >= 0.5 and .rating <= 5.0
+    and (if .subject_kind == "track" then (.subject.provider_tracks | length) > 0 else (.subject.provider_albums | length) > 0 and .subject.upc != null end)
+    and (.subject | has("has_listened") | not)
+    and (.subject | has("is_loved") | not)
+    and (.subject | has("want_to_listen") | not)
+  )
+' "$smoke_tmp/member-owner-ratings-page.json" >/dev/null
+rpc "$collaborator_token" get_profile_rating_distribution \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_subject_kind\":\"all\"}" \
+  "$smoke_tmp/member-owner-rating-distribution.json"
+jq -e '
+  . as $rows | length == 10
+  and map(.rating) == [0.5,1,1.5,2,2.5,3,3.5,4,4.5,5]
+  and all($rows[]; .profile_id == $rows[0].profile_id and .scope == "all" and .total_ratings == $rows[0].total_ratings and .average_rating == $rows[0].average_rating)
+  and (map(.rating_count) | add) == $rows[0].total_ratings
+' "$smoke_tmp/member-owner-rating-distribution.json" >/dev/null
+
+rpc "$collaborator_token" list_profile_loved_music \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_subject_kind\":\"all\",\"p_before_updated_at\":null,\"p_before_subject_kind\":null,\"p_before_subject_id\":null,\"p_limit\":100}" \
+  "$smoke_tmp/member-owner-loved-page.json"
+jq -e '
+  length > 1
+  and any(.[]; .subject_kind == "track" and (.subject.provider_tracks | length) > 0)
+  and any(.[]; .subject_kind == "album" and (.subject.provider_albums | length) > 0 and .subject.upc != null)
+  and all(.[]; (keys | sort) == ["profile_id","subject","subject_id","subject_kind","updated_at"] and (.subject | has("is_loved") | not))
+' "$smoke_tmp/member-owner-loved-page.json" >/dev/null
+
+rest_patch "$collaborator_token" \
+  "profile_social_settings?profile_id=eq.$collaborator_id" \
+  '{"rating_visibility":"followers"}' \
+  "$smoke_tmp/member-ratings-published.json"
+jq -e 'length == 1 and .[0].rating_visibility == "followers"' \
+  "$smoke_tmp/member-ratings-published.json" >/dev/null
+rpc "$conductor_token" get_member_profile_overview \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/member-overview-visible-ratings.json"
+member_visible_rating_count="$(jq -er '(if type == "array" then .[0] else . end) | select(.ratings_visible == true) | .rating_count' "$smoke_tmp/member-overview-visible-ratings.json")"
+[[ "$member_visible_rating_count" -eq "$(jq 'length' "$smoke_tmp/member-owner-ratings-page.json")" ]]
+rpc "$conductor_token" get_profile_rating_distribution \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_subject_kind\":\"all\"}" \
+  "$smoke_tmp/member-visible-rating-distribution.json"
+jq -e --argjson expected "$member_visible_rating_count" '
+  length == 10 and .[0].total_ratings == $expected
+  and (map(.rating_count) | add) == $expected
+' "$smoke_tmp/member-visible-rating-distribution.json" >/dev/null
+rpc "$conductor_token" list_profile_loved_music \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_subject_kind\":\"all\",\"p_before_updated_at\":null,\"p_before_subject_kind\":null,\"p_before_subject_id\":null,\"p_limit\":100}" \
+  "$smoke_tmp/member-follower-loved-page.json"
+jq -e --slurpfile owner "$smoke_tmp/member-owner-loved-page.json" '
+  length == ($owner[0] | length) and any(.[]; .subject_kind == "album")
+' "$smoke_tmp/member-follower-loved-page.json" >/dev/null
+
+rpc "$conductor_token" list_profile_ratings \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_subject_kind\":\"ALL\",\"p_before_updated_at\":null,\"p_before_subject_kind\":null,\"p_before_subject_id\":null,\"p_limit\":1}" \
+  "$smoke_tmp/member-ratings-first-page.json"
+member_rating_cursor_updated_at="$(jq -er '.[0].updated_at' "$smoke_tmp/member-ratings-first-page.json")"
+member_rating_cursor_kind="$(jq -er '.[0].subject_kind' "$smoke_tmp/member-ratings-first-page.json")"
+member_rating_cursor_id="$(jq -er '.[0].subject_id' "$smoke_tmp/member-ratings-first-page.json")"
+rpc "$conductor_token" list_profile_ratings \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_subject_kind\":\"all\",\"p_before_updated_at\":\"$member_rating_cursor_updated_at\",\"p_before_subject_kind\":\"$member_rating_cursor_kind\",\"p_before_subject_id\":\"$member_rating_cursor_id\",\"p_limit\":100}" \
+  "$smoke_tmp/member-ratings-second-page.json"
+jq -e --arg first "$member_rating_cursor_id" --argjson expected "$((member_visible_rating_count - 1))" '
+  length == $expected and all(.[]; .subject_id != $first)
+' "$smoke_tmp/member-ratings-second-page.json" >/dev/null
+rpc "$conductor_token" list_profile_ratings \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_subject_kind\":\"album\",\"p_before_updated_at\":null,\"p_before_subject_kind\":null,\"p_before_subject_id\":null,\"p_limit\":100}" \
+  "$smoke_tmp/member-album-ratings-page.json"
+jq -e 'length > 0 and all(.[]; .subject_kind == "album" and .subject.title != null)' \
+  "$smoke_tmp/member-album-ratings-page.json" >/dev/null
+
+# A merely requested follow never gains Ratings access.
+rpc "$directory_token" get_member_profile_overview \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/member-requested-overview.json"
+jq -e '
+  (if type == "array" then .[0] else . end)
+  | .viewer_follows == false and .outgoing_follow_state == "requested"
+  and .ratings_visible == false and .rating_count == 0 and .average_rating == null
+' "$smoke_tmp/member-requested-overview.json" >/dev/null
+rpc "$directory_token" list_profile_ratings \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_subject_kind\":\"all\",\"p_limit\":100}" \
+  "$smoke_tmp/member-requested-ratings-page.json"
+[[ "$(jq 'length' "$smoke_tmp/member-requested-ratings-page.json")" -eq 0 ]]
+
+partial_member_rating_cursor_status="$(rpc_status "$conductor_token" list_profile_ratings \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_before_updated_at\":\"$member_rating_cursor_updated_at\",\"p_before_subject_kind\":null,\"p_before_subject_id\":null,\"p_limit\":50}" \
+  "$smoke_tmp/member-partial-rating-cursor.json")"
+[[ "$partial_member_rating_cursor_status" == "400" ]]
+invalid_member_rating_scope_status="$(rpc_status "$conductor_token" list_profile_ratings \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_subject_kind\":\"playlist\",\"p_limit\":50}" \
+  "$smoke_tmp/member-invalid-rating-scope.json")"
+[[ "$invalid_member_rating_scope_status" == "400" ]]
+member_rating_scope_cursor_mismatch_status="$(rpc_status "$conductor_token" list_profile_ratings \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_subject_kind\":\"album\",\"p_before_updated_at\":\"$member_rating_cursor_updated_at\",\"p_before_subject_kind\":\"track\",\"p_before_subject_id\":\"$member_rating_cursor_id\",\"p_limit\":50}" \
+  "$smoke_tmp/member-rating-scope-cursor-mismatch.json")"
+[[ "$member_rating_scope_cursor_mismatch_status" == "400" ]]
+oversized_member_rating_page_status="$(rpc_status "$conductor_token" list_profile_ratings \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_limit\":101}" \
+  "$smoke_tmp/member-oversized-rating-page.json")"
+[[ "$oversized_member_rating_page_status" == "400" ]]
+missing_member_id="$(new_uuid)"
+missing_member_overview_status="$(rpc_status "$conductor_token" get_member_profile_overview \
+  "{\"p_profile_id\":\"$missing_member_id\"}" \
+  "$smoke_tmp/member-missing-overview.json")"
+[[ "$missing_member_overview_status" == "401" || "$missing_member_overview_status" == "403" ]]
+missing_member_ratings_status="$(rpc_status "$conductor_token" list_profile_ratings \
+  "{\"p_profile_id\":\"$missing_member_id\",\"p_limit\":50}" \
+  "$smoke_tmp/member-missing-ratings.json")"
+[[ "$missing_member_ratings_status" == "401" || "$missing_member_ratings_status" == "403" ]]
+
+# Either-direction block rejects the exact profile destination and its Ratings
+# RPC instead of presenting a misleading all-zero profile.
+rpc "$directory_token" block_social_profile \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/member-profile-block.json"
+blocked_member_overview_status="$(rpc_status "$directory_token" get_member_profile_overview \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/member-blocked-overview.json")"
+[[ "$blocked_member_overview_status" == "$missing_member_overview_status" ]]
+jq -e --slurpfile missing "$smoke_tmp/member-missing-overview.json" '
+  .code == $missing[0].code and .message == $missing[0].message
+' "$smoke_tmp/member-blocked-overview.json" >/dev/null
+reverse_blocked_member_overview_status="$(rpc_status "$collaborator_token" get_member_profile_overview \
+  "{\"p_profile_id\":\"$directory_id\"}" \
+  "$smoke_tmp/member-reverse-blocked-overview.json")"
+[[ "$reverse_blocked_member_overview_status" == "$missing_member_overview_status" ]]
+jq -e --slurpfile missing "$smoke_tmp/member-missing-overview.json" '
+  .code == $missing[0].code and .message == $missing[0].message
+' "$smoke_tmp/member-reverse-blocked-overview.json" >/dev/null
+blocked_member_ratings_status="$(rpc_status "$collaborator_token" list_profile_ratings \
+  "{\"p_profile_id\":\"$directory_id\",\"p_limit\":50}" \
+  "$smoke_tmp/member-reverse-blocked-ratings.json")"
+[[ "$blocked_member_ratings_status" == "$missing_member_ratings_status" ]]
+jq -e --slurpfile missing "$smoke_tmp/member-missing-ratings.json" '
+  .code == $missing[0].code and .message == $missing[0].message
+' "$smoke_tmp/member-reverse-blocked-ratings.json" >/dev/null
+rpc "$directory_token" unblock_social_profile \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/member-profile-unblock.json"
 
 stage="social block enforcement"
 rpc "$conductor_token" add_review_comment \

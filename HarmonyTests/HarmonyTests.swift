@@ -1166,6 +1166,145 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(loved.canonicalTrack?.title, "Public favorite")
     }
 
+    func testMemberProfileOverviewDecodesAuthoritativeCountsAndIndependentRelationships() throws {
+        let profileID = UUID()
+        let payload = """
+        {
+          "profile_id": "\(profileID.uuidString)",
+          "display_name": "Profile Listener",
+          "avatar_url": "https://example.com/avatar.jpg",
+          "is_self": false,
+          "viewer_follows": true,
+          "follows_viewer": false,
+          "outgoing_follow_state": "accepted",
+          "incoming_follow_state": "requested",
+          "written_review_count": 12,
+          "diary_entry_count": 34,
+          "loved_music_count": 5,
+          "music_list_count": 6,
+          "rating_count": 20,
+          "average_rating": 4.25,
+          "ratings_visible": true
+        }
+        """
+
+        let overview = try JSONDecoder().decode(
+            RemoteMemberProfileOverview.self,
+            from: Data(payload.utf8)
+        )
+
+        XCTAssertEqual(overview.profileID, profileID)
+        XCTAssertEqual(overview.outgoingFollowState, "accepted")
+        XCTAssertEqual(overview.incomingFollowState, "requested")
+        XCTAssertEqual(overview.lovedMusicCount, 5)
+        XCTAssertEqual(overview.ratingCount, 20)
+        XCTAssertEqual(overview.averageRating, 4.25)
+        XCTAssertTrue(overview.ratingsVisible)
+    }
+
+    func testProfileRatingDecodesCanonicalTrackAndExactProviderMapping() throws {
+        let profileID = UUID()
+        let trackID = UUID()
+        let payload = """
+        {
+          "profile_id": "\(profileID.uuidString)",
+          "subject_kind": "track",
+          "subject_id": "\(trackID.uuidString)",
+          "rating": 4.5,
+          "updated_at": "2026-08-03T12:00:00Z",
+          "subject": {
+            "id": "\(trackID.uuidString)",
+            "title": "Rated song",
+            "artist": "Test artist",
+            "album": "Test album",
+            "duration_ms": 180000,
+            "artwork_url": null,
+            "is_explicit": false,
+            "provider_tracks": [{
+              "provider": "spotify",
+              "provider_id": "spotify-track-id",
+              "storefront": "global",
+              "deep_link": "https://open.spotify.com/track/spotify-track-id",
+              "availability": "playable"
+            }]
+          }
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let rating = try decoder.decode(RemotePublicProfileRating.self, from: Data(payload.utf8))
+
+        XCTAssertEqual(rating.rating, 4.5)
+        guard case .track(let track) = rating.subject else {
+            return XCTFail("Expected a canonical track")
+        }
+        XCTAssertEqual(track.id, trackID)
+        XCTAssertEqual(track.providerTracks?.first?.providerID, "spotify-track-id")
+    }
+
+    func testUnifiedLovedMusicDecodesCanonicalAlbumAndProviderIdentity() throws {
+        let profileID = UUID()
+        let albumID = UUID()
+        let payload = """
+        {
+          "profile_id": "\(profileID.uuidString)",
+          "subject_kind": "album",
+          "subject_id": "\(albumID.uuidString)",
+          "updated_at": "2026-08-03T12:00:00Z",
+          "subject": {
+            "id": "\(albumID.uuidString)",
+            "title": "Loved album",
+            "artist": "Test artist",
+            "release_date": "2026-08-01",
+            "upc": null,
+            "album_type": "album",
+            "total_tracks": 9,
+            "artwork_url": null,
+            "provider_albums": [{
+              "provider": "spotify",
+              "provider_album_id": "spotify-album-id",
+              "storefront": "global",
+              "deep_link": "https://open.spotify.com/album/spotify-album-id",
+              "availability": "playable",
+              "identity_basis": "provider"
+            }]
+          }
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let loved = try decoder.decode(RemotePublicLovedMusic.self, from: Data(payload.utf8))
+
+        guard case .album(let album) = loved.subject else {
+            return XCTFail("Expected a canonical album")
+        }
+        XCTAssertEqual(album.id, albumID)
+        XCTAssertEqual(album.providerAlbums.first?.providerAlbumID, "spotify-album-id")
+        XCTAssertEqual(album.providerAlbums.first?.identityBasis, "provider")
+    }
+
+    func testSocialSettingsDecodesIndependentRatingVisibility() throws {
+        let profileID = UUID()
+        let payload = """
+        {
+          "profile_id": "\(profileID.uuidString)",
+          "live_visibility": "private",
+          "history_visibility": "followers",
+          "reviews_visibility": "followers",
+          "shelf_visibility": "private",
+          "rating_visibility": "followers",
+          "record_harmony_plays": false
+        }
+        """
+
+        let settings = try JSONDecoder().decode(RemoteSocialSettings.self, from: Data(payload.utf8))
+
+        XCTAssertEqual(settings.ratingVisibility, .followers)
+        XCTAssertEqual(settings.shelfVisibility, .privateOnly)
+    }
+
     func testJournalSearchMatchesTitleArtistAlbumAndTagsWithoutCaseOrDiacritics() {
         let entry = journalEntry(
             title: "Halo",
@@ -1233,6 +1372,50 @@ final class HarmonyTests: XCTestCase {
             )
         }
         XCTAssertTrue(browseMusicReviews([review], using: ReviewBrowseFilter(query: "midnight")).isEmpty)
+    }
+
+    func testMemberProfileDestinationsFormAStableOverviewIndex() {
+        XCTAssertEqual(
+            MemberProfileDestination.allCases.map(\.rawValue),
+            ["Reviews", "Ratings", "Diary", "Loved", "Lists"]
+        )
+        XCTAssertEqual(Set(MemberProfileDestination.allCases.map(\.systemImage)).count, 5)
+        XCTAssertTrue(MemberProfileDestination.allCases.allSatisfy { !$0.summary.isEmpty })
+    }
+
+    func testMemberProfileRelationshipCopyKeepsBothDirectionsVisible() {
+        XCTAssertEqual(
+            memberProfileRelationshipDescription(
+                outgoingState: "accepted",
+                incomingState: "requested",
+                isBlocked: false
+            ),
+            "You follow this listener · Wants to follow you"
+        )
+        XCTAssertEqual(
+            memberProfileRelationshipDescription(
+                outgoingState: "requested",
+                incomingState: "accepted",
+                isBlocked: false
+            ),
+            "Your follow request is pending · Follows you"
+        )
+        XCTAssertEqual(
+            memberProfileRelationshipDescription(
+                outgoingState: nil,
+                incomingState: nil,
+                isBlocked: false
+            ),
+            "Discoverable profile"
+        )
+        XCTAssertEqual(
+            memberProfileRelationshipDescription(
+                outgoingState: "accepted",
+                incomingState: "accepted",
+                isBlocked: true
+            ),
+            "Blocked"
+        )
     }
 
     func testReviewBrowseScopesSongsAlbumsAndLoved() {

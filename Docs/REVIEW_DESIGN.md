@@ -141,9 +141,13 @@ Only the first stage should be described as implemented:
    rating, use a different historical rating, or remain unrated.
 9. **Current:** follower review activity is the opening shelf of the dedicated
    Reviews root, beside My Reviews and Ratings, backed by a bounded keyset RPC.
-10. **Next:** year/month Diary grouping, a richer member profile overview, and
-   server-side filtered search if exhaustive results are required.
-11. **After moderation and ranking policy:** popular/community discovery,
+10. **Current:** a Letterboxd-style member overview indexes five separate
+    Reviews, Ratings, Diary, Loved, and Lists pages. Counts and relationship
+    states come from one authoritative RPC; follower-visible current Ratings
+    require a separate private-by-default owner choice.
+11. **Next:** year/month Diary grouping and server-side filtered search if
+    exhaustive results are required.
+12. **After moderation and ranking policy:** popular/community discovery,
    shareable lists/collections, and listening statistics/year summaries.
 
 This order emulates Letterboxd's durable separation of diary, opinion,
@@ -228,6 +232,49 @@ replays from encouraging dozens of indistinguishable reviews. Explicit review
 editions or revision history can be added later without coupling them to every
 listen. Existing duplicate prototype rows must be audited before a uniqueness
 constraint is introduced; no destructive cleanup is implied by this decision.
+
+### Implemented member-profile information architecture
+
+A member profile is an overview and navigation index, not a combined feed.
+The overview presents identity, the exact incoming and outgoing relationship
+state, and authoritative counts for content this viewer may currently open.
+It then routes to five peer pages:
+
+- **Reviews** contains that member's currently visible written song and album
+  reviews. Rating-only state is never manufactured into a review row.
+- **Ratings** contains current song and album ratings only when the owner is
+  viewing their own profile or has independently enabled Ratings for accepted
+  followers.
+- **Diary** contains repeatable, dated manual listens whose per-entry audience
+  admits the viewer.
+- **Loved** combines current Loved songs and albums under the existing
+  private-by-default shelf audience.
+- **Lists** contains currently visible authored collections and keeps list
+  discussion in the list detail destination.
+
+These are full destinations rather than miniature sections inside Listen or
+one eagerly loaded profile payload. The overview count RPC is exhaustive and
+viewer-relative. Each collection then pages its own typed data, so loading one
+shelf cannot truncate another or imply that a loaded page is a total.
+
+Current Ratings remain authoritative owner subject state. Migration 058 adds
+`rating_visibility` as a distinct Only me / Followers decision with **Only
+me** as the database default. Review visibility, Diary visibility, Loved shelf
+visibility, and Ratings visibility are independent: publishing a written
+review does not publish the owner's full Ratings shelf, and publishing Ratings
+does not reveal Listened, Loved, or Want-to-listen flags. Viewer-facing
+profile-rating rows contain only canonical subject identity, the half-star
+rating, its update cursor, and exact provider mappings required to open the
+subject.
+
+The combined Ratings and Loved pages use the stable descending cursor
+`(updated_at, subject_kind, subject_id)`. Scope (`all`, `track`, or `album`) is
+applied before the limit, every cursor component is required together, and a
+scoped continuation must carry the same subject kind. The Ratings overview
+uses a fixed ten-bucket distribution with an exhaustive total and average; a
+private shelf returns no rows rather than leaking its size. Missing profiles
+and either direction of a block share the same unavailable response, so the
+profile API is not an account-existence oracle.
 
 Letterboxd's current composer also exposes Draft and more granular audience
 choices. Harmony will not overload Only me as a draft. A later draft slice must
@@ -723,15 +770,18 @@ The Reviews tab's **Activity** shelf renders typed Review, Diary, and List
 cards. A segmented **All / Reviews / Diary / Lists** filter changes only the
 loaded presentation; the raw feed order and keyset cursor remain untouched, so
 Load More can reveal a later match. Actor identity navigates to a member
-profile with four independent shelves: **Reviews**, **Diary**, **Loved**, and
-**Lists**. Each shelf has its own loading, error, empty, and keyset-pagination
-state, keyed by profile ID so navigating between members cannot mix results.
-Profile reads never populate the signed-in owner's editable caches.
+profile overview with five independent destinations: **Reviews**, **Ratings**,
+**Diary**, **Loved**, and **Lists**. Each destination has its own loading,
+error, empty, and keyset-pagination state, keyed by profile ID so navigating
+between members cannot mix results. Profile reads never populate the signed-in
+owner's editable caches.
 
 Review and Diary visibility continue to belong to each object. Loved is an
 aggregate profile shelf and is separately opt-in through Connections using
 `profile_social_settings.shelf_visibility`; it defaults to Only me and can be
-shared with accepted followers. There is no public profile discovery surface.
+shared with accepted followers. Ratings use the independent
+`rating_visibility` setting and the same safe default. Authenticated account
+discovery does not grant access to either shelf or to any social content.
 
 Linked review navigation follows the stricter of the two objects' current
 permissions. A visible Diary entry carries `review_id` only when that same

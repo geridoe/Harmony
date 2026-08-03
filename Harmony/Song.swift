@@ -393,6 +393,7 @@ enum SocialPrivacyCategory: Equatable {
     case listeningHistory
     case reviews
     case musicShelf
+    case ratings
 }
 
 func reviewCommentCanBeDeleted(
@@ -429,9 +430,14 @@ struct PaginatedShelfState<Item> {
 }
 
 struct PublicProfileShelfState {
+    var overview: RemoteMemberProfileOverview?
+    var isRefreshingOverview = false
     var reviews = PaginatedShelfState<RemoteMusicReview>()
     var diary = PaginatedShelfState<RemoteListeningHistoryEntry>()
-    var loved = PaginatedShelfState<RemotePublicLovedTrack>()
+    var ratings: [String: PaginatedShelfState<RemotePublicProfileRating>] = [:]
+    var ratingDistributions: [String: MyRatingDistribution] = [:]
+    var refreshingRatingDistributionScopes: Set<String> = []
+    var loved: [String: PaginatedShelfState<RemotePublicLovedMusic>] = [:]
     var lists = PaginatedShelfState<RemoteMusicList>()
 }
 
@@ -693,6 +699,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var isLoadingMoreFollowingActivity = false
     @Published private(set) var hasMoreFollowingActivity = false
     @Published private(set) var publicProfileShelves: [UUID: PublicProfileShelfState] = [:]
+    @Published private(set) var unavailableMemberProfileIDs: Set<UUID> = []
     @Published private(set) var ownerMusicLists: [RemoteMusicList] = []
     @Published private(set) var isRefreshingOwnerMusicLists = false
     @Published private(set) var isLoadingMoreOwnerMusicLists = false
@@ -815,6 +822,7 @@ final class HarmonySessionStore: ObservableObject {
     var historySocialVisibility: SocialVisibilityOption { socialSettings?.historyVisibility ?? .privateOnly }
     var reviewsSocialVisibility: SocialVisibilityOption { socialSettings?.reviewsVisibility ?? .privateOnly }
     var shelfSocialVisibility: SocialVisibilityOption { socialSettings?.shelfVisibility ?? .privateOnly }
+    var ratingSocialVisibility: SocialVisibilityOption { socialSettings?.ratingVisibility ?? .privateOnly }
     var recordsHarmonyPlays: Bool { socialSettings?.recordHarmonyPlays ?? false }
     func providerState(for provider: MusicProvider) -> ProviderAccountStatus { providerStates[provider] ?? .notConnected }
     func canRemove(_ item: QueueItem) -> Bool { currentMember.role == .conductor || item.addedBy.id == currentMember.id }
@@ -908,6 +916,7 @@ final class HarmonySessionStore: ObservableObject {
             historyVisibility: category == .listeningHistory ? visibility : current.historyVisibility,
             reviewsVisibility: category == .reviews ? visibility : current.reviewsVisibility,
             shelfVisibility: category == .musicShelf ? visibility : current.shelfVisibility,
+            ratingVisibility: category == .ratings ? visibility : current.ratingVisibility,
             recordHarmonyPlays: current.recordHarmonyPlays
         )
         isUpdatingAccountSettings = true
@@ -933,6 +942,7 @@ final class HarmonySessionStore: ObservableObject {
             historyVisibility: current.historyVisibility,
             reviewsVisibility: current.reviewsVisibility,
             shelfVisibility: current.shelfVisibility,
+            ratingVisibility: current.ratingVisibility,
             recordHarmonyPlays: enabled
         )
         isUpdatingAccountSettings = true
@@ -1500,6 +1510,7 @@ final class HarmonySessionStore: ObservableObject {
             async let ownerReviews: Void = self.refreshOwnerReviews()
             async let reviewDetails: Void = self.refreshCachedReviewDetails()
             async let eavesdropDetails: Void = self.refreshCachedEavesdropDetails()
+            async let memberProfiles: Void = self.refreshCachedMemberProfiles()
             async let notifications: Void = self.refreshSocialNotifications(preservingLoadedPages: true)
             async let followingActivity: Void = self.refreshFollowingActivity()
             _ = await (
@@ -1512,9 +1523,36 @@ final class HarmonySessionStore: ObservableObject {
                 ownerReviews,
                 reviewDetails,
                 eavesdropDetails,
+                memberProfiles,
                 notifications,
                 followingActivity
             )
+        }
+    }
+
+    /// Profile Realtime events can change relationship authorization as well
+    /// as visible counts. Invalidate each visited profile atomically, then
+    /// repopulate only destinations that had been requested in this process.
+    private func refreshCachedMemberProfiles() async {
+        let cached = publicProfileShelves
+        for (profileID, shelves) in cached {
+            let ratingScopes = Array(shelves.ratings.keys)
+            let lovedScopes = Array(shelves.loved.keys)
+            publicProfileShelves.removeValue(forKey: profileID)
+
+            await refreshMemberProfileOverview(for: profileID)
+            guard publicProfileShelves[profileID] != nil else { continue }
+
+            async let reviews: Void = refreshPublicProfileReviews(for: profileID)
+            async let diary: Void = refreshPublicProfileDiary(for: profileID)
+            async let lists: Void = refreshPublicProfileLists(for: profileID)
+            _ = await (reviews, diary, lists)
+            for scope in lovedScopes {
+                await refreshPublicProfileLoved(for: profileID, scope: scope)
+            }
+            for scope in ratingScopes {
+                await refreshPublicProfileRatings(for: profileID, scope: scope)
+            }
         }
     }
 
@@ -2162,6 +2200,99 @@ final class HarmonySessionStore: ObservableObject {
         }
     }
 
+    func refreshMemberProfileOverview(for profileID: UUID) async {
+#if DEBUG
+        guard !isDiaryEditorUITestFixtureActive else { return }
+#endif
+        unavailableMemberProfileIDs.remove(profileID)
+        var shelves = publicProfileShelves[profileID] ?? PublicProfileShelfState()
+        guard !shelves.isRefreshingOverview else { return }
+        shelves.isRefreshingOverview = true
+        publicProfileShelves[profileID] = shelves
+        defer { publicProfileShelves[profileID]?.isRefreshingOverview = false }
+        do {
+            publicProfileShelves[profileID]?.overview = try await collaborationRepository
+                .memberProfileOverview(profileID: profileID)
+        } catch {
+            handleMemberProfileLoadFailure(error, profileID: profileID)
+        }
+    }
+
+    func publicProfileRatings(for profileID: UUID, scope: String) -> PaginatedShelfState<RemotePublicProfileRating> {
+        publicProfileShelves[profileID]?.ratings[normalizedMemberMusicScope(scope)] ?? PaginatedShelfState()
+    }
+
+    func publicProfileRatingDistribution(for profileID: UUID, scope: String) -> MyRatingDistribution? {
+        publicProfileShelves[profileID]?.ratingDistributions[normalizedMemberMusicScope(scope)]
+    }
+
+    func refreshPublicProfileRatings(for profileID: UUID, scope: String) async {
+#if DEBUG
+        guard !isDiaryEditorUITestFixtureActive else { return }
+#endif
+        let scope = normalizedMemberMusicScope(scope)
+        var shelves = publicProfileShelves[profileID] ?? PublicProfileShelfState()
+        let current = shelves.ratings[scope] ?? PaginatedShelfState()
+        guard !current.isRefreshing, !current.isLoadingMore else { return }
+        var loading = current
+        loading.isRefreshing = true
+        shelves.ratings[scope] = loading
+        shelves.refreshingRatingDistributionScopes.insert(scope)
+        publicProfileShelves[profileID] = shelves
+        defer {
+            publicProfileShelves[profileID]?.ratings[scope]?.isRefreshing = false
+            publicProfileShelves[profileID]?.refreshingRatingDistributionScopes.remove(scope)
+        }
+        do {
+            async let page = collaborationRepository.publicProfileRatingsPage(
+                profileID: profileID,
+                subjectKind: memberMusicSubjectKind(scope),
+                limit: socialShelfPageSize + 1
+            )
+            async let distribution = collaborationRepository.publicProfileRatingDistribution(
+                profileID: profileID,
+                subjectKind: memberMusicSubjectKind(scope)
+            )
+            let values = try await (page, distribution)
+            publicProfileShelves[profileID]?.ratings[scope]?.items = Array(values.0.prefix(socialShelfPageSize))
+            publicProfileShelves[profileID]?.ratings[scope]?.hasMore = values.0.count > socialShelfPageSize
+            publicProfileShelves[profileID]?.ratingDistributions[scope] = values.1
+        } catch {
+            handleMemberProfileLoadFailure(error, profileID: profileID)
+        }
+    }
+
+    func loadMorePublicProfileRatings(for profileID: UUID, scope: String) async {
+        let scope = normalizedMemberMusicScope(scope)
+        guard var shelves = publicProfileShelves[profileID],
+              var state = shelves.ratings[scope],
+              state.hasMore,
+              !state.isRefreshing,
+              !state.isLoadingMore,
+              let cursor = state.items.last else { return }
+        state.isLoadingMore = true
+        shelves.ratings[scope] = state
+        publicProfileShelves[profileID] = shelves
+        defer { publicProfileShelves[profileID]?.ratings[scope]?.isLoadingMore = false }
+        do {
+            let page = try await collaborationRepository.publicProfileRatingsPage(
+                profileID: profileID,
+                subjectKind: memberMusicSubjectKind(scope),
+                beforeUpdatedAt: cursor.updatedAt,
+                beforeSubjectKind: cursor.subjectKind,
+                beforeSubjectID: cursor.subjectID,
+                limit: socialShelfPageSize + 1
+            )
+            let existingIDs = Set(state.items.map(\.id))
+            publicProfileShelves[profileID]?.ratings[scope]?.items.append(
+                contentsOf: page.prefix(socialShelfPageSize).filter { !existingIDs.contains($0.id) }
+            )
+            publicProfileShelves[profileID]?.ratings[scope]?.hasMore = page.count > socialShelfPageSize
+        } catch {
+            handleMemberProfileLoadFailure(error, profileID: profileID)
+        }
+    }
+
     func refreshPublicProfileReviews(for profileID: UUID) async {
 #if DEBUG
         guard !isDiaryEditorUITestFixtureActive else { return }
@@ -2179,7 +2310,7 @@ final class HarmonySessionStore: ObservableObject {
             publicProfileShelves[profileID]?.reviews.items = Array(page.prefix(socialShelfPageSize))
             publicProfileShelves[profileID]?.reviews.hasMore = page.count > socialShelfPageSize
         } catch {
-            collaborationMessage = "Could not load this member's reviews."
+            handleMemberProfileLoadFailure(error, profileID: profileID)
         }
     }
 
@@ -2205,7 +2336,7 @@ final class HarmonySessionStore: ObservableObject {
             )
             publicProfileShelves[profileID]?.reviews.hasMore = page.count > socialShelfPageSize
         } catch {
-            collaborationMessage = "Could not load more reviews."
+            handleMemberProfileLoadFailure(error, profileID: profileID)
         }
     }
 
@@ -2226,7 +2357,7 @@ final class HarmonySessionStore: ObservableObject {
             publicProfileShelves[profileID]?.diary.items = Array(page.prefix(socialShelfPageSize))
             publicProfileShelves[profileID]?.diary.hasMore = page.count > socialShelfPageSize
         } catch {
-            collaborationMessage = "Could not load this member's diary."
+            handleMemberProfileLoadFailure(error, profileID: profileID)
         }
     }
 
@@ -2252,54 +2383,68 @@ final class HarmonySessionStore: ObservableObject {
             )
             publicProfileShelves[profileID]?.diary.hasMore = page.count > socialShelfPageSize
         } catch {
-            collaborationMessage = "Could not load more diary entries."
+            handleMemberProfileLoadFailure(error, profileID: profileID)
         }
     }
 
-    func refreshPublicProfileLoved(for profileID: UUID) async {
+    func publicProfileLoved(for profileID: UUID, scope: String) -> PaginatedShelfState<RemotePublicLovedMusic> {
+        publicProfileShelves[profileID]?.loved[normalizedMemberMusicScope(scope)] ?? PaginatedShelfState()
+    }
+
+    func refreshPublicProfileLoved(for profileID: UUID, scope: String = "all") async {
 #if DEBUG
         guard !isDiaryEditorUITestFixtureActive else { return }
 #endif
+        let scope = normalizedMemberMusicScope(scope)
         var shelves = publicProfileShelves[profileID] ?? PublicProfileShelfState()
-        guard !shelves.loved.isRefreshing, !shelves.loved.isLoadingMore else { return }
-        shelves.loved.isRefreshing = true
+        let current = shelves.loved[scope] ?? PaginatedShelfState()
+        guard !current.isRefreshing, !current.isLoadingMore else { return }
+        var loading = current
+        loading.isRefreshing = true
+        shelves.loved[scope] = loading
         publicProfileShelves[profileID] = shelves
-        defer { publicProfileShelves[profileID]?.loved.isRefreshing = false }
+        defer { publicProfileShelves[profileID]?.loved[scope]?.isRefreshing = false }
         do {
             let page = try await collaborationRepository.publicProfileLovedPage(
                 profileID: profileID,
+                subjectKind: memberMusicSubjectKind(scope),
                 limit: socialShelfPageSize + 1
             )
-            publicProfileShelves[profileID]?.loved.items = Array(page.prefix(socialShelfPageSize))
-            publicProfileShelves[profileID]?.loved.hasMore = page.count > socialShelfPageSize
+            publicProfileShelves[profileID]?.loved[scope]?.items = Array(page.prefix(socialShelfPageSize))
+            publicProfileShelves[profileID]?.loved[scope]?.hasMore = page.count > socialShelfPageSize
         } catch {
-            collaborationMessage = "Could not load this member's Loved shelf."
+            handleMemberProfileLoadFailure(error, profileID: profileID)
         }
     }
 
-    func loadMorePublicProfileLoved(for profileID: UUID) async {
+    func loadMorePublicProfileLoved(for profileID: UUID, scope: String = "all") async {
+        let scope = normalizedMemberMusicScope(scope)
         guard var shelves = publicProfileShelves[profileID],
-              shelves.loved.hasMore,
-              !shelves.loved.isRefreshing,
-              !shelves.loved.isLoadingMore,
-              let cursor = shelves.loved.items.last else { return }
-        shelves.loved.isLoadingMore = true
+              var state = shelves.loved[scope],
+              state.hasMore,
+              !state.isRefreshing,
+              !state.isLoadingMore,
+              let cursor = state.items.last else { return }
+        state.isLoadingMore = true
+        shelves.loved[scope] = state
         publicProfileShelves[profileID] = shelves
-        defer { publicProfileShelves[profileID]?.loved.isLoadingMore = false }
+        defer { publicProfileShelves[profileID]?.loved[scope]?.isLoadingMore = false }
         do {
             let page = try await collaborationRepository.publicProfileLovedPage(
                 profileID: profileID,
+                subjectKind: memberMusicSubjectKind(scope),
                 beforeUpdatedAt: cursor.updatedAt,
-                beforeCanonicalTrackID: cursor.canonicalTrackID,
+                beforeSubjectKind: cursor.subjectKind,
+                beforeSubjectID: cursor.subjectID,
                 limit: socialShelfPageSize + 1
             )
-            let existingIDs = Set(shelves.loved.items.map(\.id))
-            publicProfileShelves[profileID]?.loved.items.append(
+            let existingIDs = Set(state.items.map(\.id))
+            publicProfileShelves[profileID]?.loved[scope]?.items.append(
                 contentsOf: page.prefix(socialShelfPageSize).filter { !existingIDs.contains($0.id) }
             )
-            publicProfileShelves[profileID]?.loved.hasMore = page.count > socialShelfPageSize
+            publicProfileShelves[profileID]?.loved[scope]?.hasMore = page.count > socialShelfPageSize
         } catch {
-            collaborationMessage = "Could not load more Loved tracks."
+            handleMemberProfileLoadFailure(error, profileID: profileID)
         }
     }
 
@@ -2322,7 +2467,7 @@ final class HarmonySessionStore: ObservableObject {
             publicProfileShelves[profileID]?.lists.hasMore = page.count > musicListPageSize
             visible.forEach { cacheMusicList($0) }
         } catch {
-            collaborationMessage = "Could not load this member's lists."
+            handleMemberProfileLoadFailure(error, profileID: profileID)
         }
     }
 
@@ -2349,12 +2494,35 @@ final class HarmonySessionStore: ObservableObject {
             publicProfileShelves[profileID]?.lists.hasMore = page.count > musicListPageSize
             visible.forEach { cacheMusicList($0) }
         } catch {
-            collaborationMessage = "Could not load more lists."
+            handleMemberProfileLoadFailure(error, profileID: profileID)
         }
     }
 
     func clearPublicProfileShelves(for profileID: UUID) {
         publicProfileShelves.removeValue(forKey: profileID)
+        unavailableMemberProfileIDs.remove(profileID)
+    }
+
+    func isMemberProfileUnavailable(_ profileID: UUID) -> Bool {
+        unavailableMemberProfileIDs.contains(profileID)
+    }
+
+    private func normalizedMemberMusicScope(_ scope: String) -> String {
+        scope == "track" || scope == "album" ? scope : "all"
+    }
+
+    private func memberMusicSubjectKind(_ scope: String) -> String? {
+        normalizedMemberMusicScope(scope) == "all" ? nil : normalizedMemberMusicScope(scope)
+    }
+
+    private func handleMemberProfileLoadFailure(_ error: Error, profileID: UUID) {
+        if collaborationRepository.isProfileAuthorizationFailure(error) {
+            publicProfileShelves.removeValue(forKey: profileID)
+            unavailableMemberProfileIDs.insert(profileID)
+            collaborationMessage = "This profile is no longer available to you."
+        } else {
+            collaborationMessage = "Could not load this member's profile."
+        }
     }
 
     // MARK: - Music lists and collections
@@ -3150,14 +3318,74 @@ final class HarmonySessionStore: ObservableObject {
         )
         hasMoreFollowingActivity = false
         var shelves = PublicProfileShelfState()
+        shelves.overview = RemoteMemberProfileOverview(
+            profileID: entry.profileID,
+            displayName: "UI Test Listener",
+            avatarURL: nil,
+            isSelf: false,
+            viewerFollows: true,
+            followsViewer: false,
+            outgoingFollowState: "accepted",
+            incomingFollowState: nil,
+            writtenReviewCount: 1,
+            diaryEntryCount: 1,
+            lovedMusicCount: 2,
+            musicListCount: 0,
+            ratingCount: 2,
+            averageRating: 4.25,
+            ratingsVisible: true
+        )
         shelves.reviews.items = [review]
         shelves.diary.items = [entry]
-        shelves.loved.items = [RemotePublicLovedTrack(
+        let lovedTrack = RemotePublicLovedMusic(
             profileID: entry.profileID,
-            canonicalTrackID: canonicalTrackID,
+            subjectKind: "track",
+            subjectID: canonicalTrackID,
             updatedAt: Date(),
-            canonicalTrack: track
-        )]
+            subject: .track(track)
+        )
+        var lovedMusic = [lovedTrack]
+        let trackRating = RemotePublicProfileRating(
+            profileID: entry.profileID,
+            subjectKind: "track",
+            subjectID: canonicalTrackID,
+            rating: 4,
+            updatedAt: Date(),
+            subject: .track(track)
+        )
+        var ratings = [trackRating]
+        if let album = albumSubjectShelf.first?.canonicalAlbum {
+            lovedMusic.append(RemotePublicLovedMusic(
+                profileID: entry.profileID,
+                subjectKind: "album",
+                subjectID: album.id,
+                updatedAt: Date().addingTimeInterval(-1),
+                subject: .album(album)
+            ))
+            ratings.append(RemotePublicProfileRating(
+                profileID: entry.profileID,
+                subjectKind: "album",
+                subjectID: album.id,
+                rating: 4.5,
+                updatedAt: Date().addingTimeInterval(-1),
+                subject: .album(album)
+            ))
+        }
+        shelves.loved["all"] = PaginatedShelfState(items: lovedMusic)
+        shelves.loved["track"] = PaginatedShelfState(items: lovedMusic.filter { $0.subjectKind == "track" })
+        shelves.loved["album"] = PaginatedShelfState(items: lovedMusic.filter { $0.subjectKind == "album" })
+        shelves.ratings["all"] = PaginatedShelfState(items: ratings)
+        shelves.ratings["track"] = PaginatedShelfState(items: ratings.filter { $0.subjectKind == "track" })
+        shelves.ratings["album"] = PaginatedShelfState(items: ratings.filter { $0.subjectKind == "album" })
+        shelves.ratingDistributions["all"] = Self.fixtureRatingDistribution(
+            scope: "all", counts: [4: 1, 4.5: 1], total: 2, average: 4.25
+        )
+        shelves.ratingDistributions["track"] = Self.fixtureRatingDistribution(
+            scope: "track", counts: [4: 1], total: 1, average: 4
+        )
+        shelves.ratingDistributions["album"] = Self.fixtureRatingDistribution(
+            scope: "album", counts: [4.5: 1], total: 1, average: 4.5
+        )
         publicProfileShelves[entry.profileID] = shelves
         let requestProfileID = UUID(uuidString: "81000000-0000-0000-0000-000000000008")!
         let discoveryProfileID = UUID(uuidString: "82000000-0000-0000-0000-000000000008")!
@@ -3622,23 +3850,29 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     func blockSocialProfile(_ profileID: UUID) async {
-        await performSocialAction(profileID, successMessage: "Profile blocked") {
+        let didBlock = await performSocialAction(profileID, successMessage: "Profile blocked") {
             try await self.collaborationRepository.blockSocialProfile(profileID)
+        }
+        if didBlock {
+            publicProfileShelves.removeValue(forKey: profileID)
+            unavailableMemberProfileIDs.insert(profileID)
         }
     }
 
     func unblockSocialProfile(_ profileID: UUID) async {
-        await performSocialAction(profileID, successMessage: "Profile unblocked") {
+        let didUnblock = await performSocialAction(profileID, successMessage: "Profile unblocked") {
             try await self.collaborationRepository.unblockSocialProfile(profileID)
         }
+        if didUnblock { unavailableMemberProfileIDs.remove(profileID) }
     }
 
+    @discardableResult
     private func performSocialAction(
         _ profileID: UUID,
         successMessage: String,
         operation: @escaping () async throws -> Void
-    ) async {
-        guard !socialProfileActionIDs.contains(profileID) else { return }
+    ) async -> Bool {
+        guard !socialProfileActionIDs.contains(profileID) else { return false }
         socialProfileActionIDs.insert(profileID)
         defer { socialProfileActionIDs.remove(profileID) }
         do {
@@ -3646,8 +3880,10 @@ final class HarmonySessionStore: ObservableObject {
             collaborationMessage = successMessage
             await refreshSocialProfiles()
             await refreshSocialDiscovery(search: socialDiscoveryQuery)
+            return true
         } catch {
             collaborationMessage = "Follower action failed: \(error.localizedDescription)"
+            return false
         }
     }
 

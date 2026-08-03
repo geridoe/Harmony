@@ -6,6 +6,7 @@ private enum HarmonyRepositoryError: LocalizedError {
     case canonicalAlbumUnavailable
     case reviewCommentDeletionUnavailable
     case invalidTrackRatingSaveResult
+    case profileUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -17,6 +18,8 @@ private enum HarmonyRepositoryError: LocalizedError {
             "This comment could not be deleted."
         case .invalidTrackRatingSaveResult:
             "Harmony could not read the saved track rating."
+        case .profileUnavailable:
+            "This profile is unavailable."
         }
     }
 }
@@ -172,6 +175,7 @@ private struct UpdateSocialSettings: Encodable {
     let history_visibility: String
     let reviews_visibility: String
     let shelf_visibility: String
+    let rating_visibility: String
     let record_harmony_plays: Bool
 }
 private struct RecordListeningHistoryParameters: Encodable {
@@ -318,6 +322,19 @@ private struct FollowingReviewsPageParameters: Encodable {
     let p_limit: Int
 }
 private struct MyRatingDistributionParameters: Encodable {
+    let p_subject_kind: String?
+}
+private struct MemberProfileOverviewParameters: Encodable { let p_profile_id: UUID }
+private struct ProfileMusicPageParameters: Encodable {
+    let p_profile_id: UUID
+    let p_subject_kind: String?
+    let p_before_updated_at: Date?
+    let p_before_subject_kind: String?
+    let p_before_subject_id: UUID?
+    let p_limit: Int
+}
+private struct ProfileRatingDistributionParameters: Encodable {
+    let p_profile_id: UUID
     let p_subject_kind: String?
 }
 private struct ProfileDiaryPageParameters: Encodable {
@@ -481,6 +498,7 @@ struct RemoteSocialSettings: Decodable {
     let historyVisibility: SocialVisibilityOption
     let reviewsVisibility: SocialVisibilityOption
     let shelfVisibility: SocialVisibilityOption
+    let ratingVisibility: SocialVisibilityOption
     let recordHarmonyPlays: Bool
     enum CodingKeys: String, CodingKey {
         case profileID = "profile_id"
@@ -488,6 +506,7 @@ struct RemoteSocialSettings: Decodable {
         case historyVisibility = "history_visibility"
         case reviewsVisibility = "reviews_visibility"
         case shelfVisibility = "shelf_visibility"
+        case ratingVisibility = "rating_visibility"
         case recordHarmonyPlays = "record_harmony_plays"
     }
 }
@@ -956,6 +975,162 @@ struct RemotePublicLovedTrack: Decodable, Identifiable {
     }
 }
 
+struct RemoteMemberProfileOverview: Decodable, Equatable {
+    let profileID: UUID
+    let displayName: String
+    let avatarURL: URL?
+    let isSelf: Bool
+    let viewerFollows: Bool
+    let followsViewer: Bool
+    let outgoingFollowState: String?
+    let incomingFollowState: String?
+    let writtenReviewCount: Int
+    let diaryEntryCount: Int
+    let lovedMusicCount: Int
+    let musicListCount: Int
+    let ratingCount: Int
+    let averageRating: Double?
+    let ratingsVisible: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case profileID = "profile_id"
+        case displayName = "display_name"
+        case avatarURL = "avatar_url"
+        case isSelf = "is_self"
+        case viewerFollows = "viewer_follows"
+        case followsViewer = "follows_viewer"
+        case outgoingFollowState = "outgoing_follow_state"
+        case incomingFollowState = "incoming_follow_state"
+        case writtenReviewCount = "written_review_count"
+        case diaryEntryCount = "diary_entry_count"
+        case lovedMusicCount = "loved_music_count"
+        case musicListCount = "music_list_count"
+        case ratingCount = "rating_count"
+        case averageRating = "average_rating"
+        case ratingsVisible = "ratings_visible"
+    }
+}
+
+enum RemoteProfileMusicSubject {
+    case track(RemoteCatalogTrack)
+    case album(RemoteCanonicalAlbum)
+
+    var title: String {
+        switch self {
+        case .track(let track): track.title
+        case .album(let album): album.title
+        }
+    }
+
+    var artist: String {
+        switch self {
+        case .track(let track): track.artist
+        case .album(let album): album.artist ?? "Unknown artist"
+        }
+    }
+
+    var artworkURL: URL? {
+        switch self {
+        case .track(let track): track.artworkURL
+        case .album(let album): album.artworkURL
+        }
+    }
+}
+
+struct RemotePublicProfileRating: Decodable, Identifiable {
+    let profileID: UUID
+    let subjectKind: String
+    let subjectID: UUID
+    let rating: Double
+    let updatedAt: Date
+    let subject: RemoteProfileMusicSubject
+
+    var id: String { "\(subjectKind):\(subjectID.uuidString)" }
+
+    enum CodingKeys: String, CodingKey {
+        case profileID = "profile_id"
+        case subjectKind = "subject_kind"
+        case subjectID = "subject_id"
+        case rating
+        case updatedAt = "updated_at"
+        case subject
+    }
+
+    init(profileID: UUID, subjectKind: String, subjectID: UUID, rating: Double, updatedAt: Date, subject: RemoteProfileMusicSubject) {
+        self.profileID = profileID
+        self.subjectKind = subjectKind
+        self.subjectID = subjectID
+        self.rating = rating
+        self.updatedAt = updatedAt
+        self.subject = subject
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        profileID = try container.decode(UUID.self, forKey: .profileID)
+        subjectKind = try container.decode(String.self, forKey: .subjectKind)
+        subjectID = try container.decode(UUID.self, forKey: .subjectID)
+        rating = try container.decode(Double.self, forKey: .rating)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        let subjectDecoder = try container.superDecoder(forKey: .subject)
+        switch subjectKind {
+        case "track": subject = .track(try RemoteCatalogTrack(from: subjectDecoder))
+        case "album": subject = .album(try RemoteCanonicalAlbum(from: subjectDecoder))
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: .subjectKind,
+                in: container,
+                debugDescription: "Unsupported profile rating subject kind: \(subjectKind)"
+            )
+        }
+    }
+}
+
+struct RemotePublicLovedMusic: Decodable, Identifiable {
+    let profileID: UUID
+    let subjectKind: String
+    let subjectID: UUID
+    let updatedAt: Date
+    let subject: RemoteProfileMusicSubject
+
+    var id: String { "\(subjectKind):\(subjectID.uuidString)" }
+
+    enum CodingKeys: String, CodingKey {
+        case profileID = "profile_id"
+        case subjectKind = "subject_kind"
+        case subjectID = "subject_id"
+        case updatedAt = "updated_at"
+        case subject
+    }
+
+    init(profileID: UUID, subjectKind: String, subjectID: UUID, updatedAt: Date, subject: RemoteProfileMusicSubject) {
+        self.profileID = profileID
+        self.subjectKind = subjectKind
+        self.subjectID = subjectID
+        self.updatedAt = updatedAt
+        self.subject = subject
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        profileID = try container.decode(UUID.self, forKey: .profileID)
+        subjectKind = try container.decode(String.self, forKey: .subjectKind)
+        subjectID = try container.decode(UUID.self, forKey: .subjectID)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        let subjectDecoder = try container.superDecoder(forKey: .subject)
+        switch subjectKind {
+        case "track": subject = .track(try RemoteCatalogTrack(from: subjectDecoder))
+        case "album": subject = .album(try RemoteCanonicalAlbum(from: subjectDecoder))
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: .subjectKind,
+                in: container,
+                debugDescription: "Unsupported Loved subject kind: \(subjectKind)"
+            )
+        }
+    }
+}
+
 struct RemoteMusicReview: Decodable, Identifiable {
     let id: UUID
     let profileID: UUID
@@ -1339,6 +1514,13 @@ final class HarmonyCollaborationRepository {
         return ["PGRST200", "PGRST202", "PGRST204", "42703", "42P01"].contains(error.code)
     }
 
+    func isProfileAuthorizationFailure(_ error: Error) -> Bool {
+        if let error = error as? PostgrestError {
+            return error.code == "42501" || error.message.localizedCaseInsensitiveContains("profile unavailable")
+        }
+        return error.localizedDescription.localizedCaseInsensitiveContains("profile is unavailable")
+    }
+
     // Defer plist-dependent client creation until a live backend operation is
     // requested. This keeps local queue behavior and unit tests independent of
     // a test-host Info.plist while production still fails fast on misconfiguration.
@@ -1450,7 +1632,7 @@ final class HarmonyCollaborationRepository {
         try await authenticate()
         let userID = try await currentUserID()
         return try await client.from("profile_social_settings")
-            .select("profile_id,live_visibility,history_visibility,reviews_visibility,shelf_visibility,record_harmony_plays")
+            .select("profile_id,live_visibility,history_visibility,reviews_visibility,shelf_visibility,rating_visibility,record_harmony_plays")
             .eq("profile_id", value: userID.uuidString)
             .single().execute().value
     }
@@ -1464,10 +1646,11 @@ final class HarmonyCollaborationRepository {
                 history_visibility: settings.historyVisibility.rawValue,
                 reviews_visibility: settings.reviewsVisibility.rawValue,
                 shelf_visibility: settings.shelfVisibility.rawValue,
+                rating_visibility: settings.ratingVisibility.rawValue,
                 record_harmony_plays: settings.recordHarmonyPlays
             ))
             .eq("profile_id", value: userID.uuidString)
-            .select("profile_id,live_visibility,history_visibility,reviews_visibility,shelf_visibility,record_harmony_plays")
+            .select("profile_id,live_visibility,history_visibility,reviews_visibility,shelf_visibility,rating_visibility,record_harmony_plays")
             .single().execute().value
     }
 
@@ -1974,6 +2157,55 @@ final class HarmonyCollaborationRepository {
         }
     }
 
+    func memberProfileOverview(profileID: UUID) async throws -> RemoteMemberProfileOverview {
+        try await authenticate()
+        let rows: [RemoteMemberProfileOverview] = try await client.rpc(
+            "get_member_profile_overview",
+            params: MemberProfileOverviewParameters(p_profile_id: profileID)
+        ).execute().value
+        guard let overview = rows.first else {
+            throw HarmonyRepositoryError.profileUnavailable
+        }
+        return overview
+    }
+
+    func publicProfileRatingsPage(
+        profileID: UUID,
+        subjectKind: String? = nil,
+        beforeUpdatedAt: Date? = nil,
+        beforeSubjectKind: String? = nil,
+        beforeSubjectID: UUID? = nil,
+        limit: Int = 51
+    ) async throws -> [RemotePublicProfileRating] {
+        try await authenticate()
+        return try await client.rpc(
+            "list_profile_ratings",
+            params: ProfileMusicPageParameters(
+                p_profile_id: profileID,
+                p_subject_kind: subjectKind,
+                p_before_updated_at: beforeUpdatedAt,
+                p_before_subject_kind: beforeSubjectKind,
+                p_before_subject_id: beforeSubjectID,
+                p_limit: limit
+            )
+        ).execute().value
+    }
+
+    func publicProfileRatingDistribution(
+        profileID: UUID,
+        subjectKind: String? = nil
+    ) async throws -> MyRatingDistribution {
+        try await authenticate()
+        let rows: [RemoteMyRatingDistributionRow] = try await client.rpc(
+            "get_profile_rating_distribution",
+            params: ProfileRatingDistributionParameters(
+                p_profile_id: profileID,
+                p_subject_kind: subjectKind
+            )
+        ).execute().value
+        return MyRatingDistribution.make(scope: subjectKind ?? "all", rows: rows)
+    }
+
     func ownerReviewsPage(
         beforeCreatedAt: Date? = nil,
         beforeID: UUID? = nil,
@@ -2051,21 +2283,24 @@ final class HarmonyCollaborationRepository {
 
     func publicProfileLovedPage(
         profileID: UUID,
+        subjectKind: String? = nil,
         beforeUpdatedAt: Date? = nil,
-        beforeCanonicalTrackID: UUID? = nil,
+        beforeSubjectKind: String? = nil,
+        beforeSubjectID: UUID? = nil,
         limit: Int = 51
-    ) async throws -> [RemotePublicLovedTrack] {
+    ) async throws -> [RemotePublicLovedMusic] {
         try await authenticate()
         return try await client.rpc(
-            "list_profile_loved_tracks",
-            params: ProfileLovedPageParameters(
+            "list_profile_loved_music",
+            params: ProfileMusicPageParameters(
                 p_profile_id: profileID,
+                p_subject_kind: subjectKind,
                 p_before_updated_at: beforeUpdatedAt,
-                p_before_canonical_track_id: beforeCanonicalTrackID,
+                p_before_subject_kind: beforeSubjectKind,
+                p_before_subject_id: beforeSubjectID,
                 p_limit: limit
             )
         )
-        .select("profile_id,canonical_track_id,updated_at,canonical_track")
         .execute().value
     }
 

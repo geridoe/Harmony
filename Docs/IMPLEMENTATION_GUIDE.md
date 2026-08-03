@@ -102,9 +102,10 @@ playback/catalog interaction.
   limited to the loaded rows. Their data is the future source for APNs delivery;
   APNs is not yet enabled.
 - Listen owns the durable following Activity page and its member-profile
-  navigation. Intentional manual Diary logs and first-published Reviews appear as
-  typed events; each member profile has independently paginated Reviews,
-  Diary, opt-in Loved, and Lists shelves.
+  navigation. Intentional manual Diary logs and first-published Reviews appear
+  as typed events. A member overview links to independently paginated Reviews,
+  Ratings, Diary, Loved, and Lists pages; Ratings and Loved each require their
+  own private-by-default follower opt-in.
 
 ## 3. iOS implementation
 
@@ -493,8 +494,9 @@ hydrates the single-track cache used by the track-detail controls.
 The page offers All, Loved, Want to listen, Rated, and Listened scopes plus
 case/diacritic-insensitive title, artist, and album search. Filtering describes
 only loaded pages. Rows show canonical artwork and metadata, status badges, and
-the current default rating. No public profile exposure is implied yet; RLS and
-the RPC restrict this collection to its owner.
+the current default rating. This editable owner collection remains private
+under RLS. Follower profile pages use separate narrow migration-058 Ratings and
+Loved projections and never receive the owner-shaped state row.
 
 Migration `202608030030_paginated_track_subject_states.sql` deploys
 `list_my_track_subject_states` with stable
@@ -524,7 +526,7 @@ Track review save marks Listened and clears Want; review deletion preserves
 current state. Album reviews remain outside track state. Clearing Listened
 still fails while any Diary/history entry or active review exists.
 
-### Implemented: typed following Activity and member shelves
+### Implemented: typed following Activity and member profiles
 
 Listen → Following activity is a durable following feed rather than a snapshot of
 the current review query. `social_activity_events` records only the first
@@ -540,11 +542,19 @@ if an object becomes invisible between those reads, preventing a raced delete
 from trapping pagination. Swift presents distinct cards and routes actor
 identity into `MemberProfileView`.
 
-Member profiles expose independently paginated **Reviews**, **Diary**,
-**Loved**, and **Lists** shelves. Their state is keyed by member ID and does not reuse the
-owner's editable review, diary, or subject-state caches. Review and Diary
-audiences remain per object. Loved is an aggregate shelf with a separate
-Only me/Followers setting in Connections; it defaults to private.
+`MemberProfileView` is a Letterboxd-style overview rather than a mixed content
+feed. Its server summary supplies identity, independent incoming/outgoing
+requested-or-accepted follow state, and exhaustive viewer-visible counts. The
+overview links to separate **Reviews**, **Ratings**, **Diary**, **Loved**, and
+**Lists** pages. Their state is keyed by member ID and never reuses the owner's
+editable review, diary, or subject-state caches.
+
+Review and Diary audiences remain per object. Loved is an aggregate track and
+album shelf controlled by `shelf_visibility`. Ratings is a distinct aggregate
+track and album shelf controlled by `rating_visibility`. Both settings offer
+Only me/Followers in Connections and default to private. A follower-visible
+review does not publish the author's current Ratings library, and a published
+Ratings library never exposes Listened, Loved, or Want-to-listen state.
 
 Migration `202608030031_social_activity_and_profile_shelves.sql` adds the
 append-only event table, first-publication triggers, `shelf_visibility`,
@@ -552,6 +562,18 @@ Realtime publication, and the feed/profile RPCs. Pages use paired keyset
 cursors and accept 1–100 rows. Hosted smoke covers idempotent republishing,
 non-emitting imports, visibility changes, blocks, object deletion, follower
 isolation, cursor ties, and Loved shelf opt-in.
+
+Migration `202608030058_member_profile_overview_and_ratings.sql` adds the
+bounded profile overview and the narrow unified Ratings/Loved projections.
+`get_member_profile_overview` is the authority for relationship state and
+viewer-visible counts; clients must not total loaded shelf pages.
+`list_profile_ratings` and `list_profile_loved_music` page descending by
+`(updated_at, subject_kind, subject_id)` with all cursor components supplied
+together. Scope is applied before the 1–100 row limit. Rating distributions
+come from `get_profile_rating_distribution`, which always supplies the ten
+half-star buckets plus exhaustive total/average when the shelf is authorized.
+Private Ratings return no rows. Missing IDs and either direction of a block
+share the same unavailable result.
 
 ## 4. Supabase data model
 
@@ -579,7 +601,7 @@ too close; that is not a current correctness concern.
 
 | Table | Role |
 | --- | --- |
-| `profile_social_settings` | per-owner live/history/review/Loved-shelf visibility plus consent |
+| `profile_social_settings` | independent per-owner live/history/review/Loved-shelf/Ratings visibility plus recording consent; social publishing defaults private |
 | `social_follows` | request/accepted follower edges |
 | `profile_blocks` | directional blocks; visibility helper treats either direction as blocked |
 | `listening_presence` | one expiring now-listening record per profile |
@@ -696,7 +718,9 @@ The main social RPCs are `request_social_follow`,
 `set_listening_diary_rating`, `set_my_track_subject_state`,
 `list_my_track_subject_states`,
 `list_following_activity`, `list_profile_listening_diary`,
-`list_profile_music_reviews`, `list_profile_loved_tracks`,
+`get_member_profile_overview`, `list_profile_music_reviews`,
+`list_profile_ratings`, `get_profile_rating_distribution`,
+`list_profile_loved_tracks`, `list_profile_loved_music`,
 `create_music_review`, `update_music_review`, `delete_music_review`,
 `list_review_comments`, `get_review_engagement`, `add_review_comment`,
 `delete_review_comment`, `toggle_review_reaction`, and
@@ -773,6 +797,11 @@ Premium, the installed Spotify app, and a reachable App Remote transport.
 - Presence records expire; expired records disappear through RLS even if a
   cleanup job has not removed them yet.
 - Blocks remove follow edges and deny visibility in either direction.
+- Current Ratings have an independent private-by-default audience. A profile
+  Ratings projection includes only canonical subject identity, rating,
+  provider mappings, and its keyset cursor; owner-only subject-state flags are
+  never returned. Missing and blocked member destinations intentionally share
+  one unavailable response.
 - Provider links are controlled display metadata; tokens, library contents,
   playback positions, and raw provider sessions are never read by other users.
 - Account deletion uses a server-only cleanup RPC and then removes the Auth
@@ -838,7 +867,11 @@ hosted account. A focused UI test navigates through the actor into Reviews,
 Diary, and Loved shelves; a second test verifies the separate Connections
 privacy control. Hosted smoke is the authority for first-publication
 idempotency, no import/backfill emission, current object visibility, blocks,
-profile shelf isolation, and stable keyset pagination.
+profile shelf isolation, and stable keyset pagination. Migration 058 smoke
+also proves private Ratings defaults, requested-versus-accepted relationship
+state, authoritative overview counts, unified song/album Ratings and Loved
+rows, ten-bucket distributions, cursor validation, narrow projections, and
+identical missing/both-direction-block unavailable responses.
 
 Track-detail unit coverage verifies half-step bounds, normalization, value
 snapshot isolation, failure-safe caches, direct canonical identity, and empty
@@ -882,7 +915,12 @@ return a linked review ID only when the same viewer can open that review.
 
 `list_profile_loved_tracks` likewise returns only its pagination fields and a
 public canonical-track projection; it never returns the private subject-state
-row. `list_social_profiles` returns only `id` and `display_name`, excludes self
+row. Its migration-058 successor `list_profile_loved_music` applies the same
+projection rule to both tracks and albums. `list_profile_ratings` returns only
+the rating and canonical/provider subject projection after checking the
+owner's independent `rating_visibility`; `get_member_profile_overview` counts
+only objects the current viewer can open. `list_social_profiles` returns only
+`id` and `display_name`, excludes self
 and either-direction blocks, applies optional literal case-insensitive search,
 and pages by `(lower(display_name), id)`. `list_my_blocked_profiles` is the
 sole policy exception: it returns minimal identity only for blocks created by

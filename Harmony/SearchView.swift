@@ -349,6 +349,8 @@ struct ConnectionsView: View {
                     privacyPicker("Reviews", selection: store.reviewsSocialVisibility, category: .reviews)
                     privacyPicker("Music shelf", selection: store.shelfSocialVisibility, category: .musicShelf)
                         .accessibilityIdentifier("music-shelf-privacy")
+                    privacyPicker("Ratings", selection: store.ratingSocialVisibility, category: .ratings)
+                        .accessibilityIdentifier("ratings-privacy")
                     if store.providerState(for: .spotify) == .connected {
                         Button {
                             Task { await store.importRecentSpotifyHistory() }

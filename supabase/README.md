@@ -54,7 +54,19 @@ supabase functions deploy spotify-token-exchange
 
 ## Social graph foundation
 
-`profile_social_settings` starts with live listening, history, and reviews all set to `private`. A user may expose each category to approved followers independently. `request_social_follow(profile_id)` creates a follower request; the target accepts or rejects it with `respond_to_social_follow(requester_id, accept)`. `remove_social_follow(profile_id)` removes only the caller's outgoing edge, while `remove_social_follower(profile_id)` removes only an incoming edge. `block_social_profile(profile_id)` removes both edges and prevents a new request; `unblock_social_profile(profile_id)` restores the ability to request a relationship. These operations are dedicated security-definer RPCs, not direct client writes. The visibility helpers used by later listening activity and review tables deny access across blocks and require an accepted follower for follower-visible data.
+`profile_social_settings` starts live listening, history, reviews, the Loved
+shelf, and the Ratings shelf at `private`. A user may expose each category to
+approved followers independently. `request_social_follow(profile_id)` creates
+a follower request; the target accepts or rejects it with
+`respond_to_social_follow(requester_id, accept)`. `remove_social_follow(profile_id)`
+removes only the caller's outgoing edge, while
+`remove_social_follower(profile_id)` removes only an incoming edge.
+`block_social_profile(profile_id)` removes both edges and prevents a new
+request; `unblock_social_profile(profile_id)` restores the ability to request
+a relationship. These operations are dedicated security-definer RPCs, not
+direct client writes. The visibility helpers used by later listening activity
+and review tables deny access across blocks and require an accepted follower
+for follower-visible data.
 
 `list_social_profiles(search, after_display_name, after_id, limit)` is the
 bounded account-discovery path. It returns only ID/display name, excludes self
@@ -63,6 +75,32 @@ keyset pagination. Discovery grants no social-content visibility. Normal
 profile RLS intentionally hides blocked accounts; `list_my_blocked_profiles()`
 is a narrow owner-only projection used by Manage blocked and never reveals an
 account merely because it blocked the caller.
+
+`get_member_profile_overview(profile_id)` is the authoritative entry point for
+a Letterboxd-style member profile. It returns identity, independent incoming
+and outgoing requested/accepted relationship state, and exhaustive counts of
+the Reviews, Diary, Loved music, Lists, and Ratings that this viewer is allowed
+to open. The UI presents those as five separate Reviews, Ratings, Diary,
+Loved, and Lists pages rather than one unbounded profile payload. A nonexistent
+profile and either direction of a block return the same `profile unavailable`
+error, avoiding an exact-ID existence oracle.
+
+`rating_visibility` is independent of review and Loved-shelf visibility and
+defaults to `private`. `list_profile_ratings(profile_id, subject_kind,
+before_updated_at, before_subject_kind, before_subject_id, limit)` returns only
+the current half-star rating and canonical track/album projection—including
+exact provider mappings required to open the subject. It never returns
+Listened, Loved, or Want-to-listen state. `get_profile_rating_distribution`
+returns all ten buckets plus exhaustive total and average only for the owner or
+an accepted follower when Ratings are shared; a private shelf returns no rows.
+
+`list_profile_loved_music` is the corresponding narrow combined track/album
+Loved projection. It uses `shelf_visibility` and preserves
+`list_profile_loved_tracks` for installed-client compatibility. Both combined
+RPCs apply `all|track|album` scope before their bound and use descending
+`(updated_at, subject_kind, subject_id)` keyset pagination. All three cursor
+components are required together, and a scoped continuation must keep the same
+subject kind.
 
 `publish_listening_presence(...)` writes a single user-owned, short-lived eavesdrop card. It must expire within ten minutes and is hidden by RLS unless its owner allows the viewer. `stop_listening_presence()` removes it. `record_listening_history(...)` is the user-owned history path; `record_harmony_plays` is a separate default-off consent setting, and history visibility remains independently private or follower-visible. Harmony never imports a provider’s data without an explicit user choice.
 
@@ -109,8 +147,9 @@ and batched Activity Diary RPCs return a JSON track/profile projection and mask
 the link unless the caller can currently view the linked review.
 `list_profile_loved_tracks(...)` returns only `profile_id`,
 `canonical_track_id`, `updated_at`, and a public `canonical_track` JSON object;
-it does not expose the underlying private subject-state row. Profile selection
-also denies both directions of a block.
+it does not expose the underlying private subject-state row. New profile pages
+use `list_profile_loved_music(...)` for equally narrow song and album rows.
+Profile selection also denies both directions of a block.
 
 `list_following_activity(...)` keeps linked Review and Diary source events but
 coalesces them at read time before keyset ordering/limit. A currently visible
@@ -149,7 +188,9 @@ caller-visible review totals from `get_canonical_album_state_aggregate(...)`
 and the fixed ten-bin histogram from
 `list_canonical_album_rating_distribution(...)`;
 individual state rows remain private. Review and playback-history writes never
-mutate album state. The full contract is in `../Docs/ALBUM_SUBJECT_STATE.md`.
+mutate album state. A member Ratings or Loved projection is a separately
+authorized narrow RPC result, never direct access to this owner-only table. The
+full contract is in `../Docs/ALBUM_SUBJECT_STATE.md`.
 
 ## Queue RPC contract
 
@@ -188,7 +229,16 @@ Set `HARMONY_NODE_BINARY` to a Node.js 22+ executable to include the native
 WebSocket assertion that proves a follower-graph insert is delivered through
 Supabase Realtime. The database/RLS suite still runs when Node is unavailable.
 
-It exercises anonymous authentication, social follow/block enforcement, optional social Realtime delivery, session creation/joining, provider-track canonicalization, member-role reads, Conductor-only invite-permission updates, collaborator add/remove ownership, queue-only playback rejection, Conductor-only reorder/playback/lifecycle enforcement, revision conflicts, command idempotency, session ending, and account cleanup. It reads the public project URL/key from the app plist and never prints access tokens.
+It exercises anonymous authentication, social follow/block enforcement,
+private profile defaults, authoritative member overview counts and relationship
+states, unified song/album Ratings and Loved pagination, rating distributions,
+missing/blocked privacy, optional social Realtime delivery, session
+creation/joining, provider-track canonicalization, member-role reads,
+Conductor-only invite-permission updates, collaborator add/remove ownership,
+queue-only playback rejection, Conductor-only reorder/playback/lifecycle
+enforcement, revision conflicts, command idempotency, session ending, and
+account cleanup. It reads the public project URL/key from the app plist and
+never prints access tokens.
 
 ## Important notes
 

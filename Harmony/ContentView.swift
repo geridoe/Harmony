@@ -2092,62 +2092,367 @@ private struct ActivityDiarySummary: View {
     }
 }
 
-private enum MemberProfileShelf: String, CaseIterable, Identifiable {
+enum MemberProfileDestination: String, CaseIterable, Identifiable {
     case reviews = "Reviews"
+    case ratings = "Ratings"
     case diary = "Diary"
     case loved = "Loved"
     case lists = "Lists"
+
     var id: String { rawValue }
+
+    var systemImage: String {
+        switch self {
+        case .reviews: "text.book.closed"
+        case .ratings: "star.fill"
+        case .diary: "calendar"
+        case .loved: "heart.fill"
+        case .lists: "list.bullet.rectangle"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .reviews: "Written opinions about songs and albums"
+        case .ratings: "Current song and album ratings"
+        case .diary: "Dated listening entries and relistens"
+        case .loved: "Songs marked as personal favorites"
+        case .lists: "Published collections and rankings"
+        }
+    }
+}
+
+enum MemberMusicScope: String, CaseIterable, Identifiable {
+    case all = "All"
+    case track = "Songs"
+    case album = "Albums"
+
+    var id: String { rawValue }
+    var repositoryValue: String { self == .all ? "all" : (self == .track ? "track" : "album") }
+}
+
+func memberProfileRelationshipDescription(
+    outgoingState: String?,
+    incomingState: String?,
+    isBlocked: Bool
+) -> String {
+    if isBlocked { return "Blocked" }
+
+    var descriptions: [String] = []
+    switch outgoingState {
+    case "accepted": descriptions.append("You follow this listener")
+    case "requested": descriptions.append("Your follow request is pending")
+    default: break
+    }
+    switch incomingState {
+    case "accepted": descriptions.append("Follows you")
+    case "requested": descriptions.append("Wants to follow you")
+    default: break
+    }
+    return descriptions.isEmpty ? "Discoverable profile" : descriptions.joined(separator: " · ")
 }
 
 struct MemberProfileView: View {
     @EnvironmentObject private var store: HarmonySessionStore
     let profileID: UUID
     let displayName: String
-    @State private var shelf = MemberProfileShelf.reviews
+    @State private var attemptedDestinations: Set<String> = []
+    @State private var ratingScope = MemberMusicScope.all
+    @State private var lovedScope = MemberMusicScope.all
 
     private var shelfState: PublicProfileShelfState? { store.publicProfileShelves[profileID] }
+    private var overview: RemoteMemberProfileOverview? { shelfState?.overview }
+    private var resolvedDisplayName: String { overview?.displayName ?? displayName }
 
     var body: some View {
         List {
-            Section {
-                HStack(spacing: 14) {
-                    ProfileInitials(displayName: displayName, size: 54)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(displayName).font(.title3.weight(.semibold))
-                        Text(relationshipDescription)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+            if store.isMemberProfileUnavailable(profileID) {
+                Section {
+                    VStack(spacing: 10) {
+                        Image(systemName: "person.crop.circle.badge.xmark")
+                            .font(.largeTitle)
+                            .foregroundStyle(.secondary)
+                        Text("Profile unavailable").font(.headline)
+                        Text("This listener is no longer available to you.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 24)
+                    .accessibilityIdentifier("member-profile-unavailable")
+                }
+            } else {
+                Section {
+                    HStack(spacing: 14) {
+                        profileAvatar
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(resolvedDisplayName).font(.title3.weight(.semibold))
+                            Text(relationshipDescription)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    relationshipControls
+                    Label("Only content this listener has shared with you appears here.", systemImage: "person.2.fill")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                        .accessibilityIdentifier("member-profile-privacy")
+                }
+
+                Section("Music") {
+                    ForEach(MemberProfileDestination.allCases) { destination in
+                        NavigationLink {
+                            destinationView(destination)
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: destination.systemImage)
+                                    .frame(width: 24)
+                                    .foregroundStyle(destination == .loved ? Color.pink : Color.indigo)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(destination.rawValue).font(.headline)
+                                    Text(destinationSummary(destination))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                }
+                                Spacer()
+                                if let count = destinationCount(destination) {
+                                    Text("\(count)")
+                                        .font(.subheadline.monospacedDigit())
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .accessibilityIdentifier("member-profile-destination-\(destination.rawValue.lowercased())")
                     }
                 }
-                Label("Only content this listener has shared with you appears here.", systemImage: "person.2.fill")
-                    .font(.footnote)
-                    .foregroundColor(.secondary)
-                    .accessibilityIdentifier("member-profile-privacy")
-            }
 
-            Section {
-                Picker("Profile shelf", selection: $shelf) {
-                    ForEach(MemberProfileShelf.allCases) { option in
-                        Text(option.rawValue).tag(option)
-                    }
+                ratingOverview
+                recentProfileContent
+            }
+        }
+        .navigationTitle(resolvedDisplayName)
+        .navigationBarTitleDisplayMode(.inline)
+        .accessibilityIdentifier("member-profile-page-\(profileID.uuidString)")
+        .task { await refreshOverviewContent() }
+        .refreshable { await refreshOverviewContent() }
+    }
+
+    @ViewBuilder
+    private var profileAvatar: some View {
+        if let url = overview?.avatarURL {
+            AsyncImage(url: url) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFill()
+                } else {
+                    ProfileInitials(displayName: resolvedDisplayName, size: 54)
                 }
-                .pickerStyle(.segmented)
-                .accessibilityIdentifier("member-profile-shelf-picker")
             }
+            .frame(width: 54, height: 54)
+            .clipShape(Circle())
+            .accessibilityLabel("\(resolvedDisplayName) profile image")
+        } else {
+            ProfileInitials(displayName: resolvedDisplayName, size: 54)
+        }
+    }
 
-            switch shelf {
+    @ViewBuilder
+    private var relationshipControls: some View {
+        if overview?.isSelf != true {
+            HStack {
+                if incomingFollowState == "requested" {
+                    Button("Accept") {
+                        Task {
+                            await store.respondToSocialFollow(from: profileID, accept: true)
+                            await store.refreshMemberProfileOverview(for: profileID)
+                        }
+                    }
+                        .buttonStyle(.borderedProminent)
+                    Button("Decline") {
+                        Task {
+                            await store.respondToSocialFollow(from: profileID, accept: false)
+                            await store.refreshMemberProfileOverview(for: profileID)
+                        }
+                    }
+                        .buttonStyle(.bordered)
+                } else if outgoingFollowState == "accepted" {
+                    Button("Following") {
+                        Task {
+                            await store.removeSocialFollow(profileID)
+                            await store.refreshMemberProfileOverview(for: profileID)
+                        }
+                    }
+                        .buttonStyle(.bordered)
+                } else if outgoingFollowState == "requested" {
+                    Button("Requested") {
+                        Task {
+                            await store.removeSocialFollow(profileID)
+                            await store.refreshMemberProfileOverview(for: profileID)
+                        }
+                    }
+                        .buttonStyle(.bordered)
+                } else {
+                    Button(incomingFollowState == "accepted" ? "Follow back" : "Follow") {
+                        Task {
+                            await store.requestSocialFollow(profileID)
+                            await store.refreshMemberProfileOverview(for: profileID)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                Spacer()
+                Menu {
+                    Button("Block listener", role: .destructive) {
+                        Task { await store.blockSocialProfile(profileID) }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .accessibilityLabel("Profile actions")
+            }
+            .disabled(store.socialProfileActionIDs.contains(profileID))
+            .accessibilityIdentifier("member-profile-relationship-controls")
+        }
+    }
+
+    @ViewBuilder
+    private var ratingOverview: some View {
+        if overview?.ratingsVisible == true {
+            Section("Rating profile") {
+                if let distribution = shelfState?.ratingDistributions["all"] {
+                    SubjectRatingDistributionView(distribution: distribution, label: "ratings")
+                } else if shelfState?.ratings["all"]?.isRefreshing == true {
+                    ProgressView("Loading rating profile…")
+                } else if let overview, overview.ratingCount > 0 {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(overview.averageRating.map { String(format: "%.2f", $0) } ?? "—")
+                                .font(.title2.weight(.bold))
+                            Text("Average rating").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text("\(overview.ratingCount) rated")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                } else {
+                    Text("No ratings shared yet.").foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var recentProfileContent: some View {
+        let firstReview = shelfState?.reviews.items.first
+        let firstDiary = shelfState?.diary.items.first
+        let loved = Array((shelfState?.loved["all"]?.items ?? []).prefix(4))
+        let firstList = shelfState?.lists.items.first
+        if firstReview != nil || firstDiary != nil || !loved.isEmpty || firstList != nil {
+            Section("Recent") {
+                if let review = firstReview {
+                    NavigationLink {
+                        ReviewDetailView(reviewID: review.id, fallbackReview: review) { _ in }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label("Latest review", systemImage: "text.book.closed")
+                                .font(.caption).foregroundStyle(.secondary)
+                            ReviewSubjectSummary(review: review)
+                        }
+                    }
+                    .accessibilityIdentifier("member-profile-recent-review")
+                }
+                if let entry = firstDiary {
+                    NavigationLink { destinationView(.diary) } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label("Latest Diary entry", systemImage: "calendar")
+                                .font(.caption).foregroundStyle(.secondary)
+                            ActivityDiarySummary(entry: entry)
+                        }
+                    }
+                    .accessibilityIdentifier("member-profile-recent-diary")
+                }
+                if !loved.isEmpty {
+                    NavigationLink { destinationView(.loved) } label: {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("Recently Loved", systemImage: "heart.fill")
+                                .font(.caption).foregroundStyle(.pink)
+                            HStack(spacing: 8) {
+                                ForEach(loved) { item in
+                                    ProfileMusicArtwork(subject: item.subject, size: 46)
+                                }
+                            }
+                        }
+                    }
+                    .accessibilityIdentifier("member-profile-recent-loved")
+                }
+                if let list = firstList {
+                    NavigationLink { MusicListDetailView(listID: list.id) } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Label("Recent list", systemImage: "list.bullet.rectangle")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Text(list.title).font(.headline)
+                            if !list.description.isEmpty {
+                                Text(list.description).font(.footnote).lineLimit(2)
+                            }
+                        }
+                    }
+                    .accessibilityIdentifier("member-profile-recent-list")
+                }
+            }
+        }
+    }
+
+    private var outgoingFollowState: String? {
+        overview?.outgoingFollowState ?? store.outgoingSocialFollowState(with: profileID)
+    }
+
+    private var incomingFollowState: String? {
+        overview?.incomingFollowState ?? store.incomingSocialFollowState(with: profileID)
+    }
+
+    private func destinationCount(_ destination: MemberProfileDestination) -> Int? {
+        guard let overview else { return nil }
+        switch destination {
+        case .reviews: return overview.writtenReviewCount
+        case .ratings: return overview.ratingCount
+        case .diary: return overview.diaryEntryCount
+        case .loved: return overview.lovedMusicCount
+        case .lists: return overview.musicListCount
+        }
+    }
+
+    @ViewBuilder
+    private func destinationView(_ destination: MemberProfileDestination) -> some View {
+        List {
+            switch destination {
             case .reviews: reviewsShelf
+            case .ratings: ratingsShelf
             case .diary: diaryShelf
             case .loved: lovedShelf
             case .lists: listsShelf
             }
         }
-        .navigationTitle(displayName)
+        .navigationTitle(destination.rawValue)
         .navigationBarTitleDisplayMode(.inline)
-        .accessibilityIdentifier("member-profile-page-\(profileID.uuidString)")
-        .task(id: shelf) { await refreshSelectedShelf() }
-        .refreshable { await refreshSelectedShelf() }
+        .accessibilityIdentifier("member-profile-\(destination.rawValue.lowercased())-page")
+        .task(id: destinationTaskID(destination)) { await initialLoad(destination) }
+        .refreshable { await refresh(destination) }
+    }
+
+    private func destinationSummary(_ destination: MemberProfileDestination) -> String {
+        if destination == .ratings, overview?.ratingsVisible == false {
+            return "This listener keeps current ratings private"
+        }
+        return destination.summary
+    }
+
+    private func destinationTaskID(_ destination: MemberProfileDestination) -> String {
+        switch destination {
+        case .ratings: "ratings:\(ratingScope.repositoryValue)"
+        case .loved: "loved:\(lovedScope.repositoryValue)"
+        default: destination.rawValue
+        }
     }
 
     @ViewBuilder
@@ -2168,6 +2473,61 @@ struct MemberProfileView: View {
                     isLoading: state?.isLoadingMore == true,
                     hasMore: state?.hasMore == true
                 ) { await store.loadMorePublicProfileReviews(for: profileID) }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var ratingsShelf: some View {
+        let state = store.publicProfileRatings(for: profileID, scope: ratingScope.repositoryValue)
+        Section {
+            Picker("Rating scope", selection: $ratingScope) {
+                ForEach(MemberMusicScope.allCases) { scope in
+                    Text(scope.rawValue).tag(scope)
+                }
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("member-profile-ratings-scope")
+        }
+        if overview?.ratingsVisible == false {
+            Section {
+                Label("This listener keeps current ratings private.", systemImage: "lock.fill")
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            if let distribution = store.publicProfileRatingDistribution(
+                for: profileID,
+                scope: ratingScope.repositoryValue
+            ) {
+                Section("Distribution") {
+                    SubjectRatingDistributionView(distribution: distribution, label: "ratings")
+                }
+            }
+            Section("Ratings") {
+                if state.isRefreshing && state.items.isEmpty {
+                    ProgressView("Loading ratings…")
+                } else if state.items.isEmpty {
+                    Text("No ratings have been shared with you.").foregroundStyle(.secondary)
+                } else {
+                    ForEach(state.items) { rating in
+                        MemberProfileMusicLink(subject: rating.subject) {
+                            Text("\(rating.rating, specifier: "%.1f") ★")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.orange)
+                        }
+                        .accessibilityIdentifier("member-profile-rating-\(rating.id)")
+                    }
+                    profileLoadMore(
+                        title: "Load more ratings",
+                        isLoading: state.isLoadingMore,
+                        hasMore: state.hasMore
+                    ) {
+                        await store.loadMorePublicProfileRatings(
+                            for: profileID,
+                            scope: ratingScope.repositoryValue
+                        )
+                    }
+                }
             }
         }
     }
@@ -2207,36 +2567,40 @@ struct MemberProfileView: View {
 
     @ViewBuilder
     private var lovedShelf: some View {
-        let state = shelfState?.loved
+        let state = store.publicProfileLoved(for: profileID, scope: lovedScope.repositoryValue)
+        Section {
+            Picker("Loved scope", selection: $lovedScope) {
+                ForEach(MemberMusicScope.allCases) { scope in
+                    Text(scope.rawValue).tag(scope)
+                }
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("member-profile-loved-scope")
+        }
         Section("Loved") {
-            if state?.isRefreshing == true && state?.items.isEmpty != false {
-                ProgressView("Loading loved tracks…")
-            } else if state?.items.isEmpty != false {
-                Text("No Loved tracks have been shared with you.").foregroundColor(.secondary)
+            if state.isRefreshing && state.items.isEmpty {
+                ProgressView("Loading Loved music…")
+            } else if state.items.isEmpty {
+                Text("No Loved music has been shared with you.").foregroundColor(.secondary)
             } else {
-                ForEach(state?.items ?? []) { loved in
-                    HStack(spacing: 12) {
-                        if let track = loved.canonicalTrack {
-                            TrackArtwork(track: track.harmonyTrack, size: 44, cornerRadius: 8)
-                        }
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(loved.canonicalTrack?.title ?? "Unavailable track").font(.headline)
-                            Text(loved.canonicalTrack?.artist ?? "Unknown artist")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        Spacer()
+                ForEach(state.items) { loved in
+                    MemberProfileMusicLink(subject: loved.subject) {
                         Image(systemName: "heart.fill")
                             .foregroundColor(.pink)
                             .accessibilityLabel("Loved")
                     }
-                    .accessibilityIdentifier("member-profile-loved-\(loved.canonicalTrackID.uuidString)")
+                    .accessibilityIdentifier("member-profile-loved-\(loved.subjectID.uuidString)")
                 }
                 profileLoadMore(
-                    title: "Load more loved tracks",
-                    isLoading: state?.isLoadingMore == true,
-                    hasMore: state?.hasMore == true
-                ) { await store.loadMorePublicProfileLoved(for: profileID) }
+                    title: "Load more Loved music",
+                    isLoading: state.isLoadingMore,
+                    hasMore: state.hasMore
+                ) {
+                    await store.loadMorePublicProfileLoved(
+                        for: profileID,
+                        scope: lovedScope.repositoryValue
+                    )
+                }
             }
         }
     }
@@ -2302,25 +2666,144 @@ struct MemberProfileView: View {
         }
     }
 
-    private func refreshSelectedShelf() async {
-        switch shelf {
+    private func initialLoad(_ destination: MemberProfileDestination) async {
+        guard attemptedDestinations.insert(destinationTaskID(destination)).inserted,
+              !destinationHasItems(destination) else { return }
+        await refresh(destination)
+    }
+
+    private func refresh(_ destination: MemberProfileDestination) async {
+        switch destination {
         case .reviews: await store.refreshPublicProfileReviews(for: profileID)
+        case .ratings:
+            await store.refreshPublicProfileRatings(for: profileID, scope: ratingScope.repositoryValue)
         case .diary: await store.refreshPublicProfileDiary(for: profileID)
-        case .loved: await store.refreshPublicProfileLoved(for: profileID)
+        case .loved:
+            await store.refreshPublicProfileLoved(for: profileID, scope: lovedScope.repositoryValue)
         case .lists: await store.refreshPublicProfileLists(for: profileID)
         }
     }
 
-    private var relationshipDescription: String {
-        switch store.socialRelationship(with: profileID) {
-        case .none: "Discoverable profile"
-        case .outgoingRequested: "Follow request pending"
-        case .incomingRequested: "Wants to follow you"
-        case .following: "You follow this listener"
-        case .followsYou: "Follows you"
-        case .mutual: "You follow each other"
-        case .blocked: "Blocked"
+    private func destinationHasItems(_ destination: MemberProfileDestination) -> Bool {
+        switch destination {
+        case .reviews: shelfState?.reviews.items.isEmpty == false
+        case .ratings:
+            store.publicProfileRatings(for: profileID, scope: ratingScope.repositoryValue).items.isEmpty == false
+        case .diary: shelfState?.diary.items.isEmpty == false
+        case .loved:
+            store.publicProfileLoved(for: profileID, scope: lovedScope.repositoryValue).items.isEmpty == false
+        case .lists: shelfState?.lists.items.isEmpty == false
         }
+    }
+
+    private func refreshOverviewContent() async {
+        async let overview: Void = store.refreshMemberProfileOverview(for: profileID)
+        async let reviews: Void = store.refreshPublicProfileReviews(for: profileID)
+        async let ratings: Void = store.refreshPublicProfileRatings(for: profileID, scope: "all")
+        async let diary: Void = store.refreshPublicProfileDiary(for: profileID)
+        async let loved: Void = store.refreshPublicProfileLoved(for: profileID, scope: "all")
+        async let lists: Void = store.refreshPublicProfileLists(for: profileID)
+        _ = await (overview, reviews, ratings, diary, loved, lists)
+    }
+
+    private var relationshipDescription: String {
+        memberProfileRelationshipDescription(
+            outgoingState: outgoingFollowState,
+            incomingState: incomingFollowState,
+            isBlocked: store.socialRelationship(with: profileID) == .blocked
+        )
+    }
+}
+
+private struct MemberProfileMusicLink<Accessory: View>: View {
+    let subject: RemoteProfileMusicSubject
+    @ViewBuilder let accessory: () -> Accessory
+
+    var body: some View {
+        NavigationLink {
+            switch subject {
+            case .track(let track):
+                MemberTrackDetailView(track: track)
+            case .album(let album):
+                CanonicalAlbumDetailView(album: album, initialState: nil)
+            }
+        } label: {
+            HStack(spacing: 12) {
+                ProfileMusicArtwork(subject: subject, size: 46)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(subject.title).font(.headline).lineLimit(1)
+                    Text(subject.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    switch subject {
+                    case .track:
+                        Text("Song").font(.caption2).foregroundStyle(.secondary)
+                    case .album:
+                        Text("Album").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                accessory()
+            }
+        }
+    }
+}
+
+private struct ProfileMusicArtwork: View {
+    let subject: RemoteProfileMusicSubject
+    let size: CGFloat
+
+    var body: some View {
+        AsyncImage(url: subject.artworkURL) { phase in
+            if let image = phase.image {
+                image.resizable().scaledToFill()
+            } else {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.14))
+                    Image(systemName: "music.note")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityHidden(true)
+    }
+}
+
+private struct MemberTrackDetailView: View {
+    let track: RemoteCatalogTrack
+
+    var body: some View {
+        List {
+            Section {
+                HStack(alignment: .top, spacing: 14) {
+                    ProfileMusicArtwork(subject: .track(track), size: 88)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(track.title).font(.title3.weight(.semibold))
+                        Text(track.artist).foregroundStyle(.secondary)
+                        if let album = track.album, !album.isEmpty {
+                            Text(album).font(.footnote).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            if let mappings = track.providerTracks, !mappings.isEmpty {
+                Section("Listen in") {
+                    ForEach(Array(mappings.enumerated()), id: \.offset) { _, mapping in
+                        if let deepLink = mapping.deepLink {
+                            Link(destination: deepLink) {
+                                Label(
+                                    mapping.provider == "spotify" ? "Spotify" : "Apple Music",
+                                    systemImage: "arrow.up.right.square"
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle(track.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .accessibilityIdentifier("member-canonical-track-\(track.id?.uuidString ?? "unknown")")
     }
 }
 

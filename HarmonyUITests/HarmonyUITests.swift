@@ -382,11 +382,39 @@ class HarmonyUITests: XCTestCase {
         }
         XCTAssertTrue(app.navigationBars["UI Test Listener"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.descendants(matching: .any)["member-profile-privacy"].exists)
-        let shelves = app.segmentedControls["member-profile-shelf-picker"]
-        XCTAssertTrue(shelves.exists)
-        XCTAssertTrue(app.staticTexts["Afterglow"].exists)
+        let reviews = app.descendants(matching: .any)["member-profile-destination-reviews"]
+        let ratings = app.descendants(matching: .any)["member-profile-destination-ratings"]
+        let diary = app.descendants(matching: .any)["member-profile-destination-diary"]
+        let loved = app.descendants(matching: .any)["member-profile-destination-loved"]
+        let lists = app.descendants(matching: .any)["member-profile-destination-lists"]
+        XCTAssertTrue(reviews.exists)
+        XCTAssertTrue(ratings.exists)
+        XCTAssertTrue(diary.exists)
+        XCTAssertTrue(loved.exists)
+        XCTAssertTrue(lists.exists)
+        XCTAssertFalse(app.staticTexts["Afterglow"].exists, "The profile landing page is an index, not an expanded shelf")
 
-        shelves.buttons["Diary"].tap()
+        reviews.tap()
+        XCTAssertTrue(app.navigationBars["Reviews"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Afterglow"].exists)
+        app.navigationBars["Reviews"].buttons["UI Test Listener"].tap()
+        XCTAssertTrue(app.navigationBars["UI Test Listener"].waitForExistence(timeout: 5))
+
+        app.descendants(matching: .any)["member-profile-destination-ratings"].tap()
+        XCTAssertTrue(app.navigationBars["Ratings"].waitForExistence(timeout: 5))
+        let ratingScope = app.segmentedControls["member-profile-ratings-scope"]
+        XCTAssertTrue(ratingScope.buttons["All"].waitForExistence(timeout: 5))
+        XCTAssertTrue(ratingScope.buttons["Songs"].exists)
+        XCTAssertTrue(ratingScope.buttons["Albums"].exists)
+        XCTAssertTrue(app.staticTexts["Afterglow"].exists)
+        XCTAssertTrue(app.staticTexts["Northern Lights"].exists)
+        ratingScope.buttons["Albums"].tap()
+        XCTAssertTrue(app.staticTexts["Northern Lights"].waitForExistence(timeout: 5))
+        app.navigationBars["Ratings"].buttons["UI Test Listener"].tap()
+        XCTAssertTrue(app.navigationBars["UI Test Listener"].waitForExistence(timeout: 5))
+
+        app.descendants(matching: .any)["member-profile-destination-diary"].tap()
+        XCTAssertTrue(app.navigationBars["Diary"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'member-profile-diary-'")).firstMatch.waitForExistence(timeout: 5))
 
         let linkedReview = app.descendants(matching: .any)["member-profile-diary-review-30000000-0000-0000-0000-000000000003"]
@@ -394,11 +422,20 @@ class HarmonyUITests: XCTestCase {
         linkedReview.tap()
         XCTAssertTrue(app.navigationBars["Afterglow"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["A fixture opinion."].exists)
-        app.navigationBars["Afterglow"].buttons["UI Test Listener"].tap()
+        app.navigationBars["Afterglow"].buttons["Diary"].tap()
+        XCTAssertTrue(app.navigationBars["Diary"].waitForExistence(timeout: 5))
+        app.navigationBars["Diary"].buttons["UI Test Listener"].tap()
         XCTAssertTrue(app.navigationBars["UI Test Listener"].waitForExistence(timeout: 5))
 
-        shelves.buttons["Loved"].tap()
+        app.descendants(matching: .any)["member-profile-destination-loved"].tap()
+        XCTAssertTrue(app.navigationBars["Loved"].waitForExistence(timeout: 5))
+        let lovedScope = app.segmentedControls["member-profile-loved-scope"]
+        XCTAssertTrue(lovedScope.buttons["All"].waitForExistence(timeout: 5))
+        XCTAssertTrue(lovedScope.buttons["Songs"].exists)
+        XCTAssertTrue(lovedScope.buttons["Albums"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["member-profile-loved-20000000-0000-0000-0000-000000000002"].waitForExistence(timeout: 5))
+        lovedScope.buttons["Albums"].tap()
+        XCTAssertTrue(app.staticTexts["Northern Lights"].waitForExistence(timeout: 5))
     }
 
     func testJournalComposerCapturesDatedRelistenContext() throws {
