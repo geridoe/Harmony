@@ -82,6 +82,8 @@ private struct CreateTrackReviewParameters: Encodable {
     let p_contains_spoilers = false
 }
 private struct ReviewReactionParameters: Encodable { let p_review_id: UUID; let p_kind = "heart" }
+private struct SocialProfileParameters: Encodable { let p_profile_id: UUID }
+private struct RespondToFollowParameters: Encodable { let p_requester_id: UUID; let p_accept: Bool }
 private struct RemovePayload: Encodable { let queue_item_id: UUID }
 private struct MovePayload: Encodable { let queue_item_id: UUID; let position: Double }
 private struct PlaybackPayload: Encodable { let status: String }
@@ -116,6 +118,29 @@ struct RemoteSessionMember: Decodable {
 }
 
 struct RemoteProfile: Decodable { let displayName: String; enum CodingKeys: String, CodingKey { case displayName = "display_name" } }
+
+struct RemoteSocialProfile: Decodable, Identifiable {
+    let id: UUID
+    let displayName: String
+    enum CodingKeys: String, CodingKey { case id; case displayName = "display_name" }
+}
+
+struct RemoteSocialFollow: Decodable, Identifiable {
+    let followerID: UUID
+    let followedID: UUID
+    let state: String
+    var id: String { "\(followerID.uuidString):\(followedID.uuidString)" }
+    enum CodingKeys: String, CodingKey {
+        case state
+        case followerID = "follower_id"
+        case followedID = "followed_id"
+    }
+}
+
+struct RemoteSocialBlock: Decodable {
+    let blockedID: UUID
+    enum CodingKeys: String, CodingKey { case blockedID = "blocked_id" }
+}
 
 struct RemoteCatalogTrack: Decodable {
     let title: String
@@ -309,6 +334,63 @@ final class HarmonyCollaborationRepository {
             .select("provider,expires_at")
             .execute()
             .value
+    }
+
+    func socialProfiles() async throws -> [RemoteSocialProfile] {
+        try await authenticate()
+        let userID = try await currentUserID()
+        return try await client.from("profiles")
+            .select("id,display_name")
+            .neq("id", value: userID.uuidString)
+            .order("display_name")
+            .execute().value
+    }
+
+    func socialFollows() async throws -> [RemoteSocialFollow] {
+        try await authenticate()
+        return try await client.from("social_follows")
+            .select("follower_id,followed_id,state")
+            .execute().value
+    }
+
+    func socialBlocks() async throws -> [RemoteSocialBlock] {
+        try await authenticate()
+        return try await client.from("profile_blocks")
+            .select("blocked_id")
+            .execute().value
+    }
+
+    func requestSocialFollow(_ profileID: UUID) async throws {
+        try await authenticate()
+        _ = try await client.rpc("request_social_follow", params: SocialProfileParameters(p_profile_id: profileID)).execute()
+    }
+
+    func respondToSocialFollow(from requesterID: UUID, accept: Bool) async throws {
+        try await authenticate()
+        _ = try await client.rpc(
+            "respond_to_social_follow",
+            params: RespondToFollowParameters(p_requester_id: requesterID, p_accept: accept)
+        ).execute()
+    }
+
+    func removeSocialFollow(_ profileID: UUID) async throws {
+        try await authenticate()
+        _ = try await client.rpc("remove_social_follow", params: SocialProfileParameters(p_profile_id: profileID)).execute()
+    }
+
+    func removeSocialFollower(_ profileID: UUID) async throws {
+        try await authenticate()
+        _ = try await client.rpc("remove_social_follower", params: SocialProfileParameters(p_profile_id: profileID)).execute()
+    }
+
+    func blockSocialProfile(_ profileID: UUID) async throws {
+        try await authenticate()
+        _ = try await client.rpc("block_social_profile", params: SocialProfileParameters(p_profile_id: profileID)).execute()
+    }
+
+    func unblockSocialProfile(_ profileID: UUID) async throws {
+        try await authenticate()
+        _ = try await client.rpc("unblock_social_profile", params: SocialProfileParameters(p_profile_id: profileID)).execute()
     }
 
     func listeningFeed() async throws -> [RemoteListeningPresence] {

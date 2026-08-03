@@ -128,6 +128,16 @@ struct QueueEvent: Identifiable, Hashable {
     }
 }
 
+enum SocialRelationshipState: Equatable {
+    case none
+    case outgoingRequested
+    case incomingRequested
+    case following
+    case followsYou
+    case mutual
+    case blocked
+}
+
 @MainActor
 final class HarmonySessionStore: ObservableObject {
     @Published var queue: [QueueItem]
@@ -164,6 +174,12 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var musicReviews: [RemoteMusicReview] = []
     @Published private(set) var isRefreshingMusicReviews = false
     @Published private(set) var isPublishingMusicReview = false
+    @Published private(set) var socialProfiles: [RemoteSocialProfile] = []
+    @Published private(set) var isRefreshingSocialProfiles = false
+    @Published private(set) var socialProfileActionIDs: Set<UUID> = []
+    private var socialFollows: [RemoteSocialFollow] = []
+    private var blockedSocialProfileIDs: Set<UUID> = []
+    private var authenticatedProfileID: UUID?
     private var remoteSessionID: UUID?
     private var liveQueueSubscription: LiveQueueSubscription?
     private var liveSessionSubscription: LiveSessionSubscription?
@@ -560,6 +576,91 @@ final class HarmonySessionStore: ObservableObject {
             isEavesdropping = activity.contains(where: { $0.profileID == userID })
         } catch {
             collaborationMessage = "Could not refresh listening activity."
+        }
+    }
+
+    func refreshSocialProfiles() async {
+        guard !isRefreshingSocialProfiles else { return }
+        isRefreshingSocialProfiles = true
+        defer { isRefreshingSocialProfiles = false }
+        do {
+            async let profiles = collaborationRepository.socialProfiles()
+            async let follows = collaborationRepository.socialFollows()
+            async let blocks = collaborationRepository.socialBlocks()
+            async let userID = collaborationRepository.currentUserID()
+            let result = try await (profiles, follows, blocks, userID)
+            socialProfiles = result.0
+            socialFollows = result.1
+            blockedSocialProfileIDs = Set(result.2.map(\.blockedID))
+            authenticatedProfileID = result.3
+        } catch {
+            collaborationMessage = "Could not refresh people: \(error.localizedDescription)"
+        }
+    }
+
+    func socialRelationship(with profileID: UUID) -> SocialRelationshipState {
+        guard let authenticatedProfileID else { return .none }
+        if blockedSocialProfileIDs.contains(profileID) { return .blocked }
+        let outgoing = socialFollows.first { $0.followerID == authenticatedProfileID && $0.followedID == profileID }
+        let incoming = socialFollows.first { $0.followerID == profileID && $0.followedID == authenticatedProfileID }
+        if outgoing?.state == "accepted" && incoming?.state == "accepted" { return .mutual }
+        if outgoing?.state == "accepted" { return .following }
+        if incoming?.state == "accepted" { return .followsYou }
+        if incoming?.state == "requested" { return .incomingRequested }
+        if outgoing?.state == "requested" { return .outgoingRequested }
+        return .none
+    }
+
+    func requestSocialFollow(_ profileID: UUID) async {
+        await performSocialAction(profileID, successMessage: "Follow request sent") {
+            try await self.collaborationRepository.requestSocialFollow(profileID)
+        }
+    }
+
+    func respondToSocialFollow(from profileID: UUID, accept: Bool) async {
+        await performSocialAction(profileID, successMessage: accept ? "Follow request accepted" : "Follow request declined") {
+            try await self.collaborationRepository.respondToSocialFollow(from: profileID, accept: accept)
+        }
+    }
+
+    func removeSocialFollow(_ profileID: UUID) async {
+        await performSocialAction(profileID, successMessage: "Unfollowed") {
+            try await self.collaborationRepository.removeSocialFollow(profileID)
+        }
+    }
+
+    func removeSocialFollower(_ profileID: UUID) async {
+        await performSocialAction(profileID, successMessage: "Follower removed") {
+            try await self.collaborationRepository.removeSocialFollower(profileID)
+        }
+    }
+
+    func blockSocialProfile(_ profileID: UUID) async {
+        await performSocialAction(profileID, successMessage: "Profile blocked") {
+            try await self.collaborationRepository.blockSocialProfile(profileID)
+        }
+    }
+
+    func unblockSocialProfile(_ profileID: UUID) async {
+        await performSocialAction(profileID, successMessage: "Profile unblocked") {
+            try await self.collaborationRepository.unblockSocialProfile(profileID)
+        }
+    }
+
+    private func performSocialAction(
+        _ profileID: UUID,
+        successMessage: String,
+        operation: @escaping () async throws -> Void
+    ) async {
+        guard !socialProfileActionIDs.contains(profileID) else { return }
+        socialProfileActionIDs.insert(profileID)
+        defer { socialProfileActionIDs.remove(profileID) }
+        do {
+            try await operation()
+            collaborationMessage = successMessage
+            await refreshSocialProfiles()
+        } catch {
+            collaborationMessage = "Follower action failed: \(error.localizedDescription)"
         }
     }
 

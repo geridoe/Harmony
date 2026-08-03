@@ -186,6 +186,17 @@ blocked_follow_status="$(rpc_status "$conductor_token" request_social_follow \
   "{\"p_profile_id\":\"$collaborator_id\"}" \
   "$smoke_tmp/blocked-follow.json")"
 [[ "$blocked_follow_status" == "400" || "$blocked_follow_status" == "403" ]]
+rpc "$collaborator_token" unblock_social_profile \
+  "{\"p_profile_id\":\"$conductor_id\"}" \
+  "$smoke_tmp/unblock.json"
+[[ "$(jq -er '.' "$smoke_tmp/unblock.json")" == "true" ]]
+rpc "$conductor_token" request_social_follow \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/refollow.json"
+rpc "$conductor_token" remove_social_follow \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/unfollow.json"
+[[ "$(jq -er '.' "$smoke_tmp/unfollow.json")" == "true" ]]
 
 stage="expired session rejection"
 expired_invite_code="EXP$(printf '%05d' "$((RANDOM % 100000))")"

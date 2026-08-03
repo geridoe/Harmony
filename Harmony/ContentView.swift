@@ -39,6 +39,35 @@ struct SocialView: View {
     var body: some View {
         NavigationView {
             List {
+                Section("People") {
+                    if store.isRefreshingSocialProfiles && store.socialProfiles.isEmpty {
+                        ProgressView("Loading people…")
+                    } else if store.socialProfiles.isEmpty {
+                        Text("No other Harmony listeners are available yet.")
+                            .foregroundColor(.secondary)
+                    } else {
+                        ForEach(store.socialProfiles) { profile in
+                            HStack(spacing: 12) {
+                                Text(initials(for: profile.displayName))
+                                    .font(.caption.bold())
+                                    .foregroundColor(.indigo)
+                                    .frame(width: 38, height: 38)
+                                    .background(Color.indigo.opacity(0.12))
+                                    .clipShape(Circle())
+                                    .accessibilityHidden(true)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(profile.displayName).font(.headline)
+                                    Text(relationshipLabel(for: profile.id))
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                followerControl(for: profile)
+                            }
+                        }
+                    }
+                }
+
                 Section("Eavesdrop") {
                     Text("Share the current Harmony track with approved followers for five minutes. Harmony shares activity and provider links, never audio.")
                         .font(.footnote)
@@ -145,9 +174,86 @@ struct SocialView: View {
                 }
             }
             .navigationTitle("Listen")
-            .task { await store.refreshListeningFeed(); await store.refreshMusicReviews() }
-            .refreshable { await store.refreshListeningFeed(); await store.refreshMusicReviews() }
+            .task {
+                await store.refreshSocialProfiles()
+                await store.refreshListeningFeed()
+                await store.refreshMusicReviews()
+            }
+            .refreshable {
+                await store.refreshSocialProfiles()
+                await store.refreshListeningFeed()
+                await store.refreshMusicReviews()
+            }
         }
+    }
+
+    @ViewBuilder
+    private func followerControl(for profile: RemoteSocialProfile) -> some View {
+        if store.socialProfileActionIDs.contains(profile.id) {
+            ProgressView().controlSize(.small)
+        } else {
+            switch store.socialRelationship(with: profile.id) {
+            case .none:
+                Button("Follow") { Task { await store.requestSocialFollow(profile.id) } }
+                    .buttonStyle(.bordered)
+            case .outgoingRequested:
+                Menu("Requested") {
+                    Button("Cancel request", role: .destructive) {
+                        Task { await store.removeSocialFollow(profile.id) }
+                    }
+                    blockButton(profile.id)
+                }
+            case .incomingRequested:
+                Menu("Respond") {
+                    Button("Accept") { Task { await store.respondToSocialFollow(from: profile.id, accept: true) } }
+                    Button("Decline", role: .destructive) {
+                        Task { await store.respondToSocialFollow(from: profile.id, accept: false) }
+                    }
+                    blockButton(profile.id)
+                }
+                .buttonStyle(.borderedProminent)
+            case .following:
+                Menu("Following") {
+                    Button("Unfollow", role: .destructive) { Task { await store.removeSocialFollow(profile.id) } }
+                    blockButton(profile.id)
+                }
+            case .followsYou:
+                Menu("Follows you") {
+                    Button("Follow back") { Task { await store.requestSocialFollow(profile.id) } }
+                    Button("Remove follower", role: .destructive) { Task { await store.removeSocialFollower(profile.id) } }
+                    blockButton(profile.id)
+                }
+            case .mutual:
+                Menu("Mutual") {
+                    Button("Unfollow", role: .destructive) { Task { await store.removeSocialFollow(profile.id) } }
+                    Button("Remove follower", role: .destructive) { Task { await store.removeSocialFollower(profile.id) } }
+                    blockButton(profile.id)
+                }
+            case .blocked:
+                Button("Unblock") { Task { await store.unblockSocialProfile(profile.id) } }
+                    .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    private func blockButton(_ profileID: UUID) -> some View {
+        Button("Block", role: .destructive) { Task { await store.blockSocialProfile(profileID) } }
+    }
+
+    private func relationshipLabel(for profileID: UUID) -> String {
+        switch store.socialRelationship(with: profileID) {
+        case .none: "Discoverable profile"
+        case .outgoingRequested: "Request pending"
+        case .incomingRequested: "Wants to follow you"
+        case .following: "You follow this listener"
+        case .followsYou: "Follows you"
+        case .mutual: "You follow each other"
+        case .blocked: "Blocked"
+        }
+    }
+
+    private func initials(for displayName: String) -> String {
+        displayName.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined().uppercased()
     }
 }
 
