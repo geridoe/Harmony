@@ -211,8 +211,8 @@ provider_connections(id, profile_id, provider, encrypted_refresh_token, expires_
 
 - [ ] MusicKit setup and Apple Music device adapter
 - [x] Spotify developer setup, OAuth, and App Remote adapter
-- [ ] Canonical search/matching pipeline
-- [ ] Provider-specific error and fallback UI
+- [x] Spotify canonical search/matching pipeline (MusicKit mapping awaits entitlement)
+- [x] Provider-specific error and fallback UI
 
 ### Milestone 3 — hardening
 

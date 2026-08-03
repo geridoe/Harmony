@@ -218,9 +218,21 @@ rpc "$collaborator_token" create_music_review \
   "$smoke_tmp/review.json"
 review_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/review.json")"
 rest_get "$conductor_token" \
-  "music_reviews?select=id,profile_id,rating,body&id=eq.$review_id" \
+  "music_reviews?select=id,profile_id,subject_kind,subject_title,subject_artist,rating,body&id=eq.$review_id" \
   "$smoke_tmp/follower-review.json"
-jq -e --arg profile "$collaborator_id" 'length == 1 and .[0].profile_id == $profile and .[0].rating == 4.5' "$smoke_tmp/follower-review.json" >/dev/null
+jq -e --arg profile "$collaborator_id" 'length == 1 and .[0].profile_id == $profile and .[0].subject_kind == "track" and .[0].subject_title == "Harmony Smoke Track" and .[0].rating == 4.5' "$smoke_tmp/follower-review.json" >/dev/null
+invalid_album_link_status="$(rpc_status "$collaborator_token" create_music_review \
+  '{"p_subject_kind":"album","p_provider":"spotify","p_provider_subject_id":"spotify:album:invalid","p_subject_title":"Invalid Link Album","p_subject_deep_link":"https://example.com/not-spotify","p_rating":3.0}' \
+  "$smoke_tmp/invalid-album-link.json")"
+[[ "$invalid_album_link_status" == "400" ]]
+rpc "$collaborator_token" create_music_review \
+  '{"p_subject_kind":"album","p_provider":"spotify","p_provider_subject_id":"spotify:album:harmony-smoke","p_subject_title":"Harmony Smoke Album","p_subject_artist":"Harmony Test Artist","p_subject_artwork_url":"https://example.com/harmony-smoke.jpg","p_subject_deep_link":"https://open.spotify.com/album/harmony-smoke","p_rating":4.0,"p_body":"An album diary entry.","p_visibility":"followers","p_contains_spoilers":false}' \
+  "$smoke_tmp/album-review.json"
+album_review_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/album-review.json")"
+rest_get "$conductor_token" \
+  "music_reviews?select=id,subject_kind,subject_title,subject_artist,subject_deep_link&id=eq.$album_review_id" \
+  "$smoke_tmp/follower-album-review.json"
+jq -e 'length == 1 and .[0].subject_kind == "album" and .[0].subject_title == "Harmony Smoke Album" and .[0].subject_artist == "Harmony Test Artist"' "$smoke_tmp/follower-album-review.json" >/dev/null
 rpc "$conductor_token" add_review_comment \
   "{\"p_review_id\":\"$review_id\",\"p_body\":\"Agreed.\"}" \
   "$smoke_tmp/review-comment.json"
@@ -269,6 +281,10 @@ rest_get "$conductor_token" \
   "music_reviews?select=id&id=eq.$review_id" \
   "$smoke_tmp/blocked-review.json"
 [[ "$(jq 'length' "$smoke_tmp/blocked-review.json")" -eq 0 ]]
+rest_get "$conductor_token" \
+  "music_reviews?select=id&id=eq.$album_review_id" \
+  "$smoke_tmp/blocked-album-review.json"
+[[ "$(jq 'length' "$smoke_tmp/blocked-album-review.json")" -eq 0 ]]
 blocked_follow_status="$(rpc_status "$conductor_token" request_social_follow \
   "{\"p_profile_id\":\"$collaborator_id\"}" \
   "$smoke_tmp/blocked-follow.json")"
@@ -300,6 +316,10 @@ rest_get "$collaborator_token" \
   "music_reviews?select=id&id=eq.$review_id" \
   "$smoke_tmp/deleted-review.json"
 [[ "$(jq 'length' "$smoke_tmp/deleted-review.json")" -eq 0 ]]
+rpc "$collaborator_token" delete_music_review \
+  "{\"p_review_id\":\"$album_review_id\"}" \
+  "$smoke_tmp/album-review-delete.json"
+[[ "$(jq -er '.' "$smoke_tmp/album-review-delete.json")" == "true" ]]
 
 stage="expired session rejection"
 expired_invite_code="EXP$(printf '%05d' "$((RANDOM % 100000))")"

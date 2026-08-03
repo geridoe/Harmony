@@ -7,7 +7,13 @@ type SpotifyTrack = {
   duration_ms: number;
   explicit: boolean;
   artists: Array<{ name: string }>;
-  album: { name: string; images?: Array<{ url: string }> };
+  album: {
+    name: string;
+    uri: string;
+    artists: Array<{ name: string }>;
+    images?: Array<{ url: string }>;
+    external_urls?: { spotify?: string };
+  };
   external_ids?: { isrc?: string };
   external_urls?: { spotify?: string };
 };
@@ -172,6 +178,9 @@ Deno.serve(async (request) => {
         providerID: track.uri,
         deepLinkURL: track.external_urls?.spotify ?? null,
         isExplicit: track.explicit,
+        albumProviderID: track.album.uri,
+        albumArtist: track.album.artists.map((artist) => artist.name).join(", "),
+        albumDeepLinkURL: track.album.external_urls?.spotify ?? null,
       })),
     });
   } catch (error) {

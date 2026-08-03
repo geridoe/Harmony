@@ -34,6 +34,15 @@ struct ProviderTrackMapping: Hashable {
         self.deepLinkURL = deepLinkURL
     }
 }
+struct ReviewableAlbum: Hashable, Identifiable {
+    let provider: MusicProvider
+    let providerID: String
+    let title: String
+    let artist: String
+    let artworkURL: URL?
+    let deepLinkURL: URL?
+    var id: String { "\(provider.rawValue):\(providerID)" }
+}
 struct HarmonyTrack: Identifiable, Hashable {
     let id: UUID
     let title: String
@@ -44,8 +53,9 @@ struct HarmonyTrack: Identifiable, Hashable {
     let artworkURL: URL?
     let isExplicit: Bool
     let mappings: [ProviderTrackMapping]
+    let reviewableAlbum: ReviewableAlbum?
 
-    init(id: UUID = UUID(), title: String, artist: String, album: String, duration: TimeInterval, symbol: String, artworkURL: URL? = nil, isExplicit: Bool = false, mappings: [ProviderTrackMapping]) {
+    init(id: UUID = UUID(), title: String, artist: String, album: String, duration: TimeInterval, symbol: String, artworkURL: URL? = nil, isExplicit: Bool = false, mappings: [ProviderTrackMapping], reviewableAlbum: ReviewableAlbum? = nil) {
         self.id = id
         self.title = title
         self.artist = artist
@@ -55,6 +65,7 @@ struct HarmonyTrack: Identifiable, Hashable {
         self.artworkURL = artworkURL
         self.isExplicit = isExplicit
         self.mappings = mappings
+        self.reviewableAlbum = reviewableAlbum
     }
     func availability(for provider: MusicProvider) -> ProviderAvailability { mappings.first(where: { $0.provider == provider })?.availability ?? .unavailable }
     var durationText: String { String(format: "%d:%02d", Int(duration) / 60, Int(duration) % 60) }
@@ -885,6 +896,19 @@ final class HarmonySessionStore: ObservableObject {
         } catch { collaborationMessage = "Could not publish review: \(error.localizedDescription)" }
     }
 
+    func publishAlbumReview(_ album: ReviewableAlbum, rating: Double, body: String) async {
+        guard !isPublishingMusicReview else { return }
+        isPublishingMusicReview = true
+        defer { isPublishingMusicReview = false }
+        do {
+            try await collaborationRepository.createAlbumReview(album: album, rating: rating, body: body, visibility: reviewsSocialVisibility)
+            collaborationMessage = reviewsSocialVisibility == .followers
+                ? "Album review published to approved followers"
+                : "Private album review saved"
+            await refreshMusicReviews()
+        } catch { collaborationMessage = "Could not publish album review: \(error.localizedDescription)" }
+    }
+
     func toggleReviewHeart(_ reviewID: UUID) async {
         do {
             let added = try await collaborationRepository.toggleHeart(on: reviewID)
@@ -1233,7 +1257,15 @@ final class HarmonySessionStore: ObservableObject {
                 providerID: result.providerID,
                 availability: .playable,
                 deepLinkURL: result.deepLinkURL
-            )]
+            )],
+            reviewableAlbum: ReviewableAlbum(
+                provider: .spotify,
+                providerID: result.albumProviderID,
+                title: result.album,
+                artist: result.albumArtist,
+                artworkURL: result.artworkURL,
+                deepLinkURL: result.albumDeepLinkURL
+            )
         )
     }
 
@@ -1254,7 +1286,8 @@ final class HarmonySessionStore: ObservableObject {
                 symbol: existing.symbol,
                 artworkURL: existing.artworkURL ?? track.artworkURL,
                 isExplicit: existing.isExplicit || track.isExplicit,
-                mappings: mappings
+                mappings: mappings,
+                reviewableAlbum: existing.reviewableAlbum ?? track.reviewableAlbum
             )
         }
     }

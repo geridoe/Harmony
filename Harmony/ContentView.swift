@@ -365,6 +365,26 @@ private struct ReviewCard: View {
             Text("\(review.profile.displayName) · \(String(format: "%.1f", review.rating)) ★").font(.headline)
             if let track = review.canonicalTrack {
                 Text("\(track.title) · \(track.artist)").font(.subheadline).foregroundColor(.secondary)
+            } else if let title = review.subjectTitle {
+                HStack(spacing: 10) {
+                    if let artworkURL = review.subjectArtworkURL {
+                        AsyncImage(url: artworkURL) { phase in
+                            phase.image?.resizable().scaledToFit()
+                        }
+                        .frame(width: 42, height: 42)
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title).font(.subheadline.weight(.semibold))
+                        if let artist = review.subjectArtist { Text(artist).font(.caption).foregroundColor(.secondary) }
+                        Text("Album").font(.caption2).foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    if let deepLink = review.subjectDeepLink {
+                        Link(destination: deepLink) { Image(systemName: "arrow.up.right.square") }
+                            .accessibilityLabel("Open album in provider")
+                    }
+                }
             }
             if !review.body.isEmpty { Text(review.body) }
             if !review.comments.isEmpty {

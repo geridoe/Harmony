@@ -32,6 +32,9 @@ struct TrackArtwork: View {
 struct SearchView: View {
     @EnvironmentObject private var store: HarmonySessionStore
     @State private var query = ""
+    @State private var reviewAlbum: ReviewableAlbum?
+    @State private var albumRating = 3.5
+    @State private var albumReviewBody = ""
 
     private var tracks: [HarmonyTrack] {
         guard !query.isEmpty else { return store.catalog }
@@ -89,6 +92,17 @@ struct SearchView: View {
                                 }
                                 .accessibilityLabel("Open \(track.title) in Spotify")
                             }
+                            if let album = track.reviewableAlbum {
+                                Button {
+                                    albumRating = 3.5
+                                    albumReviewBody = ""
+                                    reviewAlbum = album
+                                } label: {
+                                    Label("Review album", systemImage: "star.bubble")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.borderless)
+                            }
                         }
                         Spacer()
                         Button { store.add(track) } label: {
@@ -108,6 +122,51 @@ struct SearchView: View {
                 try? await Task.sleep(nanoseconds: 350_000_000)
                 guard !Task.isCancelled else { return }
                 await store.searchCatalog(query: query)
+            }
+            .sheet(item: $reviewAlbum) { album in
+                NavigationStack {
+                    Form {
+                        Section("Album") {
+                            HStack(spacing: 12) {
+                                if let artworkURL = album.artworkURL {
+                                    AsyncImage(url: artworkURL) { phase in
+                                        phase.image?.resizable().scaledToFit()
+                                    }
+                                    .frame(width: 54, height: 54)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                }
+                                VStack(alignment: .leading) {
+                                    Text(album.title).font(.headline)
+                                    Text(album.artist).font(.subheadline).foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                        Section("Rating") {
+                            HStack {
+                                Slider(value: $albumRating, in: 0.5...5, step: 0.5)
+                                Text(String(format: "%.1f", albumRating)).monospacedDigit()
+                            }
+                            TextField("Write a short review (optional)", text: $albumReviewBody, axis: .vertical)
+                                .lineLimit(3...8)
+                        }
+                    }
+                    .navigationTitle("Review album")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { reviewAlbum = nil }
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button(store.reviewsSocialVisibility == .followers ? "Publish" : "Save") {
+                                Task {
+                                    await store.publishAlbumReview(album, rating: albumRating, body: albumReviewBody)
+                                    reviewAlbum = nil
+                                }
+                            }
+                            .disabled(store.isPublishingMusicReview)
+                        }
+                    }
+                }
             }
         }
     }

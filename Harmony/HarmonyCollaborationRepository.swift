@@ -81,6 +81,20 @@ private struct CreateTrackReviewParameters: Encodable {
     let p_visibility: String
     let p_contains_spoilers = false
 }
+private struct CreateAlbumReviewParameters: Encodable {
+    let p_subject_kind = "album"
+    let p_canonical_track_id: UUID? = nil
+    let p_provider: String
+    let p_provider_subject_id: String
+    let p_subject_title: String
+    let p_subject_artist: String
+    let p_subject_artwork_url: String?
+    let p_subject_deep_link: String?
+    let p_rating: Double
+    let p_body: String
+    let p_visibility: String
+    let p_contains_spoilers = false
+}
 private struct ReviewReactionParameters: Encodable { let p_review_id: UUID; let p_kind = "heart" }
 private struct ReviewCommentParameters: Encodable { let p_review_id: UUID; let p_body: String }
 private struct ReviewIDParameters: Encodable { let p_review_id: UUID }
@@ -283,12 +297,22 @@ struct RemoteMusicReview: Decodable, Identifiable {
     let body: String
     let createdAt: Date
     let visibility: SocialVisibilityOption
+    let subjectKind: String
+    let subjectTitle: String?
+    let subjectArtist: String?
+    let subjectArtworkURL: URL?
+    let subjectDeepLink: URL?
     let canonicalTrack: RemoteCatalogTrack?
     let profile: RemoteProfile
     let comments: [RemoteReviewComment]
     let reactions: [RemoteReviewReaction]
     enum CodingKeys: String, CodingKey {
         case id, rating, body, visibility
+        case subjectKind = "subject_kind"
+        case subjectTitle = "subject_title"
+        case subjectArtist = "subject_artist"
+        case subjectArtworkURL = "subject_artwork_url"
+        case subjectDeepLink = "subject_deep_link"
         case profileID = "profile_id"
         case createdAt = "created_at"
         case canonicalTrack = "canonical_tracks"
@@ -375,6 +399,9 @@ struct SpotifySearchTrack: Decodable {
     let providerID: String
     let deepLinkURL: URL?
     let isExplicit: Bool
+    let albumProviderID: String
+    let albumArtist: String
+    let albumDeepLinkURL: URL?
 }
 
 @MainActor
@@ -588,7 +615,7 @@ final class HarmonyCollaborationRepository {
     func musicReviews() async throws -> [RemoteMusicReview] {
         try await authenticate()
         return try await client.from("music_reviews")
-            .select("id,profile_id,rating,body,visibility,created_at,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name),review_comments(id,author_id,body,created_at,profiles(display_name)),review_reactions(profile_id,kind)")
+            .select("id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,rating,body,visibility,created_at,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name),review_comments(id,author_id,body,created_at,profiles(display_name)),review_reactions(profile_id,kind)")
             .order("created_at", ascending: false).limit(50).execute().value
     }
 
@@ -746,6 +773,21 @@ final class HarmonyCollaborationRepository {
             p_canonical_track_id: canonicalTrackID,
             p_provider: mapping.map { $0.provider == .spotify ? "spotify" : "apple_music" },
             p_provider_subject_id: mapping?.providerID,
+            p_rating: rating,
+            p_body: body,
+            p_visibility: visibility.rawValue
+        )).execute()
+    }
+
+    func createAlbumReview(album: ReviewableAlbum, rating: Double, body: String, visibility: SocialVisibilityOption) async throws {
+        try await authenticate()
+        _ = try await client.rpc("create_music_review", params: CreateAlbumReviewParameters(
+            p_provider: album.provider == .spotify ? "spotify" : "apple_music",
+            p_provider_subject_id: album.providerID,
+            p_subject_title: album.title,
+            p_subject_artist: album.artist,
+            p_subject_artwork_url: album.artworkURL?.absoluteString,
+            p_subject_deep_link: album.deepLinkURL?.absoluteString,
             p_rating: rating,
             p_body: body,
             p_visibility: visibility.rawValue
