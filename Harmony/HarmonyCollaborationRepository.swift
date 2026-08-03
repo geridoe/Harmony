@@ -79,7 +79,7 @@ private struct CreateTrackReviewParameters: Encodable {
     let p_rating: Double
     let p_body: String
     let p_visibility: String
-    let p_contains_spoilers = false
+    let p_contains_spoilers: Bool
     let p_is_loved: Bool
 }
 private struct CreateAlbumReviewParameters: Encodable {
@@ -94,7 +94,7 @@ private struct CreateAlbumReviewParameters: Encodable {
     let p_rating: Double
     let p_body: String
     let p_visibility: String
-    let p_contains_spoilers = false
+    let p_contains_spoilers: Bool
     let p_is_loved: Bool
 }
 private struct ReviewReactionParameters: Encodable { let p_review_id: UUID; let p_kind = "heart" }
@@ -324,6 +324,7 @@ struct RemoteMusicReview: Decodable, Identifiable {
     let body: String
     let createdAt: Date
     let visibility: SocialVisibilityOption
+    let containsSpoilers: Bool
     let isLoved: Bool
     let subjectKind: String
     let subjectTitle: String?
@@ -336,6 +337,7 @@ struct RemoteMusicReview: Decodable, Identifiable {
     let reactions: [RemoteReviewReaction]
     enum CodingKeys: String, CodingKey {
         case id, rating, body, visibility
+        case containsSpoilers = "contains_spoilers"
         case isLoved = "is_loved"
         case subjectKind = "subject_kind"
         case subjectTitle = "subject_title"
@@ -660,7 +662,7 @@ final class HarmonyCollaborationRepository {
     func musicReviews() async throws -> [RemoteMusicReview] {
         try await authenticate()
         return try await client.from("music_reviews")
-            .select("id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,rating,body,visibility,is_loved,created_at,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name),review_comments(id,author_id,body,created_at,profiles(display_name)),review_reactions(profile_id,kind)")
+            .select("id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,rating,body,visibility,contains_spoilers,is_loved,created_at,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name),review_comments(id,author_id,body,created_at,profiles(display_name)),review_reactions(profile_id,kind)")
             .order("created_at", ascending: false).limit(50).execute().value
     }
 
@@ -810,7 +812,7 @@ final class HarmonyCollaborationRepository {
         _ = try await client.rpc("delete_listening_history_entry", params: HistoryEntryIDParameters(p_entry_id: entryID)).execute()
     }
 
-    func createTrackReview(track: HarmonyTrack, rating: Double, body: String, visibility: SocialVisibilityOption, isLoved: Bool) async throws {
+    func createTrackReview(track: HarmonyTrack, rating: Double, body: String, visibility: SocialVisibilityOption, isLoved: Bool, containsSpoilers: Bool = false) async throws {
         try await authenticate()
         let mapping = track.mappings.first(where: { !$0.providerID.isEmpty })
         let canonicalTrackID = try await canonicalTrackID(for: track)
@@ -821,11 +823,12 @@ final class HarmonyCollaborationRepository {
             p_rating: rating,
             p_body: body,
             p_visibility: visibility.rawValue,
+            p_contains_spoilers: containsSpoilers,
             p_is_loved: isLoved
         )).execute()
     }
 
-    func createAlbumReview(album: ReviewableAlbum, rating: Double, body: String, visibility: SocialVisibilityOption, isLoved: Bool = false) async throws {
+    func createAlbumReview(album: ReviewableAlbum, rating: Double, body: String, visibility: SocialVisibilityOption, isLoved: Bool = false, containsSpoilers: Bool = false) async throws {
         try await authenticate()
         _ = try await client.rpc("create_music_review", params: CreateAlbumReviewParameters(
             p_provider: album.provider == .spotify ? "spotify" : "apple_music",
@@ -837,6 +840,7 @@ final class HarmonyCollaborationRepository {
             p_rating: rating,
             p_body: body,
             p_visibility: visibility.rawValue,
+            p_contains_spoilers: containsSpoilers,
             p_is_loved: isLoved
         )).execute()
     }
@@ -856,14 +860,14 @@ final class HarmonyCollaborationRepository {
         _ = try await client.rpc("delete_review_comment", params: CommentIDParameters(p_comment_id: commentID)).execute()
     }
 
-    func updateReview(_ reviewID: UUID, rating: Double, body: String, visibility: SocialVisibilityOption, isLoved: Bool) async throws {
+    func updateReview(_ reviewID: UUID, rating: Double, body: String, visibility: SocialVisibilityOption, isLoved: Bool, containsSpoilers: Bool = false) async throws {
         try await authenticate()
         _ = try await client.rpc("update_music_review", params: UpdateReviewParameters(
             p_review_id: reviewID,
             p_rating: rating,
             p_body: body,
             p_visibility: visibility.rawValue,
-            p_contains_spoilers: false,
+            p_contains_spoilers: containsSpoilers,
             p_is_loved: isLoved
         )).execute()
     }

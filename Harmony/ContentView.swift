@@ -383,6 +383,7 @@ struct ReviewsView: View {
     @State private var shelf = ReviewsShelf.community
     @State private var rating = 4.0
     @State private var isLoved = false
+    @State private var containsSpoilers = false
     @State private var reviewBody = ""
     @State private var reviewSubject: ReviewDraftSubject?
     @State private var isChoosingReviewSubject = false
@@ -391,6 +392,7 @@ struct ReviewsView: View {
     @State private var editingBody = ""
     @State private var editingVisibility = SocialVisibilityOption.privateOnly
     @State private var editingIsLoved = false
+    @State private var editingContainsSpoilers = false
 
     private var ownReviews: [RemoteMusicReview] {
         store.musicReviews.filter(store.isOwnReview)
@@ -444,6 +446,7 @@ struct ReviewsView: View {
                         TextField("Review text", text: $editingBody, axis: .vertical)
                             .lineLimit(3...10)
                         Toggle("Loved", isOn: $editingIsLoved)
+                        Toggle("Contains spoilers", isOn: $editingContainsSpoilers)
                     }
                     Section("Visibility") {
                         Picker("Audience", selection: $editingVisibility) {
@@ -460,15 +463,16 @@ struct ReviewsView: View {
                     }
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Save") {
-                            editingReview = nil
                             Task {
-                                await store.updateReview(
+                                let didSave = await store.updateReview(
                                     review.id,
                                     rating: editingRating,
                                     body: editingBody,
                                     visibility: editingVisibility,
-                                    isLoved: editingIsLoved
+                                    isLoved: editingIsLoved,
+                                    containsSpoilers: editingContainsSpoilers
                                 )
+                                if didSave { editingReview = nil }
                             }
                         }
                     }
@@ -480,6 +484,7 @@ struct ReviewsView: View {
                 reviewSubject = subject
                 rating = 4
                 isLoved = false
+                containsSpoilers = false
                 reviewBody = ""
                 isChoosingReviewSubject = false
             }
@@ -508,23 +513,38 @@ struct ReviewsView: View {
                 Toggle(isOn: $isLoved) {
                     Label("Loved", systemImage: isLoved ? "heart.fill" : "heart")
                 }
+                Toggle("Contains spoilers", isOn: $containsSpoilers)
                 TextField("Write your review (optional)", text: $reviewBody, axis: .vertical)
                     .lineLimit(3...8)
                 Button(store.reviewsSocialVisibility == .followers ? "Publish to followers" : "Save private review") {
                     let selectedSubject = subject
                     let body = reviewBody
                     let loved = isLoved
+                    let spoilers = containsSpoilers
                     Task {
                         let didPublish: Bool
                         switch selectedSubject {
                         case .track(let track):
-                            didPublish = await store.publishTrackReview(track, rating: rating, body: body, isLoved: loved)
+                            didPublish = await store.publishTrackReview(
+                                track,
+                                rating: rating,
+                                body: body,
+                                isLoved: loved,
+                                containsSpoilers: spoilers
+                            )
                         case .album(let album):
-                            didPublish = await store.publishAlbumReview(album, rating: rating, body: body, isLoved: loved)
+                            didPublish = await store.publishAlbumReview(
+                                album,
+                                rating: rating,
+                                body: body,
+                                isLoved: loved,
+                                containsSpoilers: spoilers
+                            )
                         }
                         if didPublish {
                             reviewBody = ""
                             isLoved = false
+                            containsSpoilers = false
                         }
                     }
                 }
@@ -644,6 +664,7 @@ struct ReviewsView: View {
             editingBody = selected.body
             editingVisibility = selected.visibility
             editingIsLoved = selected.isLoved
+            editingContainsSpoilers = selected.containsSpoilers
         }
     }
 }
@@ -745,77 +766,30 @@ private struct ReviewCard: View {
     @EnvironmentObject private var store: HarmonySessionStore
     let review: RemoteMusicReview
     let onEdit: (RemoteMusicReview) -> Void
-    @State private var commentDraft = ""
     @State private var showingDeleteConfirmation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Text("\(review.profile.displayName) · \(String(format: "%.1f", review.rating)) ★")
-                    .font(.headline)
-                if review.isLoved {
-                    Label("Loved", systemImage: "heart.fill")
-                        .font(.caption.weight(.semibold))
-                        .foregroundColor(.pink)
-                }
+            NavigationLink {
+                ReviewDetailView(reviewID: review.id, fallbackReview: review, onEdit: onEdit)
+            } label: {
+                ReviewSummary(review: review)
             }
-            if let track = review.canonicalTrack {
-                Text("\(track.title) · \(track.artist)").font(.subheadline).foregroundColor(.secondary)
-            } else if let title = review.subjectTitle {
-                HStack(spacing: 10) {
-                    if let artworkURL = review.subjectArtworkURL {
-                        AsyncImage(url: artworkURL) { phase in
-                            phase.image?.resizable().scaledToFit()
-                        }
-                        .frame(width: 42, height: 42)
-                        .clipShape(RoundedRectangle(cornerRadius: 7))
-                    }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(title).font(.subheadline.weight(.semibold))
-                        if let artist = review.subjectArtist { Text(artist).font(.caption).foregroundColor(.secondary) }
-                        Text("Album").font(.caption2).foregroundColor(.secondary)
-                    }
-                    Spacer()
-                    if let deepLink = review.subjectDeepLink {
-                        Link(destination: deepLink) { Image(systemName: "arrow.up.right.square") }
-                            .accessibilityLabel("Open album in provider")
-                    }
-                }
-            }
-            if !review.body.isEmpty { Text(review.body) }
-            if !review.comments.isEmpty {
-                Divider()
-                ForEach(review.comments) { comment in
-                    HStack(alignment: .top) {
-                        Text("\(comment.profile.displayName):").font(.caption.bold())
-                        Text(comment.body).font(.caption)
-                        Spacer()
-                        if store.isOwnComment(comment) {
-                            Button(role: .destructive) {
-                                Task { await store.deleteReviewComment(comment.id, from: review.id) }
-                            } label: { Image(systemName: "trash").font(.caption) }
-                            .accessibilityLabel("Delete comment")
-                        }
-                    }
-                }
-            }
+            .buttonStyle(.plain)
+
             HStack {
-                TextField("Add a comment", text: $commentDraft)
-                    .textFieldStyle(.roundedBorder)
-                Button {
-                    let body = commentDraft
-                    commentDraft = ""
-                    Task { await store.addReviewComment(to: review.id, body: body) }
-                } label: { Image(systemName: "paperplane.fill") }
-                .disabled(commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityLabel("Post comment")
+                Label("\(review.reactions.filter { $0.kind == "heart" }.count)", systemImage: "heart")
+                Label("\(review.comments.count)", systemImage: "bubble.left")
+                Text(review.createdAt, format: .dateTime.month().day().year())
+                Spacer()
+                Text("Read review")
+                Image(systemName: "chevron.right")
             }
-            HStack {
-                Button { Task { await store.toggleReviewHeart(review.id) } } label: {
-                    Label("\(review.reactions.filter { $0.kind == "heart" }.count)", systemImage: store.hasHeart(on: review) ? "heart.fill" : "heart")
-                }
-                .font(.caption)
-                if store.isOwnReview(review) {
+            .font(.caption)
+            .foregroundColor(.secondary)
+
+            if store.isOwnReview(review) {
+                HStack {
                     Spacer()
                     Menu {
                         Button("Edit review") { onEdit(review) }
@@ -828,6 +802,200 @@ private struct ReviewCard: View {
         .disabled(store.mutatingReviewIDs.contains(review.id))
         .confirmationDialog("Delete this review?", isPresented: $showingDeleteConfirmation, titleVisibility: .visible) {
             Button("Delete review", role: .destructive) { Task { await store.deleteReview(review.id) } }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+}
+
+private struct ReviewSummary: View {
+    let review: RemoteMusicReview
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text("\(review.profile.displayName) · \(String(format: "%.1f", review.rating)) ★")
+                    .font(.headline)
+                if review.isLoved {
+                    Image(systemName: "heart.fill")
+                        .foregroundColor(.pink)
+                        .accessibilityLabel("Loved")
+                }
+            }
+
+            ReviewSubjectSummary(review: review)
+
+            if review.containsSpoilers {
+                Label("Contains spoilers", systemImage: "eye.slash")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            } else if !review.body.isEmpty {
+                Text(review.body)
+                    .lineLimit(3)
+            }
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .contain)
+        .accessibilityHint("Opens the full review, reactions, and comments")
+    }
+}
+
+private struct ReviewSubjectSummary: View {
+    let review: RemoteMusicReview
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if let artworkURL = review.canonicalTrack?.artworkURL ?? review.subjectArtworkURL {
+                AsyncImage(url: artworkURL) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFill()
+                    } else {
+                        Image(systemName: review.subjectKind == "album" ? "square.stack" : "music.note")
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .frame(width: 48, height: 48)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(review.canonicalTrack?.title ?? review.subjectTitle ?? "Unavailable music")
+                    .font(.subheadline.weight(.semibold))
+                Text(review.canonicalTrack?.artist ?? review.subjectArtist ?? "Unknown artist")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Text(review.subjectKind.capitalized)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+        }
+    }
+}
+
+private struct ReviewDetailView: View {
+    @EnvironmentObject private var store: HarmonySessionStore
+    @Environment(\.dismiss) private var dismiss
+    let reviewID: UUID
+    let fallbackReview: RemoteMusicReview
+    let onEdit: (RemoteMusicReview) -> Void
+    @State private var commentDraft = ""
+    @State private var isShowingSpoilers = false
+    @State private var showingDeleteConfirmation = false
+
+    private var review: RemoteMusicReview {
+        store.musicReviews.first(where: { $0.id == reviewID }) ?? fallbackReview
+    }
+
+    var body: some View {
+        List {
+            Section {
+                ReviewSubjectSummary(review: review)
+                HStack(spacing: 8) {
+                    Text(review.profile.displayName).font(.headline)
+                    Text("\(String(format: "%.1f", review.rating)) ★")
+                        .foregroundColor(.orange)
+                    if review.isLoved {
+                        Label("Loved", systemImage: "heart.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.pink)
+                    }
+                }
+
+                if review.containsSpoilers && !isShowingSpoilers {
+                    Button {
+                        isShowingSpoilers = true
+                    } label: {
+                        Label("Reveal review — contains spoilers", systemImage: "eye.slash")
+                    }
+                    .accessibilityHint("Shows the hidden review text")
+                } else if !review.body.isEmpty {
+                    Text(review.body)
+                        .textSelection(.enabled)
+                }
+
+                if let deepLink = review.subjectDeepLink {
+                    Link(destination: deepLink) {
+                        Label("Open in music provider", systemImage: "arrow.up.right.square")
+                    }
+                }
+            }
+
+            Section("Reactions") {
+                Button { Task { await store.toggleReviewHeart(review.id) } } label: {
+                    Label(
+                        store.hasHeart(on: review) ? "Remove heart" : "Heart this review",
+                        systemImage: store.hasHeart(on: review) ? "heart.fill" : "heart"
+                    )
+                }
+                Text("\(review.reactions.filter { $0.kind == "heart" }.count) hearts")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Section("Comments") {
+                if review.comments.isEmpty {
+                    Text("No comments yet. Start the conversation.")
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(review.comments) { comment in
+                        HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(comment.profile.displayName).font(.caption.bold())
+                                Text(comment.body)
+                            }
+                            Spacer()
+                            if store.isOwnComment(comment) {
+                                Button(role: .destructive) {
+                                    Task { await store.deleteReviewComment(comment.id, from: review.id) }
+                                } label: {
+                                    Image(systemName: "trash").font(.caption)
+                                }
+                                .accessibilityLabel("Delete comment")
+                            }
+                        }
+                    }
+                }
+
+                HStack {
+                    TextField("Add a comment", text: $commentDraft, axis: .vertical)
+                        .lineLimit(1...4)
+                    Button {
+                        let body = commentDraft
+                        Task {
+                            if await store.addReviewComment(to: review.id, body: body) {
+                                commentDraft = ""
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "paperplane.fill")
+                    }
+                    .disabled(commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityLabel("Post comment")
+                }
+            }
+        }
+        .navigationTitle(review.canonicalTrack?.title ?? review.subjectTitle ?? "Review")
+        .navigationBarTitleDisplayMode(.inline)
+        .disabled(store.mutatingReviewIDs.contains(review.id))
+        .toolbar {
+            if store.isOwnReview(review) {
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        Button("Edit review") { onEdit(review) }
+                        Button("Delete review", role: .destructive) { showingDeleteConfirmation = true }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .accessibilityLabel("Review options")
+                }
+            }
+        }
+        .confirmationDialog("Delete this review?", isPresented: $showingDeleteConfirmation, titleVisibility: .visible) {
+            Button("Delete review", role: .destructive) {
+                Task {
+                    if await store.deleteReview(review.id) { dismiss() }
+                }
+            }
             Button("Cancel", role: .cancel) {}
         }
     }

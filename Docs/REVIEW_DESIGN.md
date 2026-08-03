@@ -37,6 +37,7 @@ icons, poster grid, or copy.
 | Listening journal | `listening_history_entries` | dated and repeatable; imports are deduplicated |
 | Opinion | `music_reviews` | current 0.5–5.0 rating and optional review |
 | Affinity | `music_reviews.is_loved` | independent Loved signal; not a social reaction |
+| Spoiler disclosure | `music_reviews.contains_spoilers` | author-controlled metadata; clients conceal the body until the reader reveals it |
 | Community reaction | `review_reactions` | another listener reacting to a published review |
 
 The distinction between affinity and reaction is important. “Loved” describes
@@ -134,6 +135,21 @@ it does not assert that the author played the media today. It can be true at
 any valid rating and remains editable with the review. A reader’s heart stays
 a separate reaction to the post.
 
+Spoiler disclosure is stored independently as
+`music_reviews.contains_spoilers`. Only the review author can set or change it,
+through the same owner-authorized create/update RPCs used for the rest of the
+review. The flag does not change visibility or RLS: an authorized reader may
+fetch it, but a conforming client must hide the review body by default and
+require an explicit reveal. Ratings, Loved, subject metadata, comments, and
+reactions are not classified as spoiler text and remain visible. Revealing is
+local presentation state and is never persisted as consent for later reviews.
+
+The database column and RPC parameters predate this UI slice, so no new
+migration is required. The iOS repository now decodes `contains_spoilers` and
+accepts `containsSpoilers` on track/album creation and owner edits. The review
+composer and owner edit form expose the author-facing toggle, and cards require
+an explicit per-review reveal before rendering a flagged body.
+
 For a newly created review, the current store reads
 `reviewsSocialVisibility` at submission time. It does not yet show audience in
 the creation composer or snapshot a draft audience. Existing reviews do expose
@@ -152,8 +168,8 @@ live-presence or history record.
 | No provider / MusicKit unavailable | store provides existing catalog connection guidance; no picker-specific navigation yet |
 | Spotify reauthorization or transient error | display the shared catalog message and retain the current Reviews composer |
 | Album lacks required provider metadata | no album button is offered when `reviewableAlbum` is absent; server validation remains final authority |
-| Canonical resolution/RPC/RLS error | store returns `false`, keeps subject/body/Loved in Reviews, and supplies `collaborationMessage` |
-| Success | refresh lists; clear body/Loved; retain the selected subject for a potential subsequent opinion |
+| Canonical resolution/RPC/RLS error | store returns `false`, keeps subject/body/Loved/spoiler state in Reviews, and supplies `collaborationMessage` |
+| Success | refresh lists; clear body/Loved/spoiler state; retain the selected subject for a potential subsequent opinion |
 
 ### Tests for the implemented slice
 
@@ -163,6 +179,34 @@ live-presence or history record.
 | Repository | track call contains canonical/provider mapping; album call preserves provider metadata; no direct table write is introduced |
 | UI | fifth tab opens; Choose music opens picker; per-result Review song/Review album actions; selected subject appears in composer; cancel preserves no write; error preserves draft; success appears in My reviews |
 | Backend smoke | both subject kinds respect owner-only edit/delete, follower/private visibility, and block enforcement |
+
+The live backend smoke also creates a follower review with
+`p_contains_spoilers = true`, verifies that an authorized follower reads the
+flag, edits the same review as its author with the flag set to `false`, and
+verifies that the cleared value persists. Its existing non-owner update check
+continues to prove that another viewer cannot change spoiler metadata.
+
+## Implemented review detail flow
+
+Community and personal shelves now render compact `ReviewCard` summaries.
+Each summary shows author, rating, Loved, media, a three-line non-spoiler
+preview (or spoiler warning), reaction/comment counts, and date. Its
+`NavigationLink` opens `ReviewDetailView`, where the full review, provider
+link, heart action, comment thread/composer, and owner actions live. This keeps
+conversation controls out of the scrolling feed while giving each opinion a
+first-class destination.
+
+The detail view is keyed by review ID and uses the navigation-time review only
+as a fallback. After a successful reaction, comment, edit, or deletion refresh,
+it reads the updated value from `HarmonySessionStore.musicReviews`; counts and
+threads therefore do not remain stale while the page is open. Spoiler reveal
+is per-page `@State` and defaults to concealed on every new navigation.
+
+Review mutation helpers return `Bool`. Create/edit forms and the comment
+composer clear or dismiss only after success, preserving authored text when a
+network, validation, or RLS error occurs. Deletion navigates back only after
+the backend confirms it. Owner authorization remains enforced by the RPCs/RLS,
+not by the presence of SwiftUI menus.
 
 ## Follow-up picker refactor
 
@@ -191,8 +235,8 @@ provider-specific errors, and preserve all draft fields until success.
 
 ## Subsequent review-specific slices
 
-1. Add review detail navigation, spoiler reveal, reaction choices, comment
-   moderation, and deep links from notifications.
+1. Expand the implemented detail page with additional reaction choices,
+   comment moderation/reporting, and deep links from notifications.
 2. Add profile shelves for Journal, Reviews, Loved, and Collections.
 3. Add music-native context to journal entries (first listen, relisten, live,
    mood, setting) without requiring it for a quick log.

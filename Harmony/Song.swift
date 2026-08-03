@@ -1000,13 +1000,13 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     @discardableResult
-    func publishTrackReview(rating: Double, body: String, isLoved: Bool = false) async -> Bool {
+    func publishTrackReview(rating: Double, body: String, isLoved: Bool = false, containsSpoilers: Bool = false) async -> Bool {
         guard let track = nowPlaying?.track else { return false }
-        return await publishTrackReview(track, rating: rating, body: body, isLoved: isLoved)
+        return await publishTrackReview(track, rating: rating, body: body, isLoved: isLoved, containsSpoilers: containsSpoilers)
     }
 
     @discardableResult
-    func publishTrackReview(_ track: HarmonyTrack, rating: Double, body: String, isLoved: Bool = false) async -> Bool {
+    func publishTrackReview(_ track: HarmonyTrack, rating: Double, body: String, isLoved: Bool = false, containsSpoilers: Bool = false) async -> Bool {
         guard !isPublishingMusicReview else { return false }
         isPublishingMusicReview = true
         defer { isPublishingMusicReview = false }
@@ -1016,7 +1016,8 @@ final class HarmonySessionStore: ObservableObject {
                 rating: rating,
                 body: body,
                 visibility: reviewsSocialVisibility,
-                isLoved: isLoved
+                isLoved: isLoved,
+                containsSpoilers: containsSpoilers
             )
             collaborationMessage = reviewsSocialVisibility == .followers
                 ? "Review published to approved followers"
@@ -1030,7 +1031,7 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     @discardableResult
-    func publishAlbumReview(_ album: ReviewableAlbum, rating: Double, body: String, isLoved: Bool = false) async -> Bool {
+    func publishAlbumReview(_ album: ReviewableAlbum, rating: Double, body: String, isLoved: Bool = false, containsSpoilers: Bool = false) async -> Bool {
         guard !isPublishingMusicReview else { return false }
         isPublishingMusicReview = true
         defer { isPublishingMusicReview = false }
@@ -1040,7 +1041,8 @@ final class HarmonySessionStore: ObservableObject {
                 rating: rating,
                 body: body,
                 visibility: reviewsSocialVisibility,
-                isLoved: isLoved
+                isLoved: isLoved,
+                containsSpoilers: containsSpoilers
             )
             collaborationMessage = reviewsSocialVisibility == .followers
                 ? "Album review published to approved followers"
@@ -1068,36 +1070,41 @@ final class HarmonySessionStore: ObservableObject {
         return review.reactions.contains { $0.profileID == authenticatedProfileID && $0.kind == "heart" }
     }
 
-    func addReviewComment(to reviewID: UUID, body: String) async {
+    @discardableResult
+    func addReviewComment(to reviewID: UUID, body: String) async -> Bool {
         let comment = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (1...2000).contains(comment.count) else {
             collaborationMessage = "Comments must contain 1 to 2,000 characters."
-            return
+            return false
         }
-        await performReviewMutation(reviewID, successMessage: "Comment added") {
+        return await performReviewMutation(reviewID, successMessage: "Comment added") {
             try await self.collaborationRepository.addComment(to: reviewID, body: comment)
         }
     }
 
-    func deleteReviewComment(_ commentID: UUID, from reviewID: UUID) async {
+    @discardableResult
+    func deleteReviewComment(_ commentID: UUID, from reviewID: UUID) async -> Bool {
         await performReviewMutation(reviewID, successMessage: "Comment deleted") {
             try await self.collaborationRepository.deleteComment(commentID)
         }
     }
 
-    func updateReview(_ reviewID: UUID, rating: Double, body: String, visibility: SocialVisibilityOption, isLoved: Bool) async {
+    @discardableResult
+    func updateReview(_ reviewID: UUID, rating: Double, body: String, visibility: SocialVisibilityOption, isLoved: Bool, containsSpoilers: Bool = false) async -> Bool {
         await performReviewMutation(reviewID, successMessage: "Review updated") {
             try await self.collaborationRepository.updateReview(
                 reviewID,
                 rating: rating,
                 body: body,
                 visibility: visibility,
-                isLoved: isLoved
+                isLoved: isLoved,
+                containsSpoilers: containsSpoilers
             )
         }
     }
 
-    func deleteReview(_ reviewID: UUID) async {
+    @discardableResult
+    func deleteReview(_ reviewID: UUID) async -> Bool {
         await performReviewMutation(reviewID, successMessage: "Review deleted") {
             try await self.collaborationRepository.deleteReview(reviewID)
         }
@@ -1107,16 +1114,18 @@ final class HarmonySessionStore: ObservableObject {
         _ reviewID: UUID,
         successMessage: String,
         operation: @escaping () async throws -> Void
-    ) async {
-        guard !mutatingReviewIDs.contains(reviewID) else { return }
+    ) async -> Bool {
+        guard !mutatingReviewIDs.contains(reviewID) else { return false }
         mutatingReviewIDs.insert(reviewID)
         defer { mutatingReviewIDs.remove(reviewID) }
         do {
             try await operation()
             collaborationMessage = successMessage
             await refreshMusicReviews()
+            return true
         } catch {
             collaborationMessage = "Could not update review: \(error.localizedDescription)"
+            return false
         }
     }
 

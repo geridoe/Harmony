@@ -195,6 +195,42 @@ per-review audience. “Loved” remains the author’s independent affinity fie
 it never creates a reaction, does not notify followers by itself, and is
 visible only where the enclosing review is visible.
 
+### Implemented: review detail, spoilers, and discussion
+
+Review feeds now use a compact `ReviewCard`: `ReviewSummary` shows author,
+rating, Loved, subject, an optional three-line non-spoiler excerpt, and compact
+heart/comment/date metadata. The summary is a `NavigationLink` to
+`ReviewDetailView`, keeping comments and mutation controls out of scrolling
+feed cards.
+
+The detail view receives the immutable `reviewID` plus the feed row as a
+fallback. Its computed review first looks up that ID in the latest
+`store.musicReviews`, then uses the fallback only until the refreshed/Realtime
+snapshot is available. Consequently a comment, reaction, edit, or deletion
+refresh changes the same detail screen without passing a stale copied review
+through several views.
+
+Spoiler handling is deliberately local presentation state. A typed
+`containsSpoilers` field flows from `music_reviews.contains_spoilers` into
+`RemoteMusicReview`, the create/update repository parameter structs, and the
+store's publish/update methods. The composer and editor expose the toggle.
+When a spoiler-marked review opens, `ReviewDetailView.isShowingSpoilers` starts
+false; the body is concealed behind an accessible Reveal review button until
+that reader opts in. The flag does not change the review body or persist a
+reader-specific reveal choice. Feed summaries never show a spoiler excerpt.
+
+The detail screen owns the interactive social surface: the current heart
+reaction, full comment list, comment author deletion, and an add-comment
+draft. A review owner sees Edit and Delete both from their compact card and in
+the detail toolbar; deletion dismisses the detail only after the server
+confirms success. `updateReview`, `deleteReview`, comment add/delete, and
+publication return `Bool` from the store’s guarded mutation path. The editor
+dismisses only on `true`, and the comment text clears only on a successful
+insert, preserving author input after validation, RLS, or network failures.
+The current reaction choice is heart only. Provider deep links from a detail
+are implemented; deep links *from notifications*, additional reaction kinds,
+and moderation workflows remain follow-up work.
+
 ### Follow-up: isolate picker state and add creation audience
 
 The next refactor should introduce a `ReviewMediaPickerModel` that owns query,
@@ -390,12 +426,15 @@ provider-device testing.
 
 The implemented picker needs UI coverage for choosing a subject, its per-result
 song/album actions, and preserving the composer after a failed `Bool` publish.
-The follow-up picker refactor needs unit coverage for album deduplication,
-visibility snapshotting, and stale/cancelled query rejection, plus UI coverage
-that Reviews search cannot alter Add music results and that a per-review
-audience survives an in-flight Connections change. Backend smoke coverage
-should continue to prove owner-only edits and visibility/block enforcement for
-both subject kinds.
+Review-detail coverage should verify compact navigation, fresh-ID/fallback
+rendering after a refresh, concealed/revealed spoilers, owner edit/delete,
+and that failed edit/comment operations retain their drafts. The follow-up
+picker refactor needs unit coverage for album deduplication, visibility
+snapshotting, and stale/cancelled query rejection, plus UI coverage that
+Reviews search cannot alter Add music results and that a per-review audience
+survives an in-flight Connections change. Backend smoke coverage should
+continue to prove owner-only edits and visibility/block enforcement for both
+subject kinds.
 
 ### Local development and deployment
 
@@ -460,16 +499,19 @@ MusicKit library/playback authorization.
    music, add segmented/deduplicated album results, and add explicit
    per-review audience snapshotting while retaining the current separate
    journal/opinion/Loved model and no queue side effect.
-3. Enroll/configure the Apple developer assets, enable MusicKit, and implement
+3. Review detail and spoiler conceal/reveal are implemented; extend that
+   surface with additional reaction choices, comment moderation, and
+   notification-to-review deep links.
+4. Enroll/configure the Apple developer assets, enable MusicKit, and implement
    the equivalent Apple catalog resolution, playback, and opted-in history
    source. Keep its adapter local and submit only canonical/provider metadata
    to the backend.
-4. Add server-owned APNs delivery from `social_notifications`; retain the
+5. Add server-owned APNs delivery from `social_notifications`; retain the
    database row as the source of truth and provide notification preference UI.
-5. Add production operational work: error reporting, scheduled cleanup of
+6. Add production operational work: error reporting, scheduled cleanup of
    expired presence, rate limiting/abuse reporting, privacy-policy copy,
    TestFlight build settings, and device-pair collaboration tests.
-6. If public discovery is desired, design moderation/reporting, profile
+7. If public discovery is desired, design moderation/reporting, profile
    discovery queries, rate limits, and explicit migration from follower-only
    UI before exposing the existing `public` data value.
 

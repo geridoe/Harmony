@@ -92,8 +92,29 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(chooseMusic.waitForExistence(timeout: 5))
         chooseMusic.tap()
         XCTAssertTrue(app.navigationBars["Choose music"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Review song"].firstMatch.waitForExistence(timeout: 5))
+        let reviewSong = app.buttons["Review song"].firstMatch
+        XCTAssertTrue(reviewSong.waitForExistence(timeout: 5))
+        reviewSong.tap()
+        XCTAssertTrue(app.switches["Contains spoilers"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Choose different music"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["Your diary"].exists)
+    }
+
+    func testReviewFeedKeepsConversationControlsOffTheSummary() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        let reviewsTab = app.tabBars.buttons["Reviews"]
+        XCTAssertTrue(reviewsTab.waitForExistence(timeout: 5))
+        reviewsTab.tap()
+
+        let reviewsNavigation = app.navigationBars["Reviews"]
+        if !reviewsNavigation.waitForExistence(timeout: 3) {
+            reviewsTab.tap()
+        }
+        XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.textFields["Add a comment"].exists)
+        XCTAssertFalse(app.buttons["Post comment"].exists)
     }
 
     func testLaunchPerformance() throws {
