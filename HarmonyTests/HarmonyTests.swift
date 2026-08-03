@@ -343,6 +343,119 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(albums, [spotifyAlbum, appleAlbumWithSameID])
     }
 
+    func testReviewableAlbumUsesProviderSpecificDefaultStorefront() {
+        let spotifyAlbum = ReviewableAlbum(
+            provider: .spotify,
+            providerID: "spotify-album",
+            title: "Album",
+            artist: "Artist",
+            artworkURL: nil,
+            deepLinkURL: nil
+        )
+        let appleAlbum = ReviewableAlbum(
+            provider: .appleMusic,
+            providerID: "apple-album",
+            storefront: "gb",
+            title: "Album",
+            artist: "Artist",
+            artworkURL: nil,
+            deepLinkURL: nil
+        )
+
+        XCTAssertEqual(spotifyAlbum.storefront, "global")
+        XCTAssertEqual(appleAlbum.storefront, "gb")
+        XCTAssertNil(spotifyAlbum.canonicalAlbumID)
+    }
+
+    func testMusicReviewDecodesCanonicalAlbumIdentityAndProviderMappings() throws {
+        let reviewID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+        let albumID = UUID(uuidString: "20000000-0000-0000-0000-000000000002")!
+        let profileID = UUID(uuidString: "30000000-0000-0000-0000-000000000003")!
+        let json = """
+        {
+          "id": "\(reviewID.uuidString)",
+          "profile_id": "\(profileID.uuidString)",
+          "subject_kind": "album",
+          "subject_title": "Canonical Album",
+          "subject_artist": "The Artist",
+          "subject_artwork_url": "https://example.com/art.jpg",
+          "subject_deep_link": "https://open.spotify.com/album/provider-album",
+          "canonical_album_id": "\(albumID.uuidString)",
+          "rating": 4.5,
+          "body": "A review",
+          "visibility": "followers",
+          "contains_spoilers": false,
+          "is_loved": true,
+          "created_at": "2026-08-03T12:00:00Z",
+          "canonical_tracks": null,
+          "canonical_albums": {
+            "id": "\(albumID.uuidString)",
+            "title": "Canonical Album",
+            "artist": "The Artist",
+            "release_date": "2026-07-31",
+            "upc": "123456789012",
+            "album_type": "album",
+            "total_tracks": 10,
+            "artwork_url": "https://example.com/art.jpg",
+            "provider_albums": [{
+              "provider": "spotify",
+              "provider_album_id": "provider-album",
+              "storefront": "global",
+              "deep_link": "https://open.spotify.com/album/provider-album",
+              "availability": "playable",
+              "identity_basis": "provider"
+            }]
+          },
+          "profiles": {"display_name": "Listener"},
+          "review_comments": [],
+          "review_reactions": []
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let review = try decoder.decode(RemoteMusicReview.self, from: Data(json.utf8))
+
+        XCTAssertEqual(review.canonicalAlbumID, albumID)
+        XCTAssertEqual(review.canonicalAlbum?.id, albumID)
+        XCTAssertEqual(review.canonicalAlbum?.releaseDate, "2026-07-31")
+        XCTAssertEqual(review.canonicalAlbum?.upc, "123456789012")
+        XCTAssertEqual(review.canonicalAlbum?.providerAlbums.first?.storefront, "global")
+        XCTAssertEqual(review.canonicalAlbum?.providerAlbums.first?.providerAlbumID, "provider-album")
+    }
+
+    func testMusicReviewStillDecodesLegacyPayloadWithoutCanonicalAlbumFields() throws {
+        let json = """
+        {
+          "id": "10000000-0000-0000-0000-000000000001",
+          "profile_id": "30000000-0000-0000-0000-000000000003",
+          "subject_kind": "album",
+          "subject_title": "Legacy Album",
+          "subject_artist": "The Artist",
+          "subject_artwork_url": null,
+          "subject_deep_link": null,
+          "rating": 4.0,
+          "body": "Legacy review",
+          "visibility": "followers",
+          "contains_spoilers": false,
+          "is_loved": false,
+          "created_at": "2026-08-03T12:00:00Z",
+          "canonical_tracks": null,
+          "profiles": {"display_name": "Listener"},
+          "review_comments": [],
+          "review_reactions": []
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let review = try decoder.decode(RemoteMusicReview.self, from: Data(json.utf8))
+
+        XCTAssertNil(review.canonicalAlbumID)
+        XCTAssertNil(review.canonicalAlbum)
+        XCTAssertEqual(review.subjectTitle, "Legacy Album")
+    }
+
     func testReviewDraftSnapshotsAudienceAndKeepsAllAuthoredFields() {
         var profileDefault = SocialVisibilityOption.followers
         let subject = ReviewDraftSubject.track(reviewTrack(title: "Snapshot song"))
@@ -876,6 +989,47 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(followingActivityPresentationKind(for: .musicList(list)), .musicList)
     }
 
+    func testFollowingActivityFiltersTypedPayloadsAndPreservesStableOrder() {
+        let firstReview = followingActivityItem(
+            id: UUID(uuidString: "10000000-0000-0000-0000-000000000001")!,
+            payload: .review(musicReview(title: "First review"))
+        )
+        let diary = followingActivityItem(
+            id: UUID(uuidString: "20000000-0000-0000-0000-000000000002")!,
+            payload: .diary(journalEntry(title: "Diary track"))
+        )
+        let list = followingActivityItem(
+            id: UUID(uuidString: "30000000-0000-0000-0000-000000000003")!,
+            payload: .musicList(musicList(title: "Favorite bridges"))
+        )
+        let secondReview = followingActivityItem(
+            id: UUID(uuidString: "40000000-0000-0000-0000-000000000004")!,
+            payload: .review(musicReview(title: "Second review"))
+        )
+        let raw = [firstReview, diary, list, secondReview]
+
+        XCTAssertEqual(filteredFollowingActivity(raw, using: .all).map(\.id), raw.map(\.id))
+        XCTAssertEqual(
+            filteredFollowingActivity(raw, using: .reviews).map(\.id),
+            [firstReview.id, secondReview.id]
+        )
+        XCTAssertEqual(filteredFollowingActivity(raw, using: .diary).map(\.id), [diary.id])
+        XCTAssertEqual(filteredFollowingActivity(raw, using: .lists).map(\.id), [list.id])
+    }
+
+    func testFollowingActivityNoMatchesDoesNotMutateRawFeed() {
+        let diary = followingActivityItem(
+            id: UUID(uuidString: "50000000-0000-0000-0000-000000000005")!,
+            payload: .diary(journalEntry(title: "Only diary entry"))
+        )
+        let raw = [diary]
+
+        let visible = filteredFollowingActivity(raw, using: .reviews)
+
+        XCTAssertTrue(visible.isEmpty)
+        XCTAssertEqual(raw.map(\.id), [diary.id], "Filtering must not consume or reorder the raw paginated feed")
+    }
+
     func testMusicRatingDistributionUsesHalfStarBucketsAndExcludesUnratedTracks() {
         let states = [
             trackSubjectState(title: "Half", defaultRating: 0.5),
@@ -1041,6 +1195,7 @@ final class HarmonyTests: XCTestCase {
             subjectArtist: artist,
             subjectArtworkURL: nil,
             subjectDeepLink: nil,
+            canonicalAlbumID: nil,
             canonicalTrack: RemoteCatalogTrack(
                 id: UUID(),
                 title: title,
@@ -1051,6 +1206,7 @@ final class HarmonyTests: XCTestCase {
                 isExplicit: false,
                 providerTracks: nil
             ),
+            canonicalAlbum: nil,
             profile: RemoteProfile(displayName: "Test listener"),
             comments: [],
             reactions: []
@@ -1072,6 +1228,19 @@ final class HarmonyTests: XCTestCase {
             updatedAt: now,
             deletedAt: nil,
             owner: RemoteProfile(displayName: "Test listener")
+        )
+    }
+
+    private func followingActivityItem(
+        id: UUID,
+        payload: RemoteFollowingActivityPayload
+    ) -> RemoteFollowingActivityItem {
+        RemoteFollowingActivityItem(
+            id: id,
+            actorID: UUID(),
+            publishedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            actor: RemoteProfile(displayName: "Following listener"),
+            payload: payload
         )
     }
 

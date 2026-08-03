@@ -77,9 +77,11 @@ playback/catalog interaction.
   tags, and a per-entry audience; opt-in Harmony skip logging; and explicit
   import of up to 20 recently played Spotify tracks. Imported plays are exactly
   deduplicated.
-- A review can concern a canonical track or a provider-addressed album. It
-  supports 0.5–5.0 ratings, an independent Loved affinity signal, review text,
-  spoiler flag, visibility, editing, soft deletion, comments, and reactions.
+- A review can concern a canonical track or canonical album. Album reviews keep
+  their authored provider snapshot while exact provider identity resolves to a
+  canonical release; only trusted server ingestion may bridge providers by
+  UPC/EAN. It supports 0.5–5.0 ratings, an independent Loved affinity signal,
+  review text, spoiler flag, visibility, editing, soft deletion, comments, and reactions.
   A dated journal listen remains separate from the listener's current opinion,
   so repeat listens do not overwrite a rating or review.
 - Durable in-app notifications cover follow requests/acceptance, review
@@ -115,8 +117,9 @@ mutating review, Diary, playback, queue, or catalog-search state.
 
 Ratings reads independent current song state and presents a ten-bucket
 half-star distribution. It does not infer a current rating from review text or
-rewrite historical Diary ratings. Album ratings remain review-backed until a
-canonical album table and owner album-state model exist.
+rewrite historical Diary ratings. Album ratings remain review-backed until an
+owner album-state model exists. Canonical album release identity is defined by
+migration 038; it does not imply an edition/grouping or owner-state policy.
 
 `HarmonySessionStore` is the `@MainActor` observable application state. It
 contains screen-facing state, transforms remote DTOs into domain types, makes
@@ -502,6 +505,8 @@ isolation, cursor ties, and Loved shelf opt-in.
 | `session_members` | per-room role and last-seen membership |
 | `canonical_tracks` | provider-independent track identity/metadata/ISRC |
 | `provider_tracks` | provider/storefront mapping, link, availability, confidence |
+| `canonical_albums` | provider-independent album release identity and trusted UPC/EAN |
+| `provider_albums` | exact provider album/storefront mapping and identity evidence |
 | `queue_items` | materialized ordered queue using fractional positions |
 | `queue_events` | immutable, per-session revisioned event log and idempotency key |
 | `provider_connections` | owner-scoped provider identity, scopes, encrypted refresh token |
@@ -522,7 +527,7 @@ too close; that is not a current correctness concern.
 | `listening_history_entries` | owner-removable history; manual rows support dated diary metadata, editing, and optional review links |
 | `profile_track_subject_states` | private per-owner track state for Listened, default rating, Loved, and Want to listen |
 | `social_activity_events` | append-only typed pointers for intentional Diary/Review follower activity |
-| `music_reviews` | track or provider-album opinion, rating, Loved signal, visibility, soft delete |
+| `music_reviews` | canonical track/album opinion with retained provider snapshot, rating, Loved signal, visibility, soft delete |
 | `review_comments` | comments with author-owned soft deletion |
 | `review_reactions` | one reaction per viewer/review/kind |
 | `social_notifications` | recipient-owned in-app inbox and read state |
@@ -531,10 +536,10 @@ too close; that is not a current correctness concern.
 | `music_list_likes` | idempotent viewer/list affinity |
 | `music_list_comments` | visible-list discussion with author/owner moderation |
 
-The social schema distinguishes *identity* (canonical tracks) from an album
-review’s first-release provider identifier. This allows album reviews before a
-canonical-album matcher exists, without pretending Spotify and Apple Music
-album IDs are interchangeable.
+The social schema separates canonical track and album release identity from
+authored provider snapshots. Album provider IDs remain opaque; exact mappings
+are safe for ordinary clients, while cross-provider UPC/EAN evidence requires
+trusted server authority.
 
 ## 5. Authorization, RLS, and RPC contracts
 
@@ -556,6 +561,9 @@ changes go through narrowly scoped `security definer` RPCs after checking
 | `set_harmony_collaborator_invites` | Conductor only |
 | `resolve_harmony_track_v2` | collision-safe provider/storefront, ISRC, then guarded metadata resolution |
 | `resolve_harmony_track` | installed-client compatibility wrapper around v2 |
+| `resolve_harmony_album_v2` | exact provider album resolution; UPC/EAN merge requires service-role attestation |
+| `resolve_harmony_album` | installed-client provider-scoped album compatibility wrapper |
+| `get_canonical_album`, `list_canonical_album_reviews` | canonical release detail and RLS-filtered review page |
 
 `is_session_member(session_id)` is a security-definer helper used by reading
 policies to avoid recursive membership policy evaluation. Room reads require

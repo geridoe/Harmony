@@ -99,6 +99,27 @@ private struct CreateAlbumReviewParameters: Encodable {
     let p_contains_spoilers: Bool
     let p_is_loved: Bool
 }
+private struct CreateCanonicalAlbumReviewParameters: Encodable {
+    let p_subject_kind = "album"
+    let p_canonical_track_id: UUID? = nil
+    let p_provider: String
+    let p_provider_subject_id: String
+    let p_subject_title: String
+    let p_subject_artist: String
+    let p_subject_artwork_url: String?
+    let p_subject_deep_link: String?
+    let p_rating: Double
+    let p_body: String
+    let p_visibility: String
+    let p_contains_spoilers: Bool
+    let p_is_loved: Bool
+    let p_canonical_album_id: UUID?
+    let p_provider_storefront: String
+    let p_album_upc: String? = nil
+    let p_album_release_date: String? = nil
+    let p_album_total_tracks: Int? = nil
+    let p_album_type: String? = nil
+}
 private struct ReviewReactionParameters: Encodable { let p_review_id: UUID; let p_kind = "heart" }
 private struct ReviewCommentParameters: Encodable { let p_review_id: UUID; let p_body: String }
 private struct ReviewIDParameters: Encodable { let p_review_id: UUID }
@@ -624,7 +645,9 @@ struct RemoteMusicReview: Decodable, Identifiable {
     let subjectArtist: String?
     let subjectArtworkURL: URL?
     let subjectDeepLink: URL?
+    let canonicalAlbumID: UUID?
     let canonicalTrack: RemoteCatalogTrack?
+    let canonicalAlbum: RemoteCanonicalAlbum?
     let profile: RemoteProfile
     let comments: [RemoteReviewComment]
     let reactions: [RemoteReviewReaction]
@@ -637,12 +660,53 @@ struct RemoteMusicReview: Decodable, Identifiable {
         case subjectArtist = "subject_artist"
         case subjectArtworkURL = "subject_artwork_url"
         case subjectDeepLink = "subject_deep_link"
+        case canonicalAlbumID = "canonical_album_id"
         case profileID = "profile_id"
         case createdAt = "created_at"
         case canonicalTrack = "canonical_tracks"
+        case canonicalAlbum = "canonical_albums"
         case profile = "profiles"
         case comments = "review_comments"
         case reactions = "review_reactions"
+    }
+}
+
+struct RemoteCanonicalAlbum: Decodable, Identifiable {
+    let id: UUID
+    let title: String
+    let artist: String?
+    let releaseDate: String?
+    let upc: String?
+    let albumType: String?
+    let totalTracks: Int?
+    let artworkURL: URL?
+    let providerAlbums: [RemoteProviderAlbum]
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, artist, upc
+        case releaseDate = "release_date"
+        case albumType = "album_type"
+        case totalTracks = "total_tracks"
+        case artworkURL = "artwork_url"
+        case providerAlbums = "provider_albums"
+    }
+}
+
+struct RemoteProviderAlbum: Decodable, Identifiable {
+    let provider: String
+    let providerAlbumID: String
+    let storefront: String
+    let deepLink: URL?
+    let availability: String
+    let identityBasis: String
+
+    var id: String { "\(provider):\(providerAlbumID):\(storefront)" }
+
+    enum CodingKeys: String, CodingKey {
+        case provider, storefront, availability
+        case providerAlbumID = "provider_album_id"
+        case deepLink = "deep_link"
+        case identityBasis = "identity_basis"
     }
 }
 
@@ -842,6 +906,13 @@ final class HarmonyCollaborationRepository {
     private static let musicListSelection = "id,owner_id,title,description,tags,is_ranked,visibility,entries_revision,created_at,updated_at,deleted_at,owner:profiles!music_lists_owner_id_fkey(display_name)"
     private static let musicListEntrySelection = "id,list_id,canonical_track_id,position,note,created_at,updated_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit,isrc,provider_tracks(provider,provider_id,storefront,availability,deep_link))"
     private static let musicListCommentSelection = "id,list_id,author_id,body,created_at,updated_at,deleted_at,author:profiles!music_list_comments_author_id_fkey(display_name)"
+    private static let legacyMusicReviewSelection = "id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,rating,body,visibility,contains_spoilers,is_loved,created_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name),review_comments(id,author_id,body,created_at,profiles(display_name)),review_reactions(profile_id,kind)"
+    private static let musicReviewSelection = "id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,canonical_album_id,rating,body,visibility,contains_spoilers,is_loved,created_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),canonical_albums(id,title,artist,release_date,upc,album_type,total_tracks,artwork_url,provider_albums(provider,provider_album_id,storefront,deep_link,availability,identity_basis)),profiles(display_name),review_comments(id,author_id,body,created_at,profiles(display_name)),review_reactions(profile_id,kind)"
+
+    private static func isMissingCanonicalAlbumContract(_ error: Error) -> Bool {
+        guard let error = error as? PostgrestError else { return false }
+        return ["PGRST200", "PGRST202", "PGRST204", "42703", "42P01"].contains(error.code)
+    }
 
     // Defer plist-dependent client creation until a live backend operation is
     // requested. This keeps local queue behavior and unit tests independent of
@@ -1181,17 +1252,21 @@ final class HarmonyCollaborationRepository {
         limit: Int = 51
     ) async throws -> [RemoteMusicReview] {
         try await authenticate()
-        return try await client.rpc(
-            "list_profile_music_reviews",
-            params: ProfileReviewsPageParameters(
-                p_profile_id: profileID,
-                p_before_created_at: beforeCreatedAt,
-                p_before_id: beforeID,
-                p_limit: limit
-            )
+        let params = ProfileReviewsPageParameters(
+            p_profile_id: profileID,
+            p_before_created_at: beforeCreatedAt,
+            p_before_id: beforeID,
+            p_limit: limit
         )
-        .select("id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,rating,body,visibility,contains_spoilers,is_loved,created_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name),review_comments(id,author_id,body,created_at,profiles(display_name)),review_reactions(profile_id,kind)")
-        .execute().value
+        do {
+            return try await client.rpc("list_profile_music_reviews", params: params)
+                .select(Self.musicReviewSelection)
+                .execute().value
+        } catch where Self.isMissingCanonicalAlbumContract(error) {
+            return try await client.rpc("list_profile_music_reviews", params: params)
+                .select(Self.legacyMusicReviewSelection)
+                .execute().value
+        }
     }
 
     func publicProfileDiaryPage(
@@ -1328,10 +1403,17 @@ final class HarmonyCollaborationRepository {
 
     private func activityReviews(ids: [UUID]) async throws -> [RemoteMusicReview] {
         guard !ids.isEmpty else { return [] }
-        return try await client.from("music_reviews")
-            .select("id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,rating,body,visibility,contains_spoilers,is_loved,created_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name),review_comments(id,author_id,body,created_at,profiles(display_name)),review_reactions(profile_id,kind)")
-            .in("id", values: ids.map(\.uuidString))
-            .execute().value
+        do {
+            return try await client.from("music_reviews")
+                .select(Self.musicReviewSelection)
+                .in("id", values: ids.map(\.uuidString))
+                .execute().value
+        } catch where Self.isMissingCanonicalAlbumContract(error) {
+            return try await client.from("music_reviews")
+                .select(Self.legacyMusicReviewSelection)
+                .in("id", values: ids.map(\.uuidString))
+                .execute().value
+        }
     }
 
     private func activityDiaryEntries(ids: [UUID]) async throws -> [RemoteListeningHistoryEntry] {
@@ -1408,9 +1490,15 @@ final class HarmonyCollaborationRepository {
 
     func musicReviews() async throws -> [RemoteMusicReview] {
         try await authenticate()
-        return try await client.from("music_reviews")
-            .select("id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,rating,body,visibility,contains_spoilers,is_loved,created_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name),review_comments(id,author_id,body,created_at,profiles(display_name)),review_reactions(profile_id,kind)")
-            .order("created_at", ascending: false).limit(50).execute().value
+        do {
+            return try await client.from("music_reviews")
+                .select(Self.musicReviewSelection)
+                .order("created_at", ascending: false).limit(50).execute().value
+        } catch where Self.isMissingCanonicalAlbumContract(error) {
+            return try await client.from("music_reviews")
+                .select(Self.legacyMusicReviewSelection)
+                .order("created_at", ascending: false).limit(50).execute().value
+        }
     }
 
     func exchangeSpotifyAuthorization(_ response: SpotifyAuthorizationResponse) async throws {
@@ -1650,8 +1738,9 @@ final class HarmonyCollaborationRepository {
 
     func createAlbumReview(album: ReviewableAlbum, rating: Double, body: String, visibility: SocialVisibilityOption, isLoved: Bool = false, containsSpoilers: Bool = false) async throws {
         try await authenticate()
-        _ = try await client.rpc("create_music_review", params: CreateAlbumReviewParameters(
-            p_provider: album.provider == .spotify ? "spotify" : "apple_music",
+        let provider = album.provider == .spotify ? "spotify" : "apple_music"
+        let legacyParameters = CreateAlbumReviewParameters(
+            p_provider: provider,
             p_provider_subject_id: album.providerID,
             p_subject_title: album.title,
             p_subject_artist: album.artist,
@@ -1662,7 +1751,26 @@ final class HarmonyCollaborationRepository {
             p_visibility: visibility.rawValue,
             p_contains_spoilers: containsSpoilers,
             p_is_loved: isLoved
-        )).execute()
+        )
+        do {
+            _ = try await client.rpc("create_music_review", params: CreateCanonicalAlbumReviewParameters(
+                p_provider: provider,
+                p_provider_subject_id: album.providerID,
+                p_subject_title: album.title,
+                p_subject_artist: album.artist,
+                p_subject_artwork_url: album.artworkURL?.absoluteString,
+                p_subject_deep_link: album.deepLinkURL?.absoluteString,
+                p_rating: rating,
+                p_body: body,
+                p_visibility: visibility.rawValue,
+                p_contains_spoilers: containsSpoilers,
+                p_is_loved: isLoved,
+                p_canonical_album_id: album.canonicalAlbumID,
+                p_provider_storefront: album.storefront
+            )).execute()
+        } catch where Self.isMissingCanonicalAlbumContract(error) {
+            _ = try await client.rpc("create_music_review", params: legacyParameters).execute()
+        }
     }
 
     func toggleHeart(on reviewID: UUID) async throws -> Bool {

@@ -547,9 +547,53 @@ rpc "$collaborator_token" create_music_review \
   "$smoke_tmp/album-review.json"
 album_review_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/album-review.json")"
 rest_get "$conductor_token" \
-  "music_reviews?select=id,subject_kind,subject_title,subject_artist,subject_deep_link&id=eq.$album_review_id" \
+  "music_reviews?select=id,subject_kind,canonical_album_id,subject_title,subject_artist,subject_deep_link&id=eq.$album_review_id" \
   "$smoke_tmp/follower-album-review.json"
 jq -e 'length == 1 and .[0].subject_kind == "album" and .[0].subject_title == "Harmony Smoke Album" and .[0].subject_artist == "Harmony Test Artist"' "$smoke_tmp/follower-album-review.json" >/dev/null
+album_canonical_id="$(jq -er '.[0].canonical_album_id' "$smoke_tmp/follower-album-review.json")"
+rest_get "$conductor_token" \
+  "music_reviews?select=id,canonical_album_id,canonical_albums(id,title,artist,release_date,upc,album_type,total_tracks,artwork_url,provider_albums(provider,provider_album_id,storefront,deep_link,availability,identity_basis))&id=eq.$album_review_id" \
+  "$smoke_tmp/swift-shaped-canonical-album-review.json"
+jq -e --arg album "$album_canonical_id" 'length == 1 and .[0].canonical_album_id == $album and .[0].canonical_albums.id == $album and .[0].canonical_albums.provider_albums[0].provider_album_id == "spotify:album:harmony-smoke"' "$smoke_tmp/swift-shaped-canonical-album-review.json" >/dev/null
+rest_get "$conductor_token" \
+  "provider_albums?select=canonical_album_id,provider,provider_album_id,storefront,identity_basis&canonical_album_id=eq.$album_canonical_id" \
+  "$smoke_tmp/legacy-album-provider-mapping.json"
+jq -e --arg album "$album_canonical_id" 'length == 1 and .[0].canonical_album_id == $album and .[0].provider == "spotify" and .[0].provider_album_id == "spotify:album:harmony-smoke" and .[0].storefront == "global" and .[0].identity_basis == "provider"' "$smoke_tmp/legacy-album-provider-mapping.json" >/dev/null
+rpc "$collaborator_token" resolve_harmony_album \
+  '{"p_provider":"spotify","p_provider_id":"spotify:album:harmony-smoke","p_title":"Changed snapshot title","p_artist":null,"p_artwork_url":null,"p_deep_link":"https://open.spotify.com/album/harmony-smoke"}' \
+  "$smoke_tmp/resolved-legacy-album.json"
+[[ "$(jq -er '.' "$smoke_tmp/resolved-legacy-album.json")" == "$album_canonical_id" ]]
+
+stage="canonical album evidence boundaries"
+invalid_album_upc_status="$(rpc_status "$collaborator_token" resolve_harmony_album_v2 \
+  '{"p_provider":"spotify","p_provider_id":"spotify:album:harmony-invalid-upc","p_title":"Invalid UPC","p_artist":"Harmony Test Artist","p_artwork_url":null,"p_deep_link":"https://open.spotify.com/album/harmony-invalid-upc","p_upc":"not-a-upc","p_release_date":null,"p_total_tracks":null,"p_album_type":"album","p_storefront":"global"}' \
+  "$smoke_tmp/invalid-album-upc.json")"
+[[ "$invalid_album_upc_status" == "400" ]]
+forged_album_upc_status="$(rpc_status "$collaborator_token" resolve_harmony_album_v2 \
+  '{"p_provider":"spotify","p_provider_id":"spotify:album:harmony-upc","p_title":"UPC Evidence Album","p_artist":"Harmony Test Artist","p_artwork_url":null,"p_deep_link":"https://open.spotify.com/album/harmony-upc","p_upc":"123456789012","p_release_date":"2026-08-03","p_total_tracks":8,"p_album_type":"album","p_storefront":"global"}' \
+  "$smoke_tmp/forged-album-upc.json")"
+[[ "$forged_album_upc_status" == "403" ]]
+jq -e '.details == "album_upc_attestation_required"' "$smoke_tmp/forged-album-upc.json" >/dev/null
+rpc "$collaborator_token" resolve_harmony_album_v2 \
+  '{"p_provider":"spotify","p_provider_id":"spotify:album:harmony-canonical-only","p_title":"Canonical-only Album","p_artist":"Harmony Test Artist","p_artwork_url":null,"p_deep_link":"https://open.spotify.com/album/harmony-canonical-only","p_upc":null,"p_release_date":"2026-08-03","p_total_tracks":8,"p_album_type":"album","p_storefront":"global"}' \
+  "$smoke_tmp/canonical-only-album.json"
+canonical_only_album_id="$(jq -er '.' "$smoke_tmp/canonical-only-album.json")"
+rpc "$collaborator_token" resolve_harmony_album_v2 \
+  '{"p_provider":"apple_music","p_provider_id":"harmony-title-only-apple","p_title":"Harmony Smoke Album","p_artist":"Harmony Test Artist","p_artwork_url":null,"p_deep_link":"https://music.apple.com/us/album/harmony-smoke-album/harmony-title-only-apple","p_upc":null,"p_release_date":null,"p_total_tracks":null,"p_album_type":"album","p_storefront":"us"}' \
+  "$smoke_tmp/apple-title-only-album.json"
+[[ "$(jq -er '.' "$smoke_tmp/apple-title-only-album.json")" != "$album_canonical_id" ]]
+rpc "$conductor_token" list_canonical_album_reviews \
+  "{\"p_canonical_album_id\":\"$album_canonical_id\",\"p_before_created_at\":null,\"p_before_id\":null,\"p_limit\":50}" \
+  "$smoke_tmp/canonical-album-reviews.json"
+jq -e --arg review "$album_review_id" 'any(.[]; .id == $review and .canonical_album_id != null)' "$smoke_tmp/canonical-album-reviews.json" >/dev/null
+rpc "$collaborator_token" create_music_review \
+  "{\"p_subject_kind\":\"album\",\"p_canonical_album_id\":\"$canonical_only_album_id\",\"p_rating\":4.5,\"p_body\":\"Canonical-only review.\",\"p_visibility\":\"private\"}" \
+  "$smoke_tmp/canonical-only-album-review.json"
+canonical_only_review_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/canonical-only-album-review.json")"
+jq -e --arg album "$canonical_only_album_id" '(if type == "array" then .[0] else . end) | .canonical_album_id == $album' "$smoke_tmp/canonical-only-album-review.json" >/dev/null
+rpc "$collaborator_token" delete_music_review \
+  "{\"p_review_id\":\"$canonical_only_review_id\"}" \
+  "$smoke_tmp/deleted-canonical-only-album-review.json"
 album_diary_link_status="$(rpc_status "$collaborator_token" update_listening_diary_entry_with_rating \
   "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_visibility\":\"followers\",\"p_is_relisten\":true,\"p_tags\":[\"atomic\",\"night\"],\"p_review_id\":\"$album_review_id\",\"p_rating\":2.5}" \
   "$smoke_tmp/album-diary-link.json")"

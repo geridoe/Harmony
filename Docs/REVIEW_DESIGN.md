@@ -1,7 +1,7 @@
 # Reviews and listening journal design
 
 **Decision date:** 2 August 2026  
-**Status:** first-class Reviews experience, Letterboxd-inspired review and ratings browsing, owner and member profile shelves, typed following activity, historical ratings, and independent track-state foundation deployed
+**Status:** first-class Reviews experience and canonical album identity deployed
 
 ## Why this is a separate product surface
 
@@ -48,7 +48,7 @@ The product pattern Harmony transfers is therefore:
 
 | Verified Letterboxd pattern | Harmony adaptation |
 | --- | --- |
-| Film page and review subject | Canonical track or provider-identified album |
+| Film page and review subject | Canonical track or canonical album, with authored provider snapshots retained |
 | Ten-position half-star rating scale | 0.5–5.0 music rating |
 | Like independent of rating | Loved affinity independent of score and social review reactions |
 | Dated Diary log, optionally reviewed | Dated listen distinct from the current opinion |
@@ -159,12 +159,11 @@ from every shelf. Review composition is modal so the selected shelf and scroll
 position survive dismissal. The rating control supports half-star steps, and
 Loved remains independent of the score.
 
-Album ratings remain review-backed until Harmony has canonical album identity.
-The Ratings shelf says so explicitly instead of merging provider snapshots by
-title. This avoids presenting two provider editions as one album or one album
-as two subjects. Canonical albums require an album table, provider mappings,
-edition policy, track membership, and an owner album-state row analogous to
-`profile_track_subject_states`.
+Migration 038 introduces canonical album release identity and exact provider
+mappings. Existing album ratings remain review-backed because owner album state
+is a separate future decision. Provider snapshots are never merged by title or
+artist; cross-provider identity requires trusted UPC/EAN evidence. See
+`CANONICAL_ALBUMS.md` for the authority and migration contract.
 
 ### Activity-volume policy for music
 
@@ -450,7 +449,7 @@ the authority:
 | Draft subject | Store/repository call | Server identity |
 | --- | --- | --- |
 | Track | `publishTrackReview` → `createTrackReview` → `create_music_review` | `canonical_track_id`; repository resolves it if necessary |
-| Album | `publishAlbumReview` → `createAlbumReview` → `create_music_review` | provider + provider album ID plus validated title/artwork/deep link |
+| Album | `publishAlbumReview` → `createAlbumReview` → `create_music_review` | server-resolved `canonical_album_id` from exact provider identity; trusted ingestion may merge by UPC/EAN |
 
 `ReviewsView` performs the small subject switch and calls the
 appropriate store method. The store methods apply the existing
@@ -598,12 +597,14 @@ Harmony-room history, historical backfills, subject-state changes, and review
 edits do not create activity. This preserves Letterboxd's distinction between
 recording a back catalog and deliberately publishing current activity.
 
-The Reviews tab's **Activity** shelf now renders typed Review and Diary cards.
-Actor identity navigates to a member profile with three independent shelves:
-**Reviews**, **Diary**, and **Loved**. Each shelf has its own loading, error,
-empty, and keyset-pagination state, keyed by profile ID so navigating between
-members cannot mix results. Profile reads never populate the signed-in
-owner's editable caches.
+The Reviews tab's **Activity** shelf renders typed Review, Diary, and List
+cards. A segmented **All / Reviews / Diary / Lists** filter changes only the
+loaded presentation; the raw feed order and keyset cursor remain untouched, so
+Load More can reveal a later match. Actor identity navigates to a member
+profile with four independent shelves: **Reviews**, **Diary**, **Loved**, and
+**Lists**. Each shelf has its own loading, error, empty, and keyset-pagination
+state, keyed by profile ID so navigating between members cannot mix results.
+Profile reads never populate the signed-in owner's editable caches.
 
 Review and Diary visibility continue to belong to each object. Loved is an
 aggregate profile shelf and is separately opt-in through Connections using

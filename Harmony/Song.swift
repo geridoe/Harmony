@@ -37,13 +37,35 @@ struct ProviderTrackMapping: Hashable {
     }
 }
 struct ReviewableAlbum: Hashable, Identifiable {
+    let canonicalAlbumID: UUID?
     let provider: MusicProvider
     let providerID: String
+    let storefront: String
     let title: String
     let artist: String
     let artworkURL: URL?
     let deepLinkURL: URL?
     var id: String { "\(provider.rawValue):\(providerID)" }
+
+    init(
+        canonicalAlbumID: UUID? = nil,
+        provider: MusicProvider,
+        providerID: String,
+        storefront: String? = nil,
+        title: String,
+        artist: String,
+        artworkURL: URL?,
+        deepLinkURL: URL?
+    ) {
+        self.canonicalAlbumID = canonicalAlbumID
+        self.provider = provider
+        self.providerID = providerID
+        self.storefront = storefront ?? (provider == .spotify ? "global" : "us")
+        self.title = title
+        self.artist = artist
+        self.artworkURL = artworkURL
+        self.deepLinkURL = deepLinkURL
+    }
 }
 struct HarmonyTrack: Identifiable, Hashable {
     let id: UUID
@@ -2331,7 +2353,9 @@ final class HarmonySessionStore: ObservableObject {
             subjectArtist: track.artist,
             subjectArtworkURL: nil,
             subjectDeepLink: nil,
+            canonicalAlbumID: nil,
             canonicalTrack: track,
+            canonicalAlbum: nil,
             profile: profile,
             comments: [],
             reactions: []

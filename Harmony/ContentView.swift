@@ -386,6 +386,15 @@ enum FollowingActivityPresentationKind: String, Equatable {
     case musicList
 }
 
+enum FollowingActivityFilter: String, CaseIterable, Identifiable, Equatable {
+    case all = "All"
+    case reviews = "Reviews"
+    case diary = "Diary"
+    case lists = "Lists"
+
+    var id: String { rawValue }
+}
+
 func followingActivityPresentationKind(
     for payload: RemoteFollowingActivityPayload
 ) -> FollowingActivityPresentationKind {
@@ -393,6 +402,21 @@ func followingActivityPresentationKind(
     case .diary: .diary
     case .review: .review
     case .musicList: .musicList
+    }
+}
+
+/// A presentation-only transformation. `filter` preserves source order and
+/// never changes the raw feed used by the store's pagination cursor.
+func filteredFollowingActivity(
+    _ activity: [RemoteFollowingActivityItem],
+    using filter: FollowingActivityFilter
+) -> [RemoteFollowingActivityItem] {
+    guard filter != .all else { return activity }
+    return activity.filter { item in
+        switch (filter, item.payload) {
+        case (.reviews, .review), (.diary, .diary), (.lists, .musicList): true
+        default: false
+        }
     }
 }
 
@@ -661,6 +685,7 @@ struct ReviewsView: View {
     @State private var editingDiaryEntry: RemoteListeningHistoryEntry?
     @State private var journalBrowseFilter = JournalBrowseFilter()
     @State private var reviewBrowseFilter = ReviewBrowseFilter()
+    @State private var followingActivityFilter = FollowingActivityFilter.all
     @State private var editingReview: RemoteMusicReview?
     @State private var editingRating = 4.0
     @State private var editingBody = ""
@@ -682,6 +707,10 @@ struct ReviewsView: View {
 
     private var browsedOwnHistory: [RemoteListeningHistoryEntry] {
         browseJournalEntries(ownHistory, using: journalBrowseFilter)
+    }
+
+    private var visibleFollowingActivity: [RemoteFollowingActivityItem] {
+        filteredFollowingActivity(store.followingActivity, using: followingActivityFilter)
     }
 
     var body: some View {
@@ -949,13 +978,34 @@ struct ReviewsView: View {
         Section("Following activity") {
             if store.isRefreshingFollowingActivity && store.followingActivity.isEmpty {
                 ProgressView("Loading activity…")
-            } else if store.followingActivity.isEmpty {
-                Text("No follower-visible diary or review activity yet.")
-                    .foregroundColor(.secondary)
+                    .accessibilityIdentifier("following-activity-loading")
             } else {
-                ForEach(store.followingActivity) { item in
-                    FollowingActivityCard(item: item)
+                Picker("Activity type", selection: $followingActivityFilter) {
+                    ForEach(FollowingActivityFilter.allCases) { filter in
+                        Text(filter.rawValue)
+                            .tag(filter)
+                            .accessibilityIdentifier("following-activity-filter-\(filter.rawValue.lowercased())")
+                    }
                 }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("following-activity-filter")
+
+                if store.followingActivity.isEmpty {
+                    Text("No follower-visible reviews, Diary entries, or lists yet.")
+                        .foregroundColor(.secondary)
+                        .accessibilityIdentifier("following-activity-empty")
+                } else if visibleFollowingActivity.isEmpty {
+                    Text("No \(followingActivityFilter.rawValue.lowercased()) match this loaded activity.")
+                        .foregroundColor(.secondary)
+                        .accessibilityIdentifier("following-activity-no-matches")
+                } else {
+                    ForEach(visibleFollowingActivity) { item in
+                        FollowingActivityCard(item: item)
+                    }
+                }
+
+                // Pagination intentionally remains attached to the unfiltered
+                // store feed. Loading can reveal matches on a later raw page.
                 if store.hasMoreFollowingActivity {
                     Button {
                         Task { await store.loadMoreFollowingActivity() }
