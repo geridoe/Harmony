@@ -138,6 +138,12 @@ enum SocialRelationshipState: Equatable {
     case blocked
 }
 
+enum SocialPrivacyCategory: Equatable {
+    case liveListening
+    case listeningHistory
+    case reviews
+}
+
 @MainActor
 final class HarmonySessionStore: ObservableObject {
     @Published var queue: [QueueItem]
@@ -177,6 +183,10 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var socialProfiles: [RemoteSocialProfile] = []
     @Published private(set) var isRefreshingSocialProfiles = false
     @Published private(set) var socialProfileActionIDs: Set<UUID> = []
+    @Published private(set) var accountProfile: RemoteAccountProfile?
+    @Published private(set) var socialSettings: RemoteSocialSettings?
+    @Published private(set) var isRefreshingAccountSettings = false
+    @Published private(set) var isUpdatingAccountSettings = false
     private var socialFollows: [RemoteSocialFollow] = []
     private var blockedSocialProfileIDs: Set<UUID> = []
     private var authenticatedProfileID: UUID?
@@ -217,6 +227,9 @@ final class HarmonySessionStore: ObservableObject {
         let title = sessionName.trimmingCharacters(in: .whitespacesAndNewlines)
         return (1...120).contains(title.count)
     }
+    var liveSocialVisibility: SocialVisibilityOption { socialSettings?.liveVisibility ?? .privateOnly }
+    var historySocialVisibility: SocialVisibilityOption { socialSettings?.historyVisibility ?? .privateOnly }
+    var reviewsSocialVisibility: SocialVisibilityOption { socialSettings?.reviewsVisibility ?? .privateOnly }
     func providerState(for provider: MusicProvider) -> ProviderAccountStatus { providerStates[provider] ?? .notConnected }
     func canRemove(_ item: QueueItem) -> Bool { currentMember.role == .conductor || item.addedBy.id == currentMember.id }
     func contains(_ track: HarmonyTrack) -> Bool { queue.contains { Self.representsSameRecording($0.track, track) } }
@@ -236,6 +249,61 @@ final class HarmonySessionStore: ObservableObject {
             providerStates[.appleMusic] = appleMusicProvider.connectionState.isConnected ? .connected : .notConnected
         } catch {
             collaborationMessage = "Could not load connection status: \(error.localizedDescription)"
+        }
+    }
+
+    func refreshAccountSettings() async {
+        guard !isRefreshingAccountSettings else { return }
+        isRefreshingAccountSettings = true
+        defer { isRefreshingAccountSettings = false }
+        do {
+            async let profile = collaborationRepository.accountProfile()
+            async let settings = collaborationRepository.socialSettings()
+            let result = try await (profile, settings)
+            accountProfile = result.0
+            socialSettings = result.1
+        } catch {
+            collaborationMessage = "Could not load account settings: \(error.localizedDescription)"
+        }
+    }
+
+    func updateDisplayName(_ proposedName: String) async {
+        let displayName = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (1...80).contains(displayName.count), !isUpdatingAccountSettings else {
+            collaborationMessage = "Display names must contain 1 to 80 characters."
+            return
+        }
+        isUpdatingAccountSettings = true
+        defer { isUpdatingAccountSettings = false }
+        do {
+            accountProfile = try await collaborationRepository.updateDisplayName(displayName)
+            collaborationMessage = "Profile updated"
+            await refreshSocialProfiles()
+        } catch {
+            collaborationMessage = "Could not update profile: \(error.localizedDescription)"
+        }
+    }
+
+    func updateSocialVisibility(_ visibility: SocialVisibilityOption, for category: SocialPrivacyCategory) async {
+        guard let current = socialSettings, !isUpdatingAccountSettings else { return }
+        let updated = RemoteSocialSettings(
+            profileID: current.profileID,
+            liveVisibility: category == .liveListening ? visibility : current.liveVisibility,
+            historyVisibility: category == .listeningHistory ? visibility : current.historyVisibility,
+            reviewsVisibility: category == .reviews ? visibility : current.reviewsVisibility
+        )
+        isUpdatingAccountSettings = true
+        defer { isUpdatingAccountSettings = false }
+        do {
+            socialSettings = try await collaborationRepository.updateSocialSettings(updated)
+            if category == .liveListening, visibility == .privateOnly, isEavesdropping {
+                try await collaborationRepository.stopListeningPresence()
+                isEavesdropping = false
+                await refreshListeningFeed()
+            }
+            collaborationMessage = visibility == .followers ? "Sharing enabled for approved followers" : "Visibility changed to Only me"
+        } catch {
+            collaborationMessage = "Could not update privacy settings: \(error.localizedDescription)"
         }
     }
 
@@ -679,8 +747,10 @@ final class HarmonySessionStore: ObservableObject {
                     collaborationMessage = "Start a Harmony queue track before sharing listening activity."
                     return
                 }
-                try await collaborationRepository.publishListeningPresence(track: track)
-                collaborationMessage = "Sharing this track with approved followers for five minutes"
+                try await collaborationRepository.publishListeningPresence(track: track, visibility: liveSocialVisibility)
+                collaborationMessage = liveSocialVisibility == .followers
+                    ? "Sharing this track with approved followers for five minutes"
+                    : "Saved a private now-listening entry for five minutes"
                 await refreshListeningFeed()
             }
         } catch {
@@ -701,8 +771,10 @@ final class HarmonySessionStore: ObservableObject {
         isPublishingMusicReview = true
         defer { isPublishingMusicReview = false }
         do {
-            try await collaborationRepository.createTrackReview(track: track, rating: rating, body: body)
-            collaborationMessage = "Review published to approved followers"
+            try await collaborationRepository.createTrackReview(track: track, rating: rating, body: body, visibility: reviewsSocialVisibility)
+            collaborationMessage = reviewsSocialVisibility == .followers
+                ? "Review published to approved followers"
+                : "Private review saved"
             await refreshMusicReviews()
         } catch { collaborationMessage = "Could not publish review: \(error.localizedDescription)" }
     }

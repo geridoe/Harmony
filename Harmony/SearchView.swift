@@ -116,9 +116,32 @@ struct SearchView: View {
 struct ConnectionsView: View {
     @EnvironmentObject private var store: HarmonySessionStore
     @State private var showingDeleteAccountConfirmation = false
+    @State private var displayName = ""
     var body: some View {
         NavigationView {
             List {
+                Section("Harmony profile") {
+                    TextField("Display name", text: $displayName)
+                        .textInputAutocapitalization(.words)
+                        .autocorrectionDisabled()
+                    Button("Save display name") {
+                        Task { await store.updateDisplayName(displayName) }
+                    }
+                    .disabled(store.isUpdatingAccountSettings || displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Text("This name is visible to session members and other signed-in Harmony listeners.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+
+                Section("Social privacy") {
+                    privacyPicker("Live listening", selection: store.liveSocialVisibility, category: .liveListening)
+                    privacyPicker("Listening history", selection: store.historySocialVisibility, category: .listeningHistory)
+                    privacyPicker("Reviews", selection: store.reviewsSocialVisibility, category: .reviews)
+                    Text("Only approved followers can see follower-visible activity. New accounts begin with every social category set to Only me.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+
                 Section("Your listening services") {
                     ForEach(MusicProvider.allCases) { provider in
                         let state = store.providerState(for: provider)
@@ -203,8 +226,16 @@ struct ConnectionsView: View {
                 }
             }
             .navigationTitle("Connections")
-            .task { await store.refreshProviderConnections() }
-            .refreshable { await store.refreshProviderConnections() }
+            .task {
+                await store.refreshAccountSettings()
+                displayName = store.accountProfile?.displayName ?? ""
+                await store.refreshProviderConnections()
+            }
+            .refreshable {
+                await store.refreshAccountSettings()
+                displayName = store.accountProfile?.displayName ?? displayName
+                await store.refreshProviderConnections()
+            }
             .alert(
                 "Spotify playback unavailable",
                 isPresented: Binding(
@@ -229,6 +260,22 @@ struct ConnectionsView: View {
                 Text("This cannot be undone. Sessions you conduct will end and all Harmony account data will be removed.")
             }
         }
+    }
+
+    private func privacyPicker(
+        _ title: String,
+        selection: SocialVisibilityOption,
+        category: SocialPrivacyCategory
+    ) -> some View {
+        Picker(title, selection: Binding(
+            get: { selection },
+            set: { visibility in Task { await store.updateSocialVisibility(visibility, for: category) } }
+        )) {
+            ForEach(SocialVisibilityOption.allCases) { visibility in
+                Text(visibility.title).tag(visibility)
+            }
+        }
+        .disabled(store.socialSettings == nil || store.isUpdatingAccountSettings)
     }
 
     private func detail(for provider: MusicProvider, state: ProviderAccountStatus) -> String {

@@ -67,7 +67,7 @@ private struct PublishListeningPresenceParameters: Encodable {
     let p_provider_track_id: String?
     let p_provider_deep_link: String?
     let p_status = "listening"
-    let p_visibility = "followers"
+    let p_visibility: String
     let p_started_at: Date
     let p_expires_at: Date
 }
@@ -78,12 +78,18 @@ private struct CreateTrackReviewParameters: Encodable {
     let p_provider_subject_id: String?
     let p_rating: Double
     let p_body: String
-    let p_visibility = "followers"
+    let p_visibility: String
     let p_contains_spoilers = false
 }
 private struct ReviewReactionParameters: Encodable { let p_review_id: UUID; let p_kind = "heart" }
 private struct SocialProfileParameters: Encodable { let p_profile_id: UUID }
 private struct RespondToFollowParameters: Encodable { let p_requester_id: UUID; let p_accept: Bool }
+private struct UpdateAccountProfile: Encodable { let display_name: String }
+private struct UpdateSocialSettings: Encodable {
+    let live_visibility: String
+    let history_visibility: String
+    let reviews_visibility: String
+}
 private struct RemovePayload: Encodable { let queue_item_id: UUID }
 private struct MovePayload: Encodable { let queue_item_id: UUID; let position: Double }
 private struct PlaybackPayload: Encodable { let status: String }
@@ -118,6 +124,33 @@ struct RemoteSessionMember: Decodable {
 }
 
 struct RemoteProfile: Decodable { let displayName: String; enum CodingKeys: String, CodingKey { case displayName = "display_name" } }
+
+enum SocialVisibilityOption: String, CaseIterable, Codable, Identifiable {
+    case privateOnly = "private"
+    case followers
+
+    var id: String { rawValue }
+    var title: String { self == .privateOnly ? "Only me" : "Followers" }
+}
+
+struct RemoteAccountProfile: Decodable {
+    let id: UUID
+    let displayName: String
+    enum CodingKeys: String, CodingKey { case id; case displayName = "display_name" }
+}
+
+struct RemoteSocialSettings: Decodable {
+    let profileID: UUID
+    let liveVisibility: SocialVisibilityOption
+    let historyVisibility: SocialVisibilityOption
+    let reviewsVisibility: SocialVisibilityOption
+    enum CodingKeys: String, CodingKey {
+        case profileID = "profile_id"
+        case liveVisibility = "live_visibility"
+        case historyVisibility = "history_visibility"
+        case reviewsVisibility = "reviews_visibility"
+    }
+}
 
 struct RemoteSocialProfile: Decodable, Identifiable {
     let id: UUID
@@ -336,6 +369,48 @@ final class HarmonyCollaborationRepository {
             .value
     }
 
+    func accountProfile() async throws -> RemoteAccountProfile {
+        try await authenticate()
+        let userID = try await currentUserID()
+        return try await client.from("profiles")
+            .select("id,display_name")
+            .eq("id", value: userID.uuidString)
+            .single().execute().value
+    }
+
+    func updateDisplayName(_ displayName: String) async throws -> RemoteAccountProfile {
+        try await authenticate()
+        let userID = try await currentUserID()
+        return try await client.from("profiles")
+            .update(UpdateAccountProfile(display_name: displayName))
+            .eq("id", value: userID.uuidString)
+            .select("id,display_name")
+            .single().execute().value
+    }
+
+    func socialSettings() async throws -> RemoteSocialSettings {
+        try await authenticate()
+        let userID = try await currentUserID()
+        return try await client.from("profile_social_settings")
+            .select("profile_id,live_visibility,history_visibility,reviews_visibility")
+            .eq("profile_id", value: userID.uuidString)
+            .single().execute().value
+    }
+
+    func updateSocialSettings(_ settings: RemoteSocialSettings) async throws -> RemoteSocialSettings {
+        try await authenticate()
+        let userID = try await currentUserID()
+        return try await client.from("profile_social_settings")
+            .update(UpdateSocialSettings(
+                live_visibility: settings.liveVisibility.rawValue,
+                history_visibility: settings.historyVisibility.rawValue,
+                reviews_visibility: settings.reviewsVisibility.rawValue
+            ))
+            .eq("profile_id", value: userID.uuidString)
+            .select("profile_id,live_visibility,history_visibility,reviews_visibility")
+            .single().execute().value
+    }
+
     func socialProfiles() async throws -> [RemoteSocialProfile] {
         try await authenticate()
         let userID = try await currentUserID()
@@ -483,7 +558,7 @@ final class HarmonyCollaborationRepository {
         ))
     }
 
-    func publishListeningPresence(track: HarmonyTrack) async throws {
+    func publishListeningPresence(track: HarmonyTrack, visibility: SocialVisibilityOption) async throws {
         try await authenticate()
         let mapping = track.mappings.first(where: { !$0.providerID.isEmpty })
         let canonicalTrackID = try await canonicalTrackID(for: track)
@@ -494,6 +569,7 @@ final class HarmonyCollaborationRepository {
                 p_provider: mapping.map { $0.provider == .spotify ? "spotify" : "apple_music" },
                 p_provider_track_id: mapping?.providerID,
                 p_provider_deep_link: mapping?.deepLinkURL?.absoluteString,
+                p_visibility: visibility.rawValue,
                 p_started_at: Date(),
                 p_expires_at: Date().addingTimeInterval(5 * 60)
             )
@@ -505,7 +581,7 @@ final class HarmonyCollaborationRepository {
         _ = try await client.rpc("stop_listening_presence").execute()
     }
 
-    func createTrackReview(track: HarmonyTrack, rating: Double, body: String) async throws {
+    func createTrackReview(track: HarmonyTrack, rating: Double, body: String, visibility: SocialVisibilityOption) async throws {
         try await authenticate()
         let mapping = track.mappings.first(where: { !$0.providerID.isEmpty })
         let canonicalTrackID = try await canonicalTrackID(for: track)
@@ -514,7 +590,8 @@ final class HarmonyCollaborationRepository {
             p_provider: mapping.map { $0.provider == .spotify ? "spotify" : "apple_music" },
             p_provider_subject_id: mapping?.providerID,
             p_rating: rating,
-            p_body: body
+            p_body: body,
+            p_visibility: visibility.rawValue
         )).execute()
     }
 

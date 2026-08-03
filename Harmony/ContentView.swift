@@ -69,7 +69,9 @@ struct SocialView: View {
                 }
 
                 Section("Eavesdrop") {
-                    Text("Share the current Harmony track with approved followers for five minutes. Harmony shares activity and provider links, never audio.")
+                    Text(store.liveSocialVisibility == .followers
+                        ? "Share the current Harmony track with approved followers for five minutes. Harmony shares activity and provider links, never audio."
+                        : "Live listening is set to Only me. You can save a private five-minute activity card or enable Followers in Connections.")
                         .font(.footnote)
                         .foregroundColor(.secondary)
                     Button {
@@ -79,7 +81,9 @@ struct SocialView: View {
                             ProgressView()
                         } else {
                             Label(
-                                store.isEavesdropping ? "Stop sharing now listening" : "Share now listening",
+                                store.isEavesdropping
+                                    ? "Stop now-listening activity"
+                                    : (store.liveSocialVisibility == .followers ? "Share now listening" : "Save private now listening"),
                                 systemImage: store.isEavesdropping ? "ear.badge.xmark" : "ear.badge.checkmark"
                             )
                         }
@@ -137,7 +141,7 @@ struct SocialView: View {
                         }
                         TextField("Write a short review (optional)", text: $reviewBody, axis: .vertical)
                             .lineLimit(2...5)
-                        Button("Publish review to followers") {
+                        Button(store.reviewsSocialVisibility == .followers ? "Publish review to followers" : "Save private review") {
                             Task {
                                 await store.publishTrackReview(rating: rating, body: reviewBody)
                                 reviewBody = ""
@@ -175,6 +179,7 @@ struct SocialView: View {
             }
             .navigationTitle("Listen")
             .task {
+                await store.refreshAccountSettings()
                 await store.refreshSocialProfiles()
                 await store.refreshListeningFeed()
                 await store.refreshMusicReviews()

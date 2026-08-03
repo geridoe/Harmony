@@ -39,6 +39,9 @@ class HarmonyUITests: XCTestCase {
         connectionsTab.tap()
 
         XCTAssertTrue(app.navigationBars["Connections"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Harmony profile"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Social privacy"].waitForExistence(timeout: 5))
+        app.swipeUp()
         XCTAssertTrue(app.staticTexts["Your listening services"].waitForExistence(timeout: 5))
     }
 

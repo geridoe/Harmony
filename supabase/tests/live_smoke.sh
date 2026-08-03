@@ -84,6 +84,21 @@ rest_get() {
     -o "$output_file"
 }
 
+rest_patch() {
+  local token="$1"
+  local path="$2"
+  local body="$3"
+  local output_file="$4"
+  curl --silent --show-error --fail-with-body \
+    -X PATCH "$supabase_url/rest/v1/$path" \
+    -H "apikey: $publishable_key" \
+    -H "Authorization: Bearer $token" \
+    -H "Content-Type: application/json" \
+    -H "Prefer: return=representation" \
+    --data "$body" \
+    -o "$output_file"
+}
+
 new_uuid() {
   uuidgen | tr '[:upper:]' '[:lower:]'
 }
@@ -94,6 +109,22 @@ collaborator_token="$(anonymous_token "$smoke_tmp/collaborator-auth.json")"
 conductor_id="$(jq -er '.user.id' "$smoke_tmp/conductor-auth.json")"
 collaborator_id="$(jq -er '.user.id' "$smoke_tmp/collaborator-auth.json")"
 invite_code="SMK$(printf '%05d' "$((RANDOM % 100000))")"
+
+stage="private profile defaults and account settings"
+rest_get "$conductor_token" \
+  "profile_social_settings?select=profile_id,live_visibility,history_visibility,reviews_visibility&profile_id=eq.$conductor_id" \
+  "$smoke_tmp/private-settings.json"
+jq -e 'length == 1 and .[0].live_visibility == "private" and .[0].history_visibility == "private" and .[0].reviews_visibility == "private"' "$smoke_tmp/private-settings.json" >/dev/null
+rest_patch "$conductor_token" \
+  "profiles?id=eq.$conductor_id" \
+  '{"display_name":"Harmony Smoke Conductor"}' \
+  "$smoke_tmp/profile-update.json"
+jq -e 'length == 1 and .[0].display_name == "Harmony Smoke Conductor"' "$smoke_tmp/profile-update.json" >/dev/null
+rest_patch "$conductor_token" \
+  "profile_social_settings?profile_id=eq.$conductor_id" \
+  '{"live_visibility":"followers","history_visibility":"private","reviews_visibility":"followers"}' \
+  "$smoke_tmp/settings-update.json"
+jq -e 'length == 1 and .[0].live_visibility == "followers" and .[0].history_visibility == "private" and .[0].reviews_visibility == "followers"' "$smoke_tmp/settings-update.json" >/dev/null
 
 stage="social follow enforcement"
 rpc "$conductor_token" request_social_follow \
