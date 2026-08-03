@@ -1013,6 +1013,10 @@ jq -e 'length == 1 and (.[] | .review_comments | length) == 2 and (.[] | .review
 rpc "$collaborator_token" update_music_review \
   "{\"p_review_id\":\"$review_id\",\"p_rating\":4.5,\"p_body\":\"A great Harmony smoke review.\",\"p_visibility\":\"private\",\"p_contains_spoilers\":true,\"p_is_loved\":true}" \
   "$smoke_tmp/private-review-for-engagement-authorization.json"
+rest_get "$conductor_token" \
+  "music_reviews?select=id,profile_id&id=eq.$review_id&limit=1" \
+  "$smoke_tmp/private-notification-review-target.json"
+[[ "$(jq 'length' "$smoke_tmp/private-notification-review-target.json")" -eq 0 ]]
 hidden_review_comments_status="$(rpc_status "$conductor_token" list_review_comments \
   "{\"p_review_id\":\"$review_id\",\"p_before_created_at\":null,\"p_before_id\":null,\"p_limit\":50}" \
   "$smoke_tmp/hidden-review-comments.json")"
@@ -1193,7 +1197,7 @@ music_list_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_t
 music_list_revision="$(jq -er 'if type == "array" then .[0].entries_revision else .entries_revision end' "$smoke_tmp/music-list-create.json")"
 
 rest_get "$conductor_token" \
-  "music_lists?select=id&id=eq.$music_list_id" \
+  "music_lists?select=id&id=eq.$music_list_id&limit=1" \
   "$smoke_tmp/private-list-follower.json"
 [[ "$(jq 'length' "$smoke_tmp/private-list-follower.json")" -eq 0 ]]
 private_entries_status="$(rpc_status "$conductor_token" list_music_list_entries \
@@ -1255,6 +1259,25 @@ rest_get "$conductor_token" \
   "$smoke_tmp/follower-music-list-client-shape.json"
 jq -e --arg list "$music_list_id" 'length == 1 and .[0].id == $list and (.[] | .owner.display_name | length) > 0' \
   "$smoke_tmp/follower-music-list-client-shape.json" >/dev/null
+
+stage="visible exact notification target arrays"
+rest_get "$conductor_token" \
+  "profiles?select=id,display_name&id=eq.$collaborator_id&limit=1" \
+  "$smoke_tmp/visible-notification-profile-target.json"
+jq -e --arg profile "$collaborator_id" 'length == 1 and .[0].id == $profile and (.[] | .display_name | length) > 0' "$smoke_tmp/visible-notification-profile-target.json" >/dev/null
+rest_get "$conductor_token" \
+  "music_reviews?select=id,profile_id&id=eq.$review_id&limit=1" \
+  "$smoke_tmp/visible-notification-review-target.json"
+jq -e --arg review "$review_id" --arg owner "$collaborator_id" 'length == 1 and .[0].id == $review and .[0].profile_id == $owner' "$smoke_tmp/visible-notification-review-target.json" >/dev/null
+rest_get "$conductor_token" \
+  "music_lists?select=id,owner_id,title&id=eq.$music_list_id&limit=1" \
+  "$smoke_tmp/visible-notification-list-target.json"
+jq -e --arg list "$music_list_id" --arg owner "$collaborator_id" 'length == 1 and .[0].id == $list and .[0].owner_id == $owner and (.[] | .title | length) > 0' "$smoke_tmp/visible-notification-list-target.json" >/dev/null
+rpc "$conductor_token" list_eavesdrop_broadcasts \
+  "{\"p_broadcast_id\":\"$listening_broadcast_id\",\"p_viewer_provider\":\"spotify\",\"p_storefront\":\"global\"}" \
+  "$smoke_tmp/visible-notification-broadcast-target.json"
+jq -e --arg broadcast "$listening_broadcast_id" 'length == 1 and .[0].broadcast_id == $broadcast' "$smoke_tmp/visible-notification-broadcast-target.json" >/dev/null
+
 rpc "$conductor_token" list_music_list_entries \
   "{\"p_list_id\":\"$music_list_id\",\"p_after_position\":null,\"p_limit\":100}" \
   "$smoke_tmp/follower-list-entries.json"
@@ -1518,7 +1541,7 @@ rest_get "$conductor_token" \
   "$smoke_tmp/blocked-history.json"
 [[ "$(jq 'length' "$smoke_tmp/blocked-history.json")" -eq 0 ]]
 rest_get "$conductor_token" \
-  "profiles?select=id&id=eq.$collaborator_id" \
+  "profiles?select=id&id=eq.$collaborator_id&limit=1" \
   "$smoke_tmp/blocked-profile.json"
 [[ "$(jq 'length' "$smoke_tmp/blocked-profile.json")" -eq 0 ]]
 rest_get "$conductor_token" \
@@ -1533,6 +1556,10 @@ rest_get "$conductor_token" \
   "music_lists?select=id&id=eq.$music_list_id" \
   "$smoke_tmp/blocked-music-list.json"
 [[ "$(jq 'length' "$smoke_tmp/blocked-music-list.json")" -eq 0 ]]
+rpc "$conductor_token" list_eavesdrop_broadcasts \
+  "{\"p_broadcast_id\":\"$listening_broadcast_id\",\"p_viewer_provider\":\"spotify\",\"p_storefront\":\"global\"}" \
+  "$smoke_tmp/blocked-notification-broadcast-target.json"
+[[ "$(jq 'length' "$smoke_tmp/blocked-notification-broadcast-target.json")" -eq 0 ]]
 blocked_list_entries_status="$(rpc_status "$conductor_token" list_music_list_entries \
   "{\"p_list_id\":\"$music_list_id\",\"p_after_position\":null,\"p_limit\":100}" \
   "$smoke_tmp/blocked-music-list-entries.json")"
@@ -1754,6 +1781,10 @@ rest_get "$collaborator_token" \
   "listening_broadcasts?select=id,ended_at&id=eq.$listening_broadcast_id" \
   "$smoke_tmp/stopped-eavesdrop-broadcast.json"
 jq -e 'length == 1 and .[0].ended_at != null' "$smoke_tmp/stopped-eavesdrop-broadcast.json" >/dev/null
+rpc "$collaborator_token" list_eavesdrop_broadcasts \
+  "{\"p_broadcast_id\":\"$listening_broadcast_id\",\"p_viewer_provider\":\"apple_music\",\"p_storefront\":\"us\"}" \
+  "$smoke_tmp/stopped-notification-broadcast-target.json"
+[[ "$(jq 'length' "$smoke_tmp/stopped-notification-broadcast-target.json")" -eq 0 ]]
 stopped_eavesdrop_comment_status="$(rpc_status "$conductor_token" add_listening_broadcast_comment \
   "{\"p_broadcast_id\":\"$listening_broadcast_id\",\"p_body\":\"Too late.\"}" \
   "$smoke_tmp/stopped-eavesdrop-comment.json")"
@@ -1763,7 +1794,7 @@ rpc "$collaborator_token" delete_music_list \
   "$smoke_tmp/music-list-delete.json"
 [[ "$(jq -er '.' "$smoke_tmp/music-list-delete.json")" == "true" ]]
 rest_get "$collaborator_token" \
-  "music_lists?select=id&id=eq.$music_list_id" \
+  "music_lists?select=id&id=eq.$music_list_id&limit=1" \
   "$smoke_tmp/deleted-music-list.json"
 [[ "$(jq 'length' "$smoke_tmp/deleted-music-list.json")" -eq 0 ]]
 rpc "$conductor_token" request_social_follow \
@@ -1786,7 +1817,7 @@ rpc "$collaborator_token" delete_music_review \
   "$smoke_tmp/review-delete.json"
 [[ "$(jq -er '.' "$smoke_tmp/review-delete.json")" == "true" ]]
 rest_get "$collaborator_token" \
-  "music_reviews?select=id&id=eq.$review_id" \
+  "music_reviews?select=id&id=eq.$review_id&limit=1" \
   "$smoke_tmp/deleted-review.json"
 [[ "$(jq 'length' "$smoke_tmp/deleted-review.json")" -eq 0 ]]
 rpc "$collaborator_token" delete_music_review \

@@ -379,17 +379,66 @@ struct SocialView: View {
 
     @ViewBuilder
     private func notificationRow(_ notification: RemoteSocialNotification) -> some View {
-        if let reviewID = notification.reviewID,
-           notification.kind == "review_comment" || notification.kind == "review_reaction" {
+        if notification.kind == "follow_request" || notification.kind == "follow_accepted" {
             NavigationLink {
-                ReviewByIDDestination(
-                    reviewID: reviewID,
-                    notificationID: notification.readAt == nil ? notification.id : nil
-                )
+                ExactNotificationDestination(
+                    notificationID: notification.readAt == nil ? notification.id : nil,
+                    unavailableTitle: "Profile unavailable",
+                    unavailableMessage: "This listener is no longer available to you.",
+                    resolver: { try await store.resolveNotificationActor(notification.actorID) }
+                ) { profile in
+                    MemberProfileView(profileID: profile.id, displayName: profile.displayName)
+                }
+            } label: {
+                notificationLabel(notification)
+            }
+            .accessibilityIdentifier("notification-profile-\(notification.actorID.uuidString)")
+        } else if let reviewID = notification.reviewID,
+                  notification.kind == "review_comment" || notification.kind == "review_reaction" {
+            NavigationLink {
+                ExactNotificationDestination(
+                    notificationID: notification.readAt == nil ? notification.id : nil,
+                    unavailableTitle: "Review unavailable",
+                    unavailableMessage: "It may have been removed or is no longer visible to you.",
+                    resolver: { try await store.resolveNotificationReview(reviewID) }
+                ) { review in
+                    ReviewDetailView(reviewID: review.id, fallbackReview: review, onEdit: nil)
+                }
             } label: {
                 notificationLabel(notification)
             }
             .accessibilityIdentifier("notification-review-\(reviewID.uuidString)")
+        } else if let listID = notification.musicListID,
+                  notification.kind == "music_list_like" || notification.kind == "music_list_comment" {
+            NavigationLink {
+                ExactNotificationDestination(
+                    notificationID: notification.readAt == nil ? notification.id : nil,
+                    unavailableTitle: "List unavailable",
+                    unavailableMessage: "It may have been removed or is no longer visible to you.",
+                    resolver: { try await store.resolveNotificationMusicList(listID) }
+                ) { list in
+                    MusicListDetailView(listID: list.id)
+                }
+            } label: {
+                notificationLabel(notification)
+            }
+            .accessibilityIdentifier("notification-list-\(listID.uuidString)")
+        } else if let broadcastID = notification.listeningBroadcastID,
+                  notification.kind == "listening_broadcast_comment"
+                    || notification.kind == "listening_broadcast_reaction" {
+            NavigationLink {
+                ExactNotificationDestination(
+                    notificationID: notification.readAt == nil ? notification.id : nil,
+                    unavailableTitle: "Listening activity ended",
+                    unavailableMessage: "This live listening activity has ended or is no longer available to you.",
+                    resolver: { try await store.resolveActiveNotificationBroadcast(broadcastID) }
+                ) { broadcast in
+                    EavesdropBroadcastDetailView(broadcast: broadcast)
+                }
+            } label: {
+                notificationLabel(notification)
+            }
+            .accessibilityIdentifier("notification-broadcast-\(broadcastID.uuidString)")
         } else {
             Button {
                 guard notification.readAt == nil else { return }
@@ -420,6 +469,116 @@ struct SocialView: View {
                     .accessibilityLabel("Unread")
             }
         }
+    }
+}
+
+enum ExactNotificationDestinationState<Value> {
+    case loading
+    case available(Value)
+    case terminalUnavailable
+    case retryableFailure
+
+    var consumesNotification: Bool {
+        switch self {
+        case .available, .terminalUnavailable: true
+        case .loading, .retryableFailure: false
+        }
+    }
+}
+
+func resolveExactNotificationDestination<Value>(
+    using resolver: () async throws -> Value?
+) async -> ExactNotificationDestinationState<Value> {
+    do {
+        if let value = try await resolver() { return .available(value) }
+        return .terminalUnavailable
+    } catch {
+        return .retryableFailure
+    }
+}
+
+/// A notification embed can name a destination but cannot prove that it is
+/// still visible. Every route re-resolves through current RLS. Empty results
+/// are terminal and can safely consume the notification; thrown transport or
+/// decoding failures remain unread and offer Retry.
+private struct ExactNotificationDestination<Value, Destination: View>: View {
+    @EnvironmentObject private var store: HarmonySessionStore
+    let notificationID: UUID?
+    let unavailableTitle: String
+    let unavailableMessage: String
+    let resolver: () async throws -> Value?
+    @ViewBuilder let destination: (Value) -> Destination
+    @State private var state: ExactNotificationDestinationState<Value> = .loading
+    @State private var loadGeneration: UUID?
+    @State private var didMarkNotification = false
+
+    var body: some View {
+        Group {
+            switch state {
+            case .loading:
+                ProgressView("Loading destination…")
+            case .available(let value):
+                destination(value)
+            case .terminalUnavailable:
+                VStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.circle")
+                        .font(.largeTitle)
+                        .foregroundColor(.secondary)
+                    Text(unavailableTitle).font(.headline)
+                    Text(unavailableMessage)
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding()
+                .accessibilityIdentifier("notification-destination-unavailable")
+            case .retryableFailure:
+                VStack(spacing: 10) {
+                    Image(systemName: "wifi.exclamationmark")
+                        .font(.largeTitle)
+                        .foregroundColor(.secondary)
+                    Text("Couldn’t load this notification").font(.headline)
+                    Text("Check your connection and try again. This notification remains unread.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button("Retry") { Task { await load() } }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("notification-destination-retry")
+                }
+                .padding()
+            }
+        }
+        .task { await load() }
+    }
+
+    @MainActor
+    private func load() async {
+        let generation = UUID()
+        loadGeneration = generation
+        state = .loading
+
+        let resolved = await resolveExactNotificationDestination(using: resolver)
+        guard loadGeneration == generation else { return }
+
+        if resolved.consumesNotification,
+           let notificationID,
+           !didMarkNotification {
+            // Keep the destination loading until the idempotent mark attempt
+            // finishes. The unstructured task is not tied to this view's
+            // `.task` lifetime, so navigating back cannot cancel the write.
+            let markTask = Task { @MainActor in
+                await store.markSocialNotificationsRead(notificationID)
+            }
+            if await markTask.value {
+                didMarkNotification = true
+            }
+        }
+
+        guard loadGeneration == generation else { return }
+        // A failed mark deliberately does not block a truthful destination;
+        // the store leaves the notification unread so a later load can retry.
+        state = resolved
     }
 }
 

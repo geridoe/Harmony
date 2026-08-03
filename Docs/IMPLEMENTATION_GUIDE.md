@@ -698,6 +698,19 @@ hidden by a current block. Review and Eavesdrop reaction notifications are
 lifetime-deduplicated per actor and object so toggling a reaction cannot spam
 the recipient's inbox.
 
+Notification navigation never treats embedded display metadata or an existing
+cache as authorization. Follow, Review, List, and Eavesdrop rows force a fresh
+RLS-filtered array lookup for the exact actor/object ID. A successful empty
+result shows a terminal unavailable page; a thrown transport/auth/decoding
+failure remains unread and offers Retry. Before showing an available target,
+the store clears its profile shelves, review thread, list detail, or Eavesdrop
+conversation cache so content retained from an older visibility context cannot
+flash on screen. Read state is attempted before publishing a consuming
+destination and is idempotently guarded across retries. Eavesdrop currently
+reopens only an active exact broadcast; ended/expired activity gets a truthful
+ended page because durable broadcasts do not yet snapshot enough track/provider
+metadata to reconstruct the old conversation.
+
 ### Realtime
 
 The `supabase_realtime` publication includes rooms, members, queue items,

@@ -565,6 +565,22 @@ struct RemoteSocialNotification: Decodable, Identifiable {
         case createdAt = "created_at"
         case readAt = "read_at"
     }
+
+    func markingRead(at date: Date) -> RemoteSocialNotification {
+        RemoteSocialNotification(
+            id: id,
+            actorID: actorID,
+            kind: kind,
+            createdAt: createdAt,
+            readAt: readAt ?? date,
+            actor: actor,
+            reviewID: reviewID,
+            musicListID: musicListID,
+            review: review,
+            musicList: musicList,
+            listeningBroadcastID: listeningBroadcastID
+        )
+    }
 }
 
 struct RemoteSocialNotificationCursor: Equatable {
@@ -1399,6 +1415,49 @@ final class HarmonyCollaborationRepository {
     func unreadSocialNotificationCount() async throws -> Int {
         try await authenticate()
         return try await client.rpc("count_unread_social_notifications").execute().value
+    }
+
+    /// Notification embeds are display snapshots, not authorization proofs.
+    /// Exact destinations deliberately re-resolve through current RLS and use
+    /// array decoding so an empty visible result is distinguishable from a
+    /// transport/decoder failure.
+    func notificationActorProfile(id: UUID) async throws -> RemoteSocialProfile? {
+        try await authenticate()
+        let rows: [RemoteSocialProfile] = try await client.from("profiles")
+            .select("id,display_name")
+            .eq("id", value: id.uuidString)
+            .limit(1)
+            .execute().value
+        return rows.first
+    }
+
+    func notificationReview(id: UUID) async throws -> RemoteMusicReview? {
+        try await authenticate()
+        do {
+            let rows: [RemoteMusicReview] = try await client.from("music_reviews")
+                .select(Self.musicReviewSelection)
+                .eq("id", value: id.uuidString)
+                .limit(1)
+                .execute().value
+            return rows.first
+        } catch where Self.isMissingCanonicalAlbumContract(error) {
+            let rows: [RemoteMusicReview] = try await client.from("music_reviews")
+                .select(Self.legacyMusicReviewSelection)
+                .eq("id", value: id.uuidString)
+                .limit(1)
+                .execute().value
+            return rows.first
+        }
+    }
+
+    func notificationMusicList(id: UUID) async throws -> RemoteMusicList? {
+        try await authenticate()
+        let rows: [RemoteMusicList] = try await client.from("music_lists")
+            .select(Self.musicListSelection)
+            .eq("id", value: id.uuidString)
+            .limit(1)
+            .execute().value
+        return rows.first
     }
 
     func markSocialNotificationsRead(_ notificationID: UUID?) async throws {

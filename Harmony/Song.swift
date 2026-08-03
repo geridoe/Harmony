@@ -3073,22 +3073,38 @@ final class HarmonySessionStore: ObservableObject {
             canonicalTrack: track
         )]
         publicProfileShelves[entry.profileID] = shelves
-        socialNotifications = [RemoteSocialNotification(
-            id: UUID(uuidString: "70000000-0000-0000-0000-000000000007")!,
-            actorID: UUID(uuidString: "90000000-0000-0000-0000-000000000009")!,
-            kind: "review_comment",
-            createdAt: Date(),
-            readAt: Date(),
-            actor: RemoteProfile(displayName: "UI Test Commenter"),
-            reviewID: review.id,
-            musicListID: nil,
-            review: RemoteNotificationReview(
-                subjectTitle: review.subjectTitle,
-                canonicalTrack: track
+        socialNotifications = [
+            RemoteSocialNotification(
+                id: UUID(uuidString: "70000000-0000-0000-0000-000000000007")!,
+                actorID: UUID(uuidString: "90000000-0000-0000-0000-000000000009")!,
+                kind: "review_comment",
+                createdAt: Date(),
+                readAt: Date(),
+                actor: RemoteProfile(displayName: "UI Test Commenter"),
+                reviewID: review.id,
+                musicListID: nil,
+                review: RemoteNotificationReview(
+                    subjectTitle: review.subjectTitle,
+                    canonicalTrack: track
+                ),
+                musicList: nil,
+                listeningBroadcastID: nil
             ),
-            musicList: nil,
-            listeningBroadcastID: nil
-        )]
+            RemoteSocialNotification(
+                id: UUID(uuidString: "71000000-0000-0000-0000-000000000007")!,
+                actorID: UUID(uuidString: "91000000-0000-0000-0000-000000000009")!,
+                kind: "listening_broadcast_reaction",
+                createdAt: Date().addingTimeInterval(-60),
+                readAt: nil,
+                actor: RemoteProfile(displayName: "UI Test Live Listener"),
+                reviewID: nil,
+                musicListID: nil,
+                review: nil,
+                musicList: nil,
+                listeningBroadcastID: UUID(uuidString: "72000000-0000-0000-0000-000000000007")!
+            )
+        ]
+        unreadSocialNotificationCount = 1
     }
 #endif
 
@@ -3224,11 +3240,115 @@ final class HarmonySessionStore: ObservableObject {
         }
     }
 
-    func markSocialNotificationsRead(_ notificationID: UUID? = nil) async {
+    @discardableResult
+    func markSocialNotificationsRead(_ notificationID: UUID? = nil) async -> Bool {
+#if DEBUG
+        if isDiaryEditorUITestFixtureActive {
+            let now = Date()
+            socialNotifications = socialNotifications.map { notification in
+                guard notification.readAt == nil,
+                      notificationID == nil || notification.id == notificationID else {
+                    return notification
+                }
+                return notification.markingRead(at: now)
+            }
+            unreadSocialNotificationCount = socialNotifications.lazy.filter { $0.readAt == nil }.count
+            return true
+        }
+#endif
         do {
             try await collaborationRepository.markSocialNotificationsRead(notificationID)
             await refreshSocialNotifications()
-        } catch { collaborationMessage = "Could not update social notifications." }
+            return true
+        } catch {
+            collaborationMessage = "Could not update social notifications."
+            return false
+        }
+    }
+
+    func resolveNotificationActor(_ actorID: UUID) async throws -> RemoteSocialProfile? {
+#if DEBUG
+        if isDiaryEditorUITestFixtureActive {
+            let profile = socialProfiles.first(where: { $0.id == actorID })
+            if profile != nil { publicProfileShelves.removeValue(forKey: actorID) }
+            return profile
+        }
+#endif
+        let profile = try await collaborationRepository.notificationActorProfile(id: actorID)
+        if profile != nil {
+            // Never render shelves retained from an authorization context that
+            // predates this forced profile lookup.
+            publicProfileShelves.removeValue(forKey: actorID)
+        }
+        return profile
+    }
+
+    func resolveNotificationReview(_ reviewID: UUID) async throws -> RemoteMusicReview? {
+#if DEBUG
+        if isDiaryEditorUITestFixtureActive {
+            let review = review(withID: reviewID)
+            if let review {
+                reviewDetailsByID[reviewID] = review
+                reviewEngagementDetails[reviewID] = ReviewDetailEngagementState()
+            }
+            return review
+        }
+#endif
+        let review = try await collaborationRepository.notificationReview(id: reviewID)
+        if let review {
+            reviewDetailsByID[reviewID] = review
+            reviewEngagementDetails[reviewID] = ReviewDetailEngagementState()
+        }
+        return review
+    }
+
+    func resolveNotificationMusicList(_ listID: UUID) async throws -> RemoteMusicList? {
+#if DEBUG
+        if isDiaryEditorUITestFixtureActive {
+            let list = ownerMusicLists.first(where: { $0.id == listID })
+                ?? musicListDetails[listID]?.list
+            if let list { musicListDetails[listID] = MusicListDetailState(list: list) }
+            return list
+        }
+#endif
+        let list = try await collaborationRepository.notificationMusicList(id: listID)
+        if let list {
+            cacheMusicList(list)
+            musicListDetails[listID] = MusicListDetailState(list: list)
+        }
+        return list
+    }
+
+    func resolveActiveNotificationBroadcast(_ broadcastID: UUID) async throws -> EavesdropBroadcast? {
+#if DEBUG
+        if isDiaryEditorUITestFixtureActive {
+            let broadcast = eavesdropFeed.first(where: { $0.id == broadcastID && $0.expiresAt > Date() })
+            if let broadcast {
+                eavesdropDetails[broadcastID] = EavesdropBroadcastDetailState(broadcast: broadcast)
+            }
+            return broadcast
+        }
+#endif
+        var rows = try await collaborationRepository.eavesdropBroadcastRows(broadcastID: broadcastID)
+        if providerState(for: .spotify) == .connected {
+            rows += (try? await collaborationRepository.eavesdropBroadcastRows(
+                broadcastID: broadcastID,
+                viewerProvider: .spotify,
+                storefront: "global"
+            )) ?? []
+        }
+        if providerState(for: .appleMusic) == .connected {
+            rows += (try? await collaborationRepository.eavesdropBroadcastRows(
+                broadcastID: broadcastID,
+                viewerProvider: .appleMusic,
+                storefront: "us"
+            )) ?? []
+        }
+        let broadcast = mergedEavesdropBroadcasts(rows).first
+        if let broadcast {
+            eavesdropDetails[broadcastID] = EavesdropBroadcastDetailState(broadcast: broadcast)
+        }
+        return broadcast
     }
 
     func socialRelationship(with profileID: UUID) -> SocialRelationshipState {

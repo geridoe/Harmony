@@ -668,6 +668,33 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(merged.last?.id, olderID, "Realtime refresh must retain the raw loaded-page depth")
     }
 
+    func testExactNotificationResolutionConsumesOnlyAvailableOrTerminalResults() async {
+        let available: ExactNotificationDestinationState<String> = await resolveExactNotificationDestination {
+            "Destination"
+        }
+        let terminal: ExactNotificationDestinationState<String> = await resolveExactNotificationDestination {
+            nil
+        }
+        let retryable: ExactNotificationDestinationState<String> = await resolveExactNotificationDestination {
+            throw URLError(.timedOut)
+        }
+
+        if case .available(let value) = available {
+            XCTAssertEqual(value, "Destination")
+        } else {
+            XCTFail("A visible exact lookup must become available")
+        }
+        if case .terminalUnavailable = terminal {} else {
+            XCTFail("An RLS-valid empty array must be terminally unavailable")
+        }
+        if case .retryableFailure = retryable {} else {
+            XCTFail("A transport failure must remain retryable")
+        }
+        XCTAssertTrue(available.consumesNotification)
+        XCTAssertTrue(terminal.consumesNotification)
+        XCTAssertFalse(retryable.consumesNotification, "Transient failure must leave an unread notification unread")
+    }
+
     func testReviewDraftSnapshotsAudienceAndKeepsAllAuthoredFields() {
         var profileDefault = SocialVisibilityOption.followers
         let subject = ReviewDraftSubject.track(reviewTrack(title: "Snapshot song"))
