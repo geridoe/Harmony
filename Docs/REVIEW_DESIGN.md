@@ -1,7 +1,7 @@
 # Reviews and listening journal design
 
 **Decision date:** 2 August 2026  
-**Status:** first-class Reviews, canonical album pages, and album rating state deployed; follower-review home planned
+**Status:** first-class Following / My Reviews / Ratings root and review foundations deployed
 
 ## Why this is a separate product surface
 
@@ -139,7 +139,7 @@ Only the first stage should be described as implemented:
 8. **Current:** a track review can optionally create a separately visible,
    linked Diary entry in the same transaction. The Diary may copy the review
    rating, use a different historical rating, or remain unrated.
-9. **Next:** make follower review activity the opening shelf of the dedicated
+9. **Current:** follower review activity is the opening shelf of the dedicated
    Reviews root, beside My Reviews and Ratings, backed by a bounded keyset RPC.
 10. **Next:** year/month Diary grouping, a richer member profile overview, and
    server-side filtered search if exhaustive results are required.
@@ -169,9 +169,11 @@ reader's response to that review.
 
 ## First implementation
 
-The fifth iOS tab is a focused Reviews page with two peer shelves:
+The fifth iOS tab is a focused Reviews page with three peer shelves:
 
-- **Reviews** contains the owner's published song and album opinions.
+- **Following** contains paginated written reviews from approved followed
+  accounts and is the default landing shelf.
+- **My Reviews** contains the owner's published song and album opinions.
 - **Ratings** contains the owner's current song and album ratings independently
   of review authorship, with All / Songs / Albums scopes and ten-bucket
   half-star distributions.
@@ -185,7 +187,7 @@ not appear as a score in Ratings or rating distributions. Diary, Activity, Music
 Lists are separate full-page destinations under Listen rather than sections in
 the Reviews page.
 
-### Next dedicated-page information architecture
+### Implemented dedicated-page information architecture
 
 The Reviews root will have three peer destinations rather than embedding the
 feature in the listening-history screen:
@@ -202,12 +204,10 @@ feature in the listening-history screen:
    including the half-star distribution. A rating does not require prose and
    does not become a social review by itself.
 
-That last boundary corrects a current prototype behavior: the existing review
-composer can persist a rating-only `music_reviews` row. The production flow
-must instead write rating-only input to the track/album subject state and show
-it only in Ratings. **My Reviews** and **Following** require nonblank authored
-text, so every row there is a real, commentable review rather than an empty
-social post.
+Rating-only input writes track/album subject state and appears only in Ratings.
+For a track it may atomically create a separate Diary snapshot without creating
+a review. **My Reviews** and **Following** require nonblank authored text, so
+every row there is a real, commentable review rather than an empty social post.
 
 The compose action remains available from every destination. Selecting music
 comes first, then the author may independently add a half-star rating, Loved

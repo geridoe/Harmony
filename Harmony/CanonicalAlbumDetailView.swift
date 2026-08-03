@@ -66,6 +66,16 @@ struct CanonicalAlbumDetailView: View {
 
     private var isSaving: Bool { store.isSavingAlbumSubjectState(for: album.id) }
     private var isDirty: Bool { draft != savedDraft }
+    private var reviewSubmissionIntent: MusicOpinionSubmissionIntent {
+        musicOpinionSubmissionIntent(rating: reviewRating, body: reviewBody)
+    }
+    private var reviewSubmissionTitle: String {
+        switch reviewSubmissionIntent {
+        case .invalid: "Save"
+        case .ratingOnly: "Save rating"
+        case .writtenReview: reviewVisibility == .followers ? "Publish review" : "Save review"
+        }
+    }
 
     private var listenedBinding: Binding<Bool> {
         Binding(
@@ -272,11 +282,11 @@ struct CanonicalAlbumDetailView: View {
                 reviewVisibility = store.reviewsSocialVisibility
                 isComposingReview = true
             } label: {
-                Label("Write a review", systemImage: "square.and.pencil")
+                Label("Rate or review", systemImage: "square.and.pencil")
             }
             .disabled(reviewableAlbum == nil)
             .accessibilityIdentifier("canonical-album-write-review")
-            Text("A review may be unrated. When included, its rating and Loved state become your latest album opinion.")
+            Text("Writing publishes a review. A rating without writing updates only your current album rating.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -307,14 +317,14 @@ struct CanonicalAlbumDetailView: View {
                     }
                 }
             }
-            .navigationTitle("Review album")
+            .navigationTitle("Rate or review album")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { isComposingReview = false }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(reviewVisibility == .followers ? "Publish" : "Save") {
+                    Button(reviewSubmissionTitle) {
                         guard let reviewableAlbum else { return }
                         Task {
                             let didSave = await store.publishAlbumReview(
@@ -334,7 +344,7 @@ struct CanonicalAlbumDetailView: View {
                     .disabled(
                         store.isPublishingMusicReview
                             || reviewableAlbum == nil
-                            || (reviewRating == nil && reviewBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            || reviewSubmissionIntent == .invalid
                     )
                 }
             }

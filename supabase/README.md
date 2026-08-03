@@ -70,6 +70,13 @@ account merely because it blocked the caller.
 
 Review collections read transactionally maintained `heart_count` and
 `comment_count` columns instead of embedding every child row.
+`list_following_reviews(subject_kind, before_created_at, before_id, limit)` is
+the dedicated written-review stream: it requires an accepted outgoing follow,
+rechecks current Followers visibility and blocks, filters Songs/Albums before
+its keyset limit, and excludes legacy blank-body rows. `get_my_rating_distribution`
+returns all ten half-star buckets plus an exhaustive total and average from
+current track/album subject state; it does not derive Ratings from loaded
+review pages.
 `list_review_comments(review_id, before_created_at, before_id, limit)` returns
 newest-first active comments with a paired `(created_at, id)` keyset cursor and
 a 1–100 row bound. `get_review_engagement(review_id)` returns exhaustive totals
@@ -82,6 +89,14 @@ visible manual Diary entry linked to that review. Review and Diary ratings are
 independent snapshots; either may be unrated. The review is written after
 the Diary so the optional review rating/Loved values become current track state, and any
 late review/link failure rolls the whole transaction back.
+
+Authored review RPCs require nonblank prose. A stars-only action belongs to
+current subject state and creates no `music_reviews` or review-activity row.
+`save_track_rating_with_optional_diary(...)` atomically writes an optional
+manual Diary snapshot first and the required current track rating/Loved state
+last, so a different historical Diary rating cannot overwrite the current
+opinion. Legacy rating-only review rows remain stored for compatibility but
+are excluded from owner/profile/following review pages and review statistics.
 
 Review deletion is a soft delete. `delete_music_review(...)` also clears the
 link from any owner Diary entry in the same transaction, preserving the Diary

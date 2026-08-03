@@ -404,8 +404,21 @@ func reviewCommentCanBeDeleted(
     return viewerID == commentAuthorID || viewerID == reviewOwnerID
 }
 
-func reviewContentIsValid(rating: Double?, body: String) -> Bool {
-    rating != nil || !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+enum MusicOpinionSubmissionIntent: Equatable {
+    case invalid
+    case ratingOnly(Double)
+    case writtenReview(body: String, rating: Double?)
+}
+
+func musicOpinionSubmissionIntent(rating: Double?, body: String) -> MusicOpinionSubmissionIntent {
+    let prose = body.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !prose.isEmpty { return .writtenReview(body: prose, rating: rating) }
+    if let rating { return .ratingOnly(rating) }
+    return .invalid
+}
+
+func reviewBodyIsValid(_ body: String) -> Bool {
+    !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 }
 
 struct PaginatedShelfState<Item> {
@@ -660,6 +673,12 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var spotifyHistoryImportMessage: String?
     @Published private(set) var musicReviews: [RemoteMusicReview] = []
     @Published private(set) var ownerReviews: [RemoteMusicReview] = []
+    @Published private(set) var followingReviewsByScope: [String: [RemoteMusicReview]] = [:]
+    @Published private(set) var refreshingFollowingReviewScopes: Set<String> = []
+    @Published private(set) var loadingMoreFollowingReviewScopes: Set<String> = []
+    @Published private(set) var followingReviewsHasMoreByScope: [String: Bool] = [:]
+    @Published private(set) var myRatingDistributions: [String: MyRatingDistribution] = [:]
+    @Published private(set) var refreshingRatingDistributionScopes: Set<String> = []
     @Published private(set) var reviewDetailsByID: [UUID: RemoteMusicReview] = [:]
     @Published private(set) var reviewEngagementDetails: [UUID: ReviewDetailEngagementState] = [:]
     @Published private(set) var ownerReviewStats: RemoteOwnerReviewStats = .empty
@@ -1476,7 +1495,9 @@ final class HarmonySessionStore: ObservableObject {
             async let feed: Void = self.refreshListeningFeed()
             async let history: Void = self.refreshListeningHistory()
             async let journal: Void = self.refreshJournalEntries()
-            async let reviews: Void = self.refreshMusicReviews()
+            async let followingReviews: Void = self.refreshLoadedFollowingReviews()
+            async let ratingDistributions: Void = self.refreshLoadedRatingDistributions()
+            async let ownerReviews: Void = self.refreshOwnerReviews()
             async let reviewDetails: Void = self.refreshCachedReviewDetails()
             async let eavesdropDetails: Void = self.refreshCachedEavesdropDetails()
             async let notifications: Void = self.refreshSocialNotifications(preservingLoadedPages: true)
@@ -1486,7 +1507,9 @@ final class HarmonySessionStore: ObservableObject {
                 feed,
                 history,
                 journal,
-                reviews,
+                followingReviews,
+                ratingDistributions,
+                ownerReviews,
                 reviewDetails,
                 eavesdropDetails,
                 notifications,
@@ -3029,6 +3052,19 @@ final class HarmonySessionStore: ObservableObject {
         )
         albumSubjectStates[albumID] = albumState
         albumSubjectShelf = [albumState]
+        followingReviewsByScope["all"] = [review]
+        followingReviewsByScope["track"] = [review]
+        followingReviewsByScope["album"] = []
+        followingReviewsHasMoreByScope = ["all": false, "track": false, "album": false]
+        myRatingDistributions["all"] = Self.fixtureRatingDistribution(
+            scope: "all", counts: [4.0: 1, 4.5: 1], total: 2, average: 4.25
+        )
+        myRatingDistributions["track"] = Self.fixtureRatingDistribution(
+            scope: "track", counts: [4.0: 1], total: 1, average: 4.0
+        )
+        myRatingDistributions["album"] = Self.fixtureRatingDistribution(
+            scope: "album", counts: [4.5: 1], total: 1, average: 4.5
+        )
         canonicalAlbumDetails[albumID] = CanonicalAlbumDetailState(
             album: album,
             ownerState: albumState,
@@ -3046,6 +3082,23 @@ final class HarmonySessionStore: ObservableObject {
                     ratingCount: $0 == 9 ? 2 : 0
                 )
             }
+        )
+    }
+
+    private static func fixtureRatingDistribution(
+        scope: String,
+        counts: [Double: Int],
+        total: Int,
+        average: Double?
+    ) -> MyRatingDistribution {
+        MyRatingDistribution(
+            scope: scope,
+            buckets: (1...10).map {
+                let rating = Double($0) / 2
+                return .init(rating: rating, count: counts[rating] ?? 0)
+            },
+            totalRatings: total,
+            averageRating: average
         )
     }
 
@@ -3678,6 +3731,84 @@ final class HarmonySessionStore: ObservableObject {
         }
     }
 
+    func followingReviews(scope: String) -> [RemoteMusicReview] {
+        followingReviewsByScope[scope] ?? []
+    }
+
+    func hasMoreFollowingReviews(scope: String) -> Bool {
+        followingReviewsHasMoreByScope[scope] ?? false
+    }
+
+    func refreshFollowingReviews(scope: String) async {
+#if DEBUG
+        guard !isDiaryEditorUITestFixtureActive else { return }
+#endif
+        guard !refreshingFollowingReviewScopes.contains(scope),
+              !loadingMoreFollowingReviewScopes.contains(scope) else { return }
+        refreshingFollowingReviewScopes.insert(scope)
+        defer { refreshingFollowingReviewScopes.remove(scope) }
+        do {
+            let page = try await collaborationRepository.followingReviewsPage(
+                subjectKind: scope,
+                limit: socialShelfPageSize + 1
+            )
+            followingReviewsByScope[scope] = Array(page.prefix(socialShelfPageSize))
+            followingReviewsHasMoreByScope[scope] = page.count > socialShelfPageSize
+        } catch {
+            collaborationMessage = "Could not refresh reviews from people you follow."
+        }
+    }
+
+    func loadMoreFollowingReviews(scope: String) async {
+        guard hasMoreFollowingReviews(scope: scope),
+              !refreshingFollowingReviewScopes.contains(scope),
+              !loadingMoreFollowingReviewScopes.contains(scope),
+              let cursor = followingReviewsByScope[scope]?.last else { return }
+        loadingMoreFollowingReviewScopes.insert(scope)
+        defer { loadingMoreFollowingReviewScopes.remove(scope) }
+        do {
+            let page = try await collaborationRepository.followingReviewsPage(
+                subjectKind: scope,
+                beforeCreatedAt: cursor.createdAt,
+                beforeID: cursor.id,
+                limit: socialShelfPageSize + 1
+            )
+            let existingIDs = Set((followingReviewsByScope[scope] ?? []).map(\.id))
+            followingReviewsByScope[scope, default: []].append(
+                contentsOf: page.prefix(socialShelfPageSize).filter { !existingIDs.contains($0.id) }
+            )
+            followingReviewsHasMoreByScope[scope] = page.count > socialShelfPageSize
+        } catch {
+            collaborationMessage = "Could not load older reviews from people you follow."
+        }
+    }
+
+    func refreshMyRatingDistribution(scope: String) async {
+#if DEBUG
+        guard !isDiaryEditorUITestFixtureActive else { return }
+#endif
+        guard !refreshingRatingDistributionScopes.contains(scope) else { return }
+        refreshingRatingDistributionScopes.insert(scope)
+        defer { refreshingRatingDistributionScopes.remove(scope) }
+        do {
+            myRatingDistributions[scope] = try await collaborationRepository.myRatingDistribution(
+                subjectKind: scope
+            )
+        } catch {
+            collaborationMessage = "Could not refresh your rating summary."
+        }
+    }
+
+    private func refreshLoadedFollowingReviews() async {
+        let scopes = followingReviewsByScope.keys.isEmpty ? ["all"] : Array(followingReviewsByScope.keys)
+        for scope in scopes { await refreshFollowingReviews(scope: scope) }
+    }
+
+    private func refreshLoadedRatingDistributions() async {
+        let scopes = myRatingDistributions.keys.isEmpty ? ["all"] : Array(myRatingDistributions.keys)
+        for scope in scopes { await refreshMyRatingDistribution(scope: scope) }
+    }
+
     func loadMoreOwnerReviews() async {
         guard hasMoreOwnerReviews,
               !isRefreshingOwnerReviews,
@@ -3704,6 +3835,9 @@ final class HarmonySessionStore: ObservableObject {
     func review(withID reviewID: UUID) -> RemoteMusicReview? {
         reviewDetailsByID[reviewID]
             ?? ownerReviews.first(where: { $0.id == reviewID })
+            ?? followingReviewsByScope.values.lazy.compactMap { reviews in
+                reviews.first(where: { $0.id == reviewID })
+            }.first
             ?? musicReviews.first(where: { $0.id == reviewID })
     }
 
@@ -3844,7 +3978,8 @@ final class HarmonySessionStore: ObservableObject {
         diary: TrackReviewDiaryRequest? = nil
     ) async -> Bool {
         guard !isPublishingMusicReview else { return false }
-        guard reviewContentIsValid(rating: rating, body: body) else {
+        let intent = musicOpinionSubmissionIntent(rating: rating, body: body)
+        guard intent != .invalid else {
             collaborationMessage = "Add a rating or write a review before saving."
             return false
         }
@@ -3852,10 +3987,31 @@ final class HarmonySessionStore: ObservableObject {
         isPublishingMusicReview = true
         defer { isPublishingMusicReview = false }
         do {
+            if case .ratingOnly(let rating) = intent {
+                _ = try await collaborationRepository.saveTrackRating(
+                    track: track,
+                    rating: rating,
+                    isLoved: isLoved,
+                    diary: diary
+                )
+                collaborationMessage = diary == nil
+                    ? "Rating saved"
+                    : "Rating and Diary entry saved"
+                await refreshTrackSubjectShelf()
+                await refreshMyRatingDistribution(scope: "all")
+                await refreshMyRatingDistribution(scope: "track")
+                if diary != nil {
+                    await refreshJournalEntries()
+                    await refreshListeningHistory()
+                    await refreshFollowingActivity()
+                }
+                return true
+            }
+            guard case .writtenReview(let normalizedBody, _) = intent else { return false }
             try await collaborationRepository.createTrackReview(
                 track: track,
                 rating: rating,
-                body: body,
+                body: normalizedBody,
                 visibility: resolvedVisibility,
                 isLoved: isLoved,
                 containsSpoilers: containsSpoilers,
@@ -3867,6 +4023,8 @@ final class HarmonySessionStore: ObservableObject {
             await refreshMusicReviews()
             await refreshOwnerReviews()
             await refreshTrackSubjectShelf()
+            await refreshMyRatingDistribution(scope: "all")
+            await refreshMyRatingDistribution(scope: "track")
             if diary != nil {
                 await refreshJournalEntries()
                 await refreshListeningHistory()
@@ -3882,7 +4040,8 @@ final class HarmonySessionStore: ObservableObject {
     @discardableResult
     func publishAlbumReview(_ album: ReviewableAlbum, rating: Double?, body: String, isLoved: Bool = false, containsSpoilers: Bool = false, visibility: SocialVisibilityOption? = nil) async -> Bool {
         guard !isPublishingMusicReview else { return false }
-        guard reviewContentIsValid(rating: rating, body: body) else {
+        let intent = musicOpinionSubmissionIntent(rating: rating, body: body)
+        guard intent != .invalid else {
             collaborationMessage = "Add a rating or write a review before saving."
             return false
         }
@@ -3890,10 +4049,32 @@ final class HarmonySessionStore: ObservableObject {
         isPublishingMusicReview = true
         defer { isPublishingMusicReview = false }
         do {
+            if case .ratingOnly(let rating) = intent {
+                let canonicalAlbum = try await collaborationRepository.resolveCanonicalAlbum(album)
+                let saved = try await collaborationRepository.updateAlbumSubjectState(
+                    canonicalAlbumID: canonicalAlbum.id,
+                    draft: AlbumSubjectStateDraft(
+                        hasListened: true,
+                        defaultRating: rating,
+                        isLoved: isLoved,
+                        wantToListen: false
+                    )
+                ).preservingCanonicalAlbum(canonicalAlbum)
+                albumSubjectStates[canonicalAlbum.id] = saved
+                albumSubjectShelf.removeAll { $0.canonicalAlbumID == canonicalAlbum.id }
+                albumSubjectShelf.insert(saved, at: 0)
+                canonicalAlbumDetails[canonicalAlbum.id, default: CanonicalAlbumDetailState()].ownerState = saved
+                collaborationMessage = "Album rating saved"
+                await refreshAlbumSubjectShelf()
+                await refreshMyRatingDistribution(scope: "all")
+                await refreshMyRatingDistribution(scope: "album")
+                return true
+            }
+            guard case .writtenReview(let normalizedBody, _) = intent else { return false }
             try await collaborationRepository.createAlbumReview(
                 album: album,
                 rating: rating,
-                body: body,
+                body: normalizedBody,
                 visibility: resolvedVisibility,
                 isLoved: isLoved,
                 containsSpoilers: containsSpoilers
@@ -3904,6 +4085,8 @@ final class HarmonySessionStore: ObservableObject {
             await refreshMusicReviews()
             await refreshOwnerReviews()
             await refreshAlbumSubjectShelf()
+            await refreshMyRatingDistribution(scope: "all")
+            await refreshMyRatingDistribution(scope: "album")
             return true
         } catch {
             collaborationMessage = "Could not publish album review: \(error.localizedDescription)"
@@ -3978,8 +4161,8 @@ final class HarmonySessionStore: ObservableObject {
 
     @discardableResult
     func updateReview(_ reviewID: UUID, rating: Double?, body: String, visibility: SocialVisibilityOption, isLoved: Bool, containsSpoilers: Bool = false) async -> Bool {
-        guard reviewContentIsValid(rating: rating, body: body) else {
-            collaborationMessage = "Add a rating or write a review before saving."
+        guard reviewBodyIsValid(body) else {
+            collaborationMessage = "A review requires written text."
             return false
         }
         let updatesTrackState = review(withID: reviewID).map {

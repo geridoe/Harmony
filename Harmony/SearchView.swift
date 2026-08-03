@@ -40,6 +40,18 @@ struct SearchView: View {
     @State private var albumContainsSpoilers = false
     @State private var albumReviewVisibility = SocialVisibilityOption.privateOnly
 
+    private var albumSubmissionIntent: MusicOpinionSubmissionIntent {
+        musicOpinionSubmissionIntent(rating: albumRating, body: albumReviewBody)
+    }
+
+    private var albumSubmissionTitle: String {
+        switch albumSubmissionIntent {
+        case .invalid: "Save"
+        case .ratingOnly: "Save rating"
+        case .writtenReview: albumReviewVisibility == .followers ? "Publish review" : "Save review"
+        }
+    }
+
     private var tracks: [HarmonyTrack] {
         guard !query.isEmpty else { return store.catalog }
         return store.catalogSearchResults ?? store.catalog.filter {
@@ -180,14 +192,14 @@ struct SearchView: View {
                             }
                         }
                     }
-                    .navigationTitle("Review album")
+                    .navigationTitle("Rate or review album")
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
                             Button("Cancel") { reviewAlbum = nil }
                         }
                         ToolbarItem(placement: .confirmationAction) {
-                            Button(albumReviewVisibility == .followers ? "Publish" : "Save") {
+                            Button(albumSubmissionTitle) {
                                 Task {
                                     let didSave = await store.publishAlbumReview(
                                         album,
@@ -200,7 +212,7 @@ struct SearchView: View {
                                     if didSave { reviewAlbum = nil }
                                 }
                             }
-                            .disabled(store.isPublishingMusicReview)
+                            .disabled(store.isPublishingMusicReview || albumSubmissionIntent == .invalid)
                         }
                     }
                 }

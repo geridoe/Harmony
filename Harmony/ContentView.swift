@@ -935,7 +935,8 @@ private struct EavesdropBroadcastDetailView: View {
 }
 
 private enum ReviewsShelf: String, CaseIterable, Identifiable {
-    case reviews = "Reviews"
+    case following = "Following"
+    case myReviews = "My Reviews"
     case ratings = "Ratings"
     var id: String { rawValue }
 }
@@ -945,6 +946,13 @@ private enum RatingsSubjectScope: String, CaseIterable, Identifiable {
     case songs = "Songs"
     case albums = "Albums"
     var id: String { rawValue }
+    var serverValue: String {
+        switch self {
+        case .all: "all"
+        case .songs: "track"
+        case .albums: "album"
+        }
+    }
 }
 
 struct MusicRatingDistributionBucket: Equatable, Identifiable {
@@ -1061,6 +1069,27 @@ struct ReviewDraft: Equatable {
     var diaryVisibility: SocialVisibilityOption = .privateOnly
     var diaryRatingMode = ReviewDiaryRatingMode.review
     var customDiaryRating = 4.0
+
+    var submissionIntent: MusicOpinionSubmissionIntent {
+        musicOpinionSubmissionIntent(rating: rating, body: body)
+    }
+
+    var savesWrittenReview: Bool {
+        if case .writtenReview = submissionIntent { return true }
+        return false
+    }
+
+    var submissionButtonTitle: String {
+        switch submissionIntent {
+        case .invalid:
+            return "Save"
+        case .ratingOnly:
+            return addToDiary ? "Save rating and log listen" : "Save rating"
+        case .writtenReview:
+            if addToDiary { return "Publish review and log listen" }
+            return visibility == .followers ? "Publish review" : "Save private review"
+        }
+    }
 
     var diaryDraft: DiaryEntryDraft {
         DiaryEntryDraft(
@@ -1324,13 +1353,14 @@ private func journalSearchKey(_ value: String) -> String {
 
 struct ReviewsView: View {
     @EnvironmentObject private var store: HarmonySessionStore
-    @State private var shelf = ReviewsShelf.reviews
+    @State private var shelf = ReviewsShelf.following
     @State private var draft = ReviewDraft()
     @State private var hasSeededDraftVisibility = false
     @State private var isComposingReview = false
     @State private var isChoosingReviewSubject = false
     @State private var reviewBrowseFilter = ReviewBrowseFilter()
     @State private var ratingsSubjectScope = RatingsSubjectScope.all
+    @State private var followingSubjectScope = RatingsSubjectScope.all
     @State private var editingReview: RemoteMusicReview?
     @State private var editingRating: Double?
     @State private var editingBody = ""
@@ -1372,7 +1402,9 @@ struct ReviewsView: View {
                 }
 
                 switch shelf {
-                case .reviews:
+                case .following:
+                    followingReviews
+                case .myReviews:
                     personalReviews
                 case .ratings:
                     personalRatings
@@ -1396,17 +1428,25 @@ struct ReviewsView: View {
                     draft.diaryVisibility = store.historySocialVisibility
                     hasSeededDraftVisibility = true
                 }
-                await store.refreshMusicReviews()
+                await store.refreshFollowingReviews(scope: followingSubjectScope.serverValue)
                 await store.refreshOwnerReviews()
+                await store.refreshMyRatingDistribution(scope: ratingsSubjectScope.serverValue)
                 await store.refreshTrackSubjectShelf()
                 await store.refreshAlbumSubjectShelf()
                 await store.activateSocialRealtime()
             }
             .refreshable {
-                await store.refreshMusicReviews()
+                await store.refreshFollowingReviews(scope: followingSubjectScope.serverValue)
                 await store.refreshOwnerReviews()
+                await store.refreshMyRatingDistribution(scope: ratingsSubjectScope.serverValue)
                 await store.refreshTrackSubjectShelf()
                 await store.refreshAlbumSubjectShelf()
+            }
+            .onChange(of: followingSubjectScope) { scope in
+                Task { await store.refreshFollowingReviews(scope: scope.serverValue) }
+            }
+            .onChange(of: ratingsSubjectScope) { scope in
+                Task { await store.refreshMyRatingDistribution(scope: scope.serverValue) }
             }
         }
         .sheet(item: $editingReview) { review in
@@ -1451,7 +1491,7 @@ struct ReviewsView: View {
                                 if didSave { editingReview = nil }
                             }
                         }
-                        .disabled(editingRating == nil && editingBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(!reviewBodyIsValid(editingBody))
                     }
                 }
             }
@@ -1554,15 +1594,13 @@ struct ReviewsView: View {
                                 Text(visibility.title).tag(visibility)
                             }
                         }
-                        Text(draft.resolvedDiaryRating == nil
-                            ? "The Diary entry will be unrated and link back to this review."
-                            : "The Diary entry keeps this rating as a historical snapshot and links back to the review.")
+                        Text(diaryExplanation)
                             .font(.footnote)
                             .foregroundColor(.secondary)
                     }
                 }
 
-                Button(draft.addToDiary ? "Publish review and log listen" : (draft.visibility == .followers ? "Publish to followers" : "Save private review")) {
+                Button(draft.submissionButtonTitle) {
                     let selectedSubject = subject
                     let submittedDraft = draft
                     Task {
@@ -1600,7 +1638,7 @@ struct ReviewsView: View {
                 }
                 .disabled(
                     store.isPublishingMusicReview
-                        || (draft.rating == nil && draft.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        || draft.submissionIntent == .invalid
                         || (draft.addToDiary && draft.diaryDraft.tagValidationMessage != nil)
                 )
             } else {
@@ -1618,6 +1656,15 @@ struct ReviewsView: View {
                 .padding(.vertical, 8)
             }
         }
+    }
+
+    private var diaryExplanation: String {
+        let ratingDescription = draft.resolvedDiaryRating == nil
+            ? "The Diary entry will be unrated"
+            : "The Diary entry keeps this rating as a historical snapshot"
+        return draft.savesWrittenReview
+            ? "\(ratingDescription) and links back to the review."
+            : "\(ratingDescription). Rating-only saves do not create a review."
     }
 
     @ViewBuilder
@@ -1691,13 +1738,59 @@ struct ReviewsView: View {
         }
     }
 
+    private var followingReviews: some View {
+        let scope = followingSubjectScope.serverValue
+        let reviews = store.followingReviews(scope: scope)
+        return Group {
+            Section {
+                Picker("Following review subject", selection: $followingSubjectScope) {
+                    ForEach(RatingsSubjectScope.allCases) { option in
+                        Text(option.rawValue).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("following-reviews-subject-scope")
+            } footer: {
+                Text("Written reviews from people you follow. The subject filter is applied before each server page.")
+            }
+
+            Section("Latest from following") {
+                if store.refreshingFollowingReviewScopes.contains(scope) && reviews.isEmpty {
+                    ProgressView("Loading reviews…")
+                } else if reviews.isEmpty {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("No reviews here yet").font(.headline)
+                        Text("Follow people in Connections to see their shared song and album reviews.")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    }
+                    .accessibilityIdentifier("following-reviews-empty-state")
+                } else {
+                    ForEach(reviews) { review in
+                        ReviewCard(review: review, onEdit: nil)
+                            .accessibilityIdentifier("following-review-\(review.id.uuidString)")
+                    }
+                }
+
+                if store.hasMoreFollowingReviews(scope: scope) {
+                    Button {
+                        Task { await store.loadMoreFollowingReviews(scope: scope) }
+                    } label: {
+                        if store.loadingMoreFollowingReviewScopes.contains(scope) {
+                            ProgressView("Loading older reviews…")
+                        } else {
+                            Label("Load older reviews", systemImage: "arrow.down.circle")
+                        }
+                    }
+                    .disabled(store.loadingMoreFollowingReviewScopes.contains(scope))
+                    .accessibilityIdentifier("following-reviews-load-older")
+                }
+            }
+        }
+    }
+
     private var personalRatings: some View {
-        let visibleRatings = (ratingsSubjectScope == .all || ratingsSubjectScope == .songs
-            ? ratedTrackStates.compactMap(\.defaultRating)
-            : [])
-            + (ratingsSubjectScope == .all || ratingsSubjectScope == .albums
-                ? ratedAlbumStates.compactMap(\.defaultRating)
-                : [])
+        let distribution = store.myRatingDistributions[ratingsSubjectScope.serverValue]
         return Group {
             Section {
                 Picker("Rating subject", selection: $ratingsSubjectScope) {
@@ -1708,13 +1801,15 @@ struct ReviewsView: View {
                 .pickerStyle(.segmented)
                 .accessibilityIdentifier("ratings-subject-scope")
 
-                if !visibleRatings.isEmpty {
+                if let distribution {
                     SubjectRatingDistributionView(
-                        ratings: visibleRatings,
+                        distribution: distribution,
                         label: ratingsSubjectScope == .all
-                            ? "loaded song and album ratings"
-                            : "loaded \(ratingsSubjectScope.rawValue.lowercased()) ratings"
+                            ? "all current song and album ratings"
+                            : "all current \(ratingsSubjectScope.rawValue.lowercased()) ratings"
                     )
+                } else if store.refreshingRatingDistributionScopes.contains(ratingsSubjectScope.serverValue) {
+                    ProgressView("Loading complete rating summary…")
                 }
             }
 
@@ -1788,7 +1883,7 @@ struct ReviewsView: View {
                 }
             }
 
-            if visibleRatings.isEmpty
+            if distribution?.totalRatings == 0
                 && !store.isRefreshingTrackSubjectShelf
                 && !store.isRefreshingAlbumSubjectShelf {
                 Section {
@@ -2690,6 +2785,7 @@ private struct ReviewSubjectPicker: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                    .accessibilityIdentifier("review-subject-mode")
                     .listRowInsets(EdgeInsets())
                     .listRowBackground(Color.clear)
                 }
@@ -3125,33 +3221,29 @@ struct ReviewCard: View {
 }
 
 private struct SubjectRatingDistributionView: View {
-    let ratings: [Double]
+    let distribution: MyRatingDistribution
     let label: String
 
-    private var buckets: [MusicRatingDistributionBucket] {
-        musicRatingDistribution(ratings: ratings)
+    private var buckets: [MyRatingDistribution.Bucket] {
+        distribution.buckets
     }
 
     private var maximumCount: Int {
         max(1, buckets.map(\.count).max() ?? 1)
     }
 
-    private var average: Double {
-        return ratings.reduce(0, +) / Double(max(1, ratings.count))
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(String(format: "%.2f", average))
+                    Text(distribution.averageRating.map { String(format: "%.2f", $0) } ?? "—")
                         .font(.title2.weight(.bold))
                     Text("Average of \(label)")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
                 Spacer()
-                Text("\(ratings.count) rated")
+                Text("\(distribution.totalRatings) rated")
                     .font(.subheadline.weight(.semibold))
             }
 
@@ -3182,6 +3274,7 @@ private struct SubjectRatingDistributionView: View {
             .frame(height: 78, alignment: .bottom)
         }
         .accessibilityIdentifier("ratings-distribution")
+        .accessibilityLabel("Complete current rating distribution: \(distribution.totalRatings) ratings")
     }
 }
 

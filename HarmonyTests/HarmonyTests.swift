@@ -777,10 +777,36 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(draft.diaryRequest?.rating, 4.0)
     }
 
-    func testReviewContentRequiresRatingOrNonemptyWriting() {
-        XCTAssertFalse(reviewContentIsValid(rating: nil, body: "  \n "))
-        XCTAssertTrue(reviewContentIsValid(rating: 0.5, body: ""))
-        XCTAssertTrue(reviewContentIsValid(rating: nil, body: "Worth hearing in sequence."))
+    func testMusicOpinionSubmissionRoutesRatingOnlyWritingAndInvalidDrafts() {
+        XCTAssertEqual(
+            musicOpinionSubmissionIntent(rating: nil, body: "  \n "),
+            .invalid
+        )
+        XCTAssertEqual(
+            musicOpinionSubmissionIntent(rating: 0.5, body: ""),
+            .ratingOnly(0.5)
+        )
+        XCTAssertEqual(
+            musicOpinionSubmissionIntent(rating: 4.0, body: "  Worth hearing in sequence.  "),
+            .writtenReview(body: "Worth hearing in sequence.", rating: 4.0)
+        )
+        XCTAssertEqual(
+            musicOpinionSubmissionIntent(rating: nil, body: "Unrated writing"),
+            .writtenReview(body: "Unrated writing", rating: nil)
+        )
+        XCTAssertFalse(reviewBodyIsValid(" \n "))
+        XCTAssertTrue(reviewBodyIsValid("Written review"))
+    }
+
+    func testReviewDraftUsesDistinctRatingAndReviewActionCopy() {
+        var draft = ReviewDraft(subject: .track(reviewTrack(title: "Boundary")), rating: 4.5)
+        XCTAssertEqual(draft.submissionButtonTitle, "Save rating")
+
+        draft.addToDiary = true
+        XCTAssertEqual(draft.submissionButtonTitle, "Save rating and log listen")
+
+        draft.body = "An authored opinion."
+        XCTAssertEqual(draft.submissionButtonTitle, "Publish review and log listen")
     }
 
     func testReviewDraftSupportsUnratedAndCustomDiarySnapshots() {
@@ -1557,6 +1583,58 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(buckets.first(where: { $0.rating == 4.5 })?.count, 2)
         XCTAssertEqual(buckets.first(where: { $0.rating == 5 })?.count, 1)
         XCTAssertEqual(buckets.map(\.count).reduce(0, +), 4)
+    }
+
+    func testServerRatingDistributionKeepsExhaustiveSummaryAndSortsBuckets() throws {
+        let json = """
+        [
+          {"scope":"all","rating":4.5,"rating_count":2,"total_ratings":3,"average_rating":4.17},
+          {"scope":"all","rating":0.5,"rating_count":1,"total_ratings":3,"average_rating":4.17}
+        ]
+        """
+        let rows = try JSONDecoder().decode(
+            [RemoteMyRatingDistributionRow].self,
+            from: Data(json.utf8)
+        )
+        let distribution = MyRatingDistribution.make(scope: "all", rows: rows)
+
+        XCTAssertEqual(distribution.scope, "all")
+        XCTAssertEqual(distribution.totalRatings, 3)
+        XCTAssertEqual(distribution.averageRating, 4.17)
+        XCTAssertEqual(distribution.buckets.map(\.rating), [0.5, 4.5])
+        XCTAssertEqual(distribution.buckets.map(\.count), [1, 2])
+    }
+
+    func testServerRatingDistributionHasSafeEmptyFallback() {
+        let distribution = MyRatingDistribution.make(scope: "album", rows: [])
+
+        XCTAssertEqual(distribution.scope, "album")
+        XCTAssertEqual(distribution.totalRatings, 0)
+        XCTAssertNil(distribution.averageRating)
+        XCTAssertTrue(distribution.buckets.isEmpty)
+    }
+
+    func testTrackRatingOnlyResultDecodesAtomicStateAndOptionalDiary() throws {
+        let json = """
+        {
+          "diary_entry_id":"40000000-0000-0000-0000-000000000004",
+          "canonical_track_id":"20000000-0000-0000-0000-000000000002",
+          "has_listened":true,
+          "default_rating":4.5,
+          "is_loved":true,
+          "want_to_listen":false,
+          "state_updated_at":"2026-08-03T12:00:00Z"
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let result = try decoder.decode(RemoteTrackRatingSaveResult.self, from: Data(json.utf8))
+
+        XCTAssertEqual(result.diaryEntryID?.uuidString.lowercased(), "40000000-0000-0000-0000-000000000004")
+        XCTAssertEqual(result.defaultRating, 4.5)
+        XCTAssertTrue(result.hasListened)
+        XCTAssertTrue(result.isLoved)
+        XCTAssertFalse(result.wantToListen)
     }
 
     func testEavesdropRowsMergeProviderDestinationsByBroadcastIdentity() {

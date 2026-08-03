@@ -5,6 +5,7 @@ private enum HarmonyRepositoryError: LocalizedError {
     case invalidCanonicalAlbumAggregate
     case canonicalAlbumUnavailable
     case reviewCommentDeletionUnavailable
+    case invalidTrackRatingSaveResult
 
     var errorDescription: String? {
         switch self {
@@ -14,6 +15,8 @@ private enum HarmonyRepositoryError: LocalizedError {
             "Harmony could not load this canonical album."
         case .reviewCommentDeletionUnavailable:
             "This comment could not be deleted."
+        case .invalidTrackRatingSaveResult:
+            "Harmony could not read the saved track rating."
         }
     }
 }
@@ -213,6 +216,18 @@ private struct SetTrackSubjectStateParameters: Encodable {
     let p_is_loved: Bool
     let p_want_to_listen: Bool
 }
+private struct SaveTrackRatingWithOptionalDiaryParameters: Encodable {
+    let p_canonical_track_id: UUID
+    let p_rating: Double
+    let p_is_loved: Bool
+    let p_provider: String?
+    let p_provider_subject_id: String?
+    let p_diary_played_at: Date?
+    let p_diary_visibility: String
+    let p_is_relisten: Bool
+    let p_tags: [String]
+    let p_diary_rating: Double?
+}
 private struct ListeningDiaryPageParameters: Encodable {
     let p_before_played_at: Date?
     let p_before_id: UUID?
@@ -295,6 +310,15 @@ private struct OwnerReviewsPageParameters: Encodable {
     let p_before_created_at: Date?
     let p_before_id: UUID?
     let p_limit: Int
+}
+private struct FollowingReviewsPageParameters: Encodable {
+    let p_subject_kind: String?
+    let p_before_created_at: Date?
+    let p_before_id: UUID?
+    let p_limit: Int
+}
+private struct MyRatingDistributionParameters: Encodable {
+    let p_subject_kind: String?
 }
 private struct ProfileDiaryPageParameters: Encodable {
     let p_profile_id: UUID
@@ -856,6 +880,26 @@ struct RemoteTrackSubjectState: Decodable, Identifiable {
     }
 }
 
+struct RemoteTrackRatingSaveResult: Decodable, Equatable {
+    let diaryEntryID: UUID?
+    let canonicalTrackID: UUID
+    let hasListened: Bool
+    let defaultRating: Double
+    let isLoved: Bool
+    let wantToListen: Bool
+    let stateUpdatedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case diaryEntryID = "diary_entry_id"
+        case canonicalTrackID = "canonical_track_id"
+        case hasListened = "has_listened"
+        case defaultRating = "default_rating"
+        case isLoved = "is_loved"
+        case wantToListen = "want_to_listen"
+        case stateUpdatedAt = "state_updated_at"
+    }
+}
+
 struct RemoteAlbumSubjectState: Decodable, Identifiable {
     let profileID: UUID
     let canonicalAlbumID: UUID
@@ -973,6 +1017,44 @@ struct RemoteOwnerReviewStats: Decodable, Equatable {
         case lovedCount = "loved_count"
         case songCount = "song_count"
         case albumCount = "album_count"
+    }
+}
+
+struct RemoteMyRatingDistributionRow: Decodable, Equatable {
+    let scope: String
+    let rating: Double
+    let ratingCount: Int
+    let totalRatings: Int
+    let averageRating: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case scope, rating
+        case ratingCount = "rating_count"
+        case totalRatings = "total_ratings"
+        case averageRating = "average_rating"
+    }
+}
+
+struct MyRatingDistribution: Equatable {
+    struct Bucket: Equatable, Identifiable {
+        let rating: Double
+        let count: Int
+        var id: Double { rating }
+    }
+
+    let scope: String
+    let buckets: [Bucket]
+    let totalRatings: Int
+    let averageRating: Double?
+
+    static func make(scope: String, rows: [RemoteMyRatingDistributionRow]) -> Self {
+        let sortedRows = rows.sorted { $0.rating < $1.rating }
+        return Self(
+            scope: rows.first?.scope ?? scope,
+            buckets: sortedRows.map { .init(rating: $0.rating, count: $0.ratingCount) },
+            totalRatings: rows.first?.totalRatings ?? 0,
+            averageRating: rows.first?.averageRating
+        )
     }
 }
 
@@ -1249,8 +1331,8 @@ final class HarmonyCollaborationRepository {
     private static let musicListEntrySelection = "id,list_id,canonical_track_id,position,note,created_at,updated_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit,isrc,provider_tracks(provider,provider_id,storefront,availability,deep_link))"
     private static let musicListCommentSelection = "id,list_id,author_id,body,created_at,updated_at,deleted_at,author:profiles!music_list_comments_author_id_fkey(display_name)"
     private static let albumSubjectStateSelection = "profile_id,canonical_album_id,has_listened,default_rating,is_loved,want_to_listen,created_at,updated_at,canonical_albums(id,title,artist,release_date,upc,album_type,total_tracks,artwork_url,provider_albums(provider,provider_album_id,storefront,deep_link,availability,identity_basis))"
-    private static let legacyMusicReviewSelection = "id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,rating,body,visibility,contains_spoilers,is_loved,heart_count,comment_count,created_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)"
-    private static let musicReviewSelection = "id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,canonical_album_id,rating,body,visibility,contains_spoilers,is_loved,heart_count,comment_count,created_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),canonical_albums(id,title,artist,release_date,upc,album_type,total_tracks,artwork_url,provider_albums(provider,provider_album_id,storefront,deep_link,availability,identity_basis)),profiles(display_name)"
+    private static let legacyMusicReviewSelection = "id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,rating,body,visibility,contains_spoilers,is_loved,heart_count,comment_count,created_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles!music_reviews_profile_id_fkey(display_name)"
+    private static let musicReviewSelection = "id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,canonical_album_id,rating,body,visibility,contains_spoilers,is_loved,heart_count,comment_count,created_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),canonical_albums(id,title,artist,release_date,upc,album_type,total_tracks,artwork_url,provider_albums(provider,provider_album_id,storefront,deep_link,availability,identity_basis)),profiles!music_reviews_profile_id_fkey(display_name)"
 
     private static func isMissingCanonicalAlbumContract(_ error: Error) -> Bool {
         guard let error = error as? PostgrestError else { return false }
@@ -1914,6 +1996,39 @@ final class HarmonyCollaborationRepository {
         }
     }
 
+    func followingReviewsPage(
+        subjectKind: String? = nil,
+        beforeCreatedAt: Date? = nil,
+        beforeID: UUID? = nil,
+        limit: Int = 51
+    ) async throws -> [RemoteMusicReview] {
+        try await authenticate()
+        let params = FollowingReviewsPageParameters(
+            p_subject_kind: subjectKind,
+            p_before_created_at: beforeCreatedAt,
+            p_before_id: beforeID,
+            p_limit: limit
+        )
+        do {
+            return try await client.rpc("list_following_reviews", params: params)
+                .select(Self.musicReviewSelection)
+                .execute().value
+        } catch where Self.isMissingCanonicalAlbumContract(error) {
+            return try await client.rpc("list_following_reviews", params: params)
+                .select(Self.legacyMusicReviewSelection)
+                .execute().value
+        }
+    }
+
+    func myRatingDistribution(subjectKind: String? = nil) async throws -> MyRatingDistribution {
+        try await authenticate()
+        let rows: [RemoteMyRatingDistributionRow] = try await client.rpc(
+            "get_my_rating_distribution",
+            params: MyRatingDistributionParameters(p_subject_kind: subjectKind)
+        ).execute().value
+        return MyRatingDistribution.make(scope: subjectKind ?? "all", rows: rows)
+    }
+
     func publicProfileDiaryPage(
         profileID: UUID,
         beforePlayedAt: Date? = nil,
@@ -2308,7 +2423,7 @@ final class HarmonyCollaborationRepository {
 
     func publishListeningPresence(track: HarmonyTrack, visibility: SocialVisibilityOption) async throws {
         try await authenticate()
-        let mapping = track.mappings.first(where: { !$0.providerID.isEmpty })
+        let mapping = preferredProviderMapping(for: track)
         let canonicalTrackID = try await canonicalTrackID(for: track)
         _ = try await client.rpc(
             "publish_listening_presence",
@@ -2331,7 +2446,7 @@ final class HarmonyCollaborationRepository {
 
     func recordListeningHistory(track: HarmonyTrack, visibility: SocialVisibilityOption) async throws {
         try await authenticate()
-        let mapping = track.mappings.first(where: { !$0.providerID.isEmpty })
+        let mapping = preferredProviderMapping(for: track)
         let canonicalTrackID = try await canonicalTrackID(for: track)
         _ = try await client.rpc("record_listening_history", params: RecordListeningHistoryParameters(
             p_canonical_track_id: canonicalTrackID,
@@ -2355,7 +2470,7 @@ final class HarmonyCollaborationRepository {
         rating: Double? = nil
     ) async throws -> RemoteListeningHistoryEntry {
         try await authenticate()
-        let mapping = track.mappings.first(where: { !$0.providerID.isEmpty })
+        let mapping = preferredProviderMapping(for: track)
         let canonicalTrackID = try await canonicalTrackID(for: track)
         return try await client.rpc(
             "record_listening_history",
@@ -2430,7 +2545,7 @@ final class HarmonyCollaborationRepository {
         diary: TrackReviewDiaryRequest? = nil
     ) async throws {
         try await authenticate()
-        let mapping = track.mappings.first(where: { !$0.providerID.isEmpty })
+        let mapping = preferredProviderMapping(for: track)
         let canonicalTrackID = try await canonicalTrackID(for: track)
         let provider = mapping.map { $0.provider == .spotify ? "spotify" : "apple_music" }
         if let diary {
@@ -2464,6 +2579,35 @@ final class HarmonyCollaborationRepository {
                 p_is_loved: isLoved
             )).execute()
         }
+    }
+
+    func saveTrackRating(
+        track: HarmonyTrack,
+        rating: Double,
+        isLoved: Bool,
+        diary: TrackReviewDiaryRequest? = nil
+    ) async throws -> RemoteTrackRatingSaveResult {
+        try await authenticate()
+        let mapping = preferredProviderMapping(for: track)
+        let canonicalTrackID = try await canonicalTrackID(for: track)
+        let provider = mapping.map { $0.provider == .spotify ? "spotify" : "apple_music" }
+        let rows: [RemoteTrackRatingSaveResult] = try await client.rpc(
+            "save_track_rating_with_optional_diary",
+            params: SaveTrackRatingWithOptionalDiaryParameters(
+                p_canonical_track_id: canonicalTrackID,
+                p_rating: rating,
+                p_is_loved: isLoved,
+                p_provider: provider,
+                p_provider_subject_id: mapping?.providerID,
+                p_diary_played_at: diary?.listenedAt,
+                p_diary_visibility: diary?.visibility.rawValue ?? SocialVisibilityOption.privateOnly.rawValue,
+                p_is_relisten: diary?.isRelisten ?? false,
+                p_tags: diary?.tags ?? [],
+                p_diary_rating: diary?.rating
+            )
+        ).execute().value
+        guard let result = rows.first else { throw HarmonyRepositoryError.invalidTrackRatingSaveResult }
+        return result
     }
 
     func createAlbumReview(album: ReviewableAlbum, rating: Double?, body: String, visibility: SocialVisibilityOption, isLoved: Bool = false, containsSpoilers: Bool = false) async throws {
@@ -2743,13 +2887,7 @@ final class HarmonyCollaborationRepository {
 
     private func canonicalTrackID(for track: HarmonyTrack) async throws -> UUID {
         if let canonicalTrackID = track.canonicalTrackID { return canonicalTrackID }
-        let mapping = track.mappings
-            .filter { !$0.providerID.isEmpty }
-            .sorted {
-                ($0.provider.rawValue, $0.storefront, $0.providerID)
-                    < ($1.provider.rawValue, $1.storefront, $1.providerID)
-            }
-            .first
+        let mapping = preferredProviderMapping(for: track)
         if let mapping {
             return try await client.rpc(
                 "resolve_harmony_track_v2",
@@ -2769,6 +2907,16 @@ final class HarmonyCollaborationRepository {
             ).execute().value
         }
         throw CollaborationError.missingCanonicalTrackIdentity
+    }
+
+    private func preferredProviderMapping(for track: HarmonyTrack) -> ProviderTrackMapping? {
+        track.mappings
+            .filter { !$0.providerID.isEmpty }
+            .sorted {
+                ($0.provider.rawValue, $0.storefront, $0.providerID)
+                    < ($1.provider.rawValue, $1.storefront, $1.providerID)
+            }
+            .first
     }
     func remove(queueItemID: UUID, from sessionID: UUID, expectedRevision: Int) async throws -> Int {
         try await executeCommand(QueueCommandParameters(p_session_id: sessionID, p_command_id: UUID(), p_expected_revision: expectedRevision, p_type: "remove", p_payload: RemovePayload(queue_item_id: queueItemID)))

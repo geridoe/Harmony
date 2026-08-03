@@ -123,10 +123,18 @@ Reviews       ReviewsView                       authored reviews and current rat
 ```
 
 The Reviews destination is a root tab, never a child of Listen. It opens on
-Reviews and provides a sibling Ratings shelf. Diary, Following Activity,
-Music shelf, and Lists are full-page destinations reached from Listen. That
-hierarchy keeps authored opinions and current ratings out of the listening
-utility page while keeping dated listens distinct from reviews.
+Following and provides sibling My Reviews and Ratings shelves. Diary, generic
+Following Activity, Music shelf, and Lists remain full-page destinations
+reached from Listen. That hierarchy keeps authored opinions and current
+ratings out of the listening utility page while keeping dated listens distinct
+from reviews.
+
+Following uses `list_following_reviews` rather than filtering a loaded mixed
+Activity page. The server applies accepted-follow, current audience, block,
+nonblank-writing, Songs/Albums scope, and `(created_at, id)` keyset predicates
+before its 1–100 row limit. Each scope has independent client pages/loading
+state and opens the existing exact review detail, reactions, and comments.
+
 My Reviews uses an auth-bound keyset-paginated owner library and exhaustive
 server totals for review count, average rating, and Loved count. Search and
 Songs/Albums/Loved scope apply to the currently loaded owner pages, while the
@@ -135,13 +143,15 @@ summary never changes merely because followed members publish newer content.
 and `browseMusicReviews` is a pure transformation, which keeps browsing from
 mutating review, Diary, playback, queue, or catalog-search state.
 
-Ratings reads independent current song state and presents a ten-bucket
-half-star distribution. It does not infer a current rating from review text or
-rewrite historical Diary ratings. Migration 039 supplies the equivalent
-owner-private album state plus RLS-filtered visible-review aggregates and a stable
-ten-bucket histogram; the Swift album shelf/detail integration consumes that
-contract separately. Canonical album release identity remains defined by
-migration 038 and does not imply an edition/grouping policy.
+Ratings reads independent current song and album state. Its visible subject
+rows remain keyset-paginated, while `get_my_rating_distribution` computes the
+selected All/Songs/Albums ten-bucket histogram, exact total, and average across
+all owner state. The summary therefore never changes merely because Load more
+was tapped. It does not infer a current rating from review text or rewrite
+historical Diary ratings. Migration 039 supplies the separate owner-private
+album state and caller-visible subject aggregates. Canonical album release
+identity remains defined by migration 038 and does not imply an
+edition/grouping policy.
 
 `HarmonySessionStore` is the `@MainActor` observable application state. It
 contains screen-facing state, transforms remote DTOs into domain types, makes

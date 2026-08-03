@@ -1178,7 +1178,7 @@ jq -e --arg review "$review_id" \
   'length == 1 and .[0].id == $review and .[0].subject_kind == "track"' \
   "$smoke_tmp/following-track-review-page.json" >/dev/null
 rest_get "$conductor_token" \
-  'rpc/list_following_reviews?p_subject_kind=album&p_limit=1&select=id,subject_kind,subject_title,profiles(display_name),canonical_albums(title,artist,artwork_url)' \
+  'rpc/list_following_reviews?p_subject_kind=album&p_limit=1&select=id,subject_kind,subject_title,profiles!music_reviews_profile_id_fkey(display_name),canonical_albums(title,artist,artwork_url)' \
   "$smoke_tmp/following-review-client-shape.json"
 jq -e --arg review "$album_review_id" '
   length == 1 and .[0].id == $review and .[0].subject_kind == "album"
@@ -1194,20 +1194,24 @@ rpc "$directory_token" list_following_reviews \
   "$smoke_tmp/requested-following-review-page.json"
 [[ "$(jq 'length' "$smoke_tmp/requested-following-review-page.json")" -eq 0 ]]
 
-# Rating-only rows remain legitimate owner data but are not blank social posts.
-rpc "$collaborator_token" create_music_review \
-  "{\"p_subject_kind\":\"track\",\"p_canonical_track_id\":\"$spotify_url_track_id\",\"p_rating\":3.0,\"p_body\":\"\",\"p_visibility\":\"followers\"}" \
-  "$smoke_tmp/rating-only-following-review.json"
-rating_only_following_review_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/rating-only-following-review.json")"
+# Rating-only state is legitimate owner data but never becomes a blank social
+# post or an authored review row.
+rest_get "$collaborator_token" \
+  "music_reviews?select=id&profile_id=eq.$collaborator_id&canonical_track_id=eq.$spotify_url_track_id&deleted_at=is.null" \
+  "$smoke_tmp/rating-only-following-before.json"
+rpc "$collaborator_token" set_my_track_subject_state \
+  "{\"p_canonical_track_id\":\"$spotify_url_track_id\",\"p_has_listened\":true,\"p_default_rating\":3.0,\"p_is_loved\":false,\"p_want_to_listen\":false}" \
+  "$smoke_tmp/rating-only-following-state.json"
+rest_get "$collaborator_token" \
+  "music_reviews?select=id&profile_id=eq.$collaborator_id&canonical_track_id=eq.$spotify_url_track_id&deleted_at=is.null" \
+  "$smoke_tmp/rating-only-following-after.json"
+[[ "$(jq 'length' "$smoke_tmp/rating-only-following-after.json")" -eq "$(jq 'length' "$smoke_tmp/rating-only-following-before.json")" ]]
 rpc "$conductor_token" list_following_reviews \
   '{"p_subject_kind":"track","p_before_created_at":null,"p_before_id":null,"p_limit":100}' \
   "$smoke_tmp/following-review-rating-only-excluded.json"
-jq -e --arg rating_only "$rating_only_following_review_id" --arg written "$review_id" '
-  all(.[]; .id != $rating_only) and any(.[]; .id == $written)
+jq -e --arg written "$review_id" '
+  any(.[]; .id == $written) and all(.[]; (.body | gsub("^[[:space:]]+|[[:space:]]+$"; "") | length) > 0)
 ' "$smoke_tmp/following-review-rating-only-excluded.json" >/dev/null
-rpc "$collaborator_token" delete_music_review \
-  "{\"p_review_id\":\"$rating_only_following_review_id\"}" \
-  "$smoke_tmp/rating-only-following-review-delete.json"
 rpc "$collaborator_token" set_my_track_subject_state \
   "{\"p_canonical_track_id\":\"$spotify_url_track_id\",\"p_has_listened\":false,\"p_default_rating\":null,\"p_is_loved\":true,\"p_want_to_listen\":true}" \
   "$smoke_tmp/rating-only-following-state-restore.json"
@@ -1386,10 +1390,11 @@ rest_get "$collaborator_token" \
   "listening_history_entries?select=rating&id=eq.$history_entry_id" \
   "$smoke_tmp/unrated-review-independent-diary.json"
 jq -e 'length == 1 and .[0].rating == 2.5' "$smoke_tmp/unrated-review-independent-diary.json" >/dev/null
-empty_unrated_update_status="$(rpc_status "$collaborator_token" update_music_review \
-  "{\"p_review_id\":\"$review_id\",\"p_rating\":null,\"p_body\":\"   \",\"p_visibility\":\"followers\",\"p_contains_spoilers\":false,\"p_is_loved\":false}" \
-  "$smoke_tmp/empty-unrated-review-update.json")"
-[[ "$empty_unrated_update_status" == "400" ]]
+empty_rated_update_status="$(rpc_status "$collaborator_token" update_music_review \
+  "{\"p_review_id\":\"$review_id\",\"p_rating\":4.0,\"p_body\":\"   \",\"p_visibility\":\"followers\",\"p_contains_spoilers\":false,\"p_is_loved\":false}" \
+  "$smoke_tmp/empty-rated-review-update.json")"
+[[ "$empty_rated_update_status" == "400" ]]
+jq -e '.details == "review_body_required"' "$smoke_tmp/empty-rated-review-update.json" >/dev/null
 invalid_optional_rating_status="$(rpc_status "$collaborator_token" update_music_review \
   "{\"p_review_id\":\"$review_id\",\"p_rating\":4.2,\"p_body\":\"Invalid rating.\",\"p_visibility\":\"followers\",\"p_contains_spoilers\":false,\"p_is_loved\":false}" \
   "$smoke_tmp/invalid-optional-review-rating.json")"
@@ -1660,6 +1665,95 @@ rpc "$collaborator_token" delete_music_list_comment \
   "$smoke_tmp/list-comment-delete.json"
 [[ "$(jq -er '.' "$smoke_tmp/list-comment-delete.json")" == "true" ]]
 
+stage="rating-only state and authored-review boundary"
+blank_rated_review_status="$(rpc_status "$collaborator_token" create_music_review \
+  "{\"p_subject_kind\":\"track\",\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_rating\":4.0,\"p_body\":\"   \",\"p_visibility\":\"private\"}" \
+  "$smoke_tmp/blank-rated-review.json")"
+[[ "$blank_rated_review_status" == "400" ]]
+jq -e '.details == "review_body_required"' "$smoke_tmp/blank-rated-review.json" >/dev/null
+
+# Direct table visibility can still encounter a historical rating-only row,
+# but every authored-review page must filter all such rows before pagination.
+rest_get "$collaborator_token" \
+  "music_reviews?select=id,body&profile_id=eq.$collaborator_id&deleted_at=is.null" \
+  "$smoke_tmp/all-owner-review-storage.json"
+rpc "$collaborator_token" list_my_music_reviews \
+  '{"p_before_created_at":null,"p_before_id":null,"p_limit":100}' \
+  "$smoke_tmp/written-owner-reviews.json"
+rpc "$collaborator_token" list_profile_music_reviews \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_before_created_at\":null,\"p_before_id\":null,\"p_limit\":100}" \
+  "$smoke_tmp/written-profile-reviews.json"
+jq -e 'all(.[]; (.body | gsub("^[[:space:]]+|[[:space:]]+$"; "") | length) > 0)' \
+  "$smoke_tmp/written-owner-reviews.json" >/dev/null
+jq -e 'all(.[]; (.body | gsub("^[[:space:]]+|[[:space:]]+$"; "") | length) > 0)' \
+  "$smoke_tmp/written-profile-reviews.json" >/dev/null
+jq -n \
+  --slurpfile stored "$smoke_tmp/all-owner-review-storage.json" \
+  --slurpfile listed "$smoke_tmp/written-owner-reviews.json" \
+  '([$stored[0][] | select((.body | gsub("^[[:space:]]+|[[:space:]]+$"; "") | length) == 0) | .id] - [$listed[0][].id]) | length == ([$stored[0][] | select((.body | gsub("^[[:space:]]+|[[:space:]]+$"; "") | length) == 0)] | length)' \
+  >/dev/null
+rpc "$collaborator_token" get_my_music_review_stats '{}' \
+  "$smoke_tmp/written-review-stats.json"
+jq -n \
+  --slurpfile reviews "$smoke_tmp/written-owner-reviews.json" \
+  --slurpfile stats "$smoke_tmp/written-review-stats.json" \
+  '$stats[0][0].review_count == ($reviews[0] | length)' >/dev/null
+
+rest_get "$collaborator_token" \
+  "music_reviews?select=id&profile_id=eq.$collaborator_id&canonical_track_id=eq.$cross_isrc_track_id&deleted_at=is.null" \
+  "$smoke_tmp/rating-only-reviews-before.json"
+rest_get "$collaborator_token" \
+  "social_activity_events?select=id&actor_id=eq.$collaborator_id" \
+  "$smoke_tmp/rating-only-activity-before.json"
+rpc "$collaborator_token" save_track_rating_with_optional_diary \
+  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_rating\":3.5,\"p_is_loved\":false}" \
+  "$smoke_tmp/rating-only-state.json"
+jq -e --arg track "$cross_isrc_track_id" \
+  'length == 1 and .[0].diary_entry_id == null and .[0].canonical_track_id == $track and .[0].has_listened == true and .[0].default_rating == 3.5 and .[0].is_loved == false and .[0].want_to_listen == false and (.[0].state_updated_at | length) > 0' \
+  "$smoke_tmp/rating-only-state.json" >/dev/null
+rest_get "$collaborator_token" \
+  "music_reviews?select=id&profile_id=eq.$collaborator_id&canonical_track_id=eq.$cross_isrc_track_id&deleted_at=is.null" \
+  "$smoke_tmp/rating-only-reviews-after.json"
+rest_get "$collaborator_token" \
+  "social_activity_events?select=id&actor_id=eq.$collaborator_id" \
+  "$smoke_tmp/rating-only-activity-after.json"
+[[ "$(jq 'length' "$smoke_tmp/rating-only-reviews-after.json")" -eq "$(jq 'length' "$smoke_tmp/rating-only-reviews-before.json")" ]]
+[[ "$(jq 'length' "$smoke_tmp/rating-only-activity-after.json")" -eq "$(jq 'length' "$smoke_tmp/rating-only-activity-before.json")" ]]
+
+rating_diary_played_at="$(date -u -v-2S '+%Y-%m-%dT%H:%M:%SZ')"
+rest_get "$collaborator_token" \
+  "listening_history_entries?select=id&profile_id=eq.$collaborator_id" \
+  "$smoke_tmp/rating-diary-before.json"
+rest_get "$collaborator_token" \
+  "social_activity_events?select=id&actor_id=eq.$collaborator_id&kind=eq.diary_logged" \
+  "$smoke_tmp/rating-diary-activity-before.json"
+rpc "$collaborator_token" save_track_rating_with_optional_diary \
+  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_rating\":4.0,\"p_is_loved\":true,\"p_provider\":\"apple_music\",\"p_provider_subject_id\":\"harmony-cross-isrc-apple\",\"p_diary_played_at\":\"$rating_diary_played_at\",\"p_diary_visibility\":\"followers\",\"p_is_relisten\":true,\"p_tags\":[\" Live \"],\"p_diary_rating\":1.5}" \
+  "$smoke_tmp/rating-with-diary.json"
+rating_diary_id="$(jq -er '.[0].diary_entry_id' "$smoke_tmp/rating-with-diary.json")"
+jq -e --arg track "$cross_isrc_track_id" \
+  'length == 1 and .[0].canonical_track_id == $track and .[0].default_rating == 4.0 and .[0].is_loved == true and .[0].has_listened == true and .[0].want_to_listen == false' \
+  "$smoke_tmp/rating-with-diary.json" >/dev/null
+rpc "$collaborator_token" list_my_listening_diary \
+  '{"p_before_played_at":null,"p_before_id":null,"p_limit":100}' \
+  "$smoke_tmp/rating-with-diary-row.json"
+jq -e --arg entry "$rating_diary_id" \
+  'map(select(.id == $entry)) | length == 1 and .[0].rating == 1.5 and .[0].review_id == null and .[0].is_relisten == true and .[0].tags == ["live"]' \
+  "$smoke_tmp/rating-with-diary-row.json" >/dev/null
+rest_get "$collaborator_token" \
+  "profile_track_subject_states?select=default_rating,is_loved,has_listened,want_to_listen&canonical_track_id=eq.$cross_isrc_track_id" \
+  "$smoke_tmp/rating-with-diary-current-state.json"
+jq -e 'length == 1 and .[0].default_rating == 4.0 and .[0].is_loved == true and .[0].has_listened == true and .[0].want_to_listen == false' \
+  "$smoke_tmp/rating-with-diary-current-state.json" >/dev/null
+rest_get "$collaborator_token" \
+  "listening_history_entries?select=id&profile_id=eq.$collaborator_id" \
+  "$smoke_tmp/rating-diary-after.json"
+rest_get "$collaborator_token" \
+  "social_activity_events?select=id&actor_id=eq.$collaborator_id&kind=eq.diary_logged" \
+  "$smoke_tmp/rating-diary-activity-after.json"
+[[ "$(jq 'length' "$smoke_tmp/rating-diary-after.json")" -eq "$(( $(jq 'length' "$smoke_tmp/rating-diary-before.json") + 1 ))" ]]
+[[ "$(jq 'length' "$smoke_tmp/rating-diary-activity-after.json")" -eq "$(( $(jq 'length' "$smoke_tmp/rating-diary-activity-before.json") + 1 ))" ]]
+
 stage="atomic review and optional Diary authoring"
 atomic_played_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 rpc "$collaborator_token" create_track_review_with_optional_diary \
@@ -1679,9 +1773,10 @@ jq -e --arg entry "$atomic_unrated_diary_id" --arg review "$atomic_unrated_revie
   'map(select(.id == $entry)) | length == 1 and .[0].rating == 1.5 and .[0].review_id == $review' \
   "$smoke_tmp/atomic-unrated-diary-row.json" >/dev/null
 empty_atomic_review_status="$(rpc_status "$collaborator_token" create_track_review_with_optional_diary \
-  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_rating\":null,\"p_body\":\"  \"}" \
+  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_rating\":4.0,\"p_body\":\"  \"}" \
   "$smoke_tmp/atomic-empty-unrated-review.json")"
 [[ "$empty_atomic_review_status" == "400" ]]
+jq -e '.details == "review_body_required"' "$smoke_tmp/atomic-empty-unrated-review.json" >/dev/null
 rpc "$collaborator_token" delete_music_review \
   "{\"p_review_id\":\"$atomic_unrated_review_id\"}" \
   "$smoke_tmp/atomic-unrated-review-delete.json"

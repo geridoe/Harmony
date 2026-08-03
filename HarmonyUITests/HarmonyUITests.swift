@@ -163,7 +163,8 @@ class HarmonyUITests: XCTestCase {
             reviewsTab.tap()
         }
         XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Reviews"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Following"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["My Reviews"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Ratings"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["Activity"].exists)
         XCTAssertFalse(app.buttons["Diary"].exists)
@@ -177,11 +178,12 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(chooseMusic.waitForExistence(timeout: 5))
         chooseMusic.tap()
         XCTAssertTrue(app.navigationBars["Choose music"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Songs"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Albums"].waitForExistence(timeout: 5))
-        app.buttons["Albums"].tap()
+        let subjectPicker = app.segmentedControls["review-subject-mode"]
+        XCTAssertTrue(subjectPicker.buttons["Songs"].waitForExistence(timeout: 5))
+        XCTAssertTrue(subjectPicker.buttons["Albums"].waitForExistence(timeout: 5))
+        subjectPicker.buttons["Albums"].tap()
         XCTAssertTrue(app.staticTexts["No albums found for this search."].waitForExistence(timeout: 5))
-        app.buttons["Songs"].tap()
+        subjectPicker.buttons["Songs"].tap()
         let reviewSong = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Review song '")).firstMatch
         XCTAssertTrue(reviewSong.waitForExistence(timeout: 5))
         reviewSong.tap()
@@ -194,6 +196,11 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Only me"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Choose different music"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["Your diary"].exists)
+
+        let reviewBody = app.textFields["Write your review (optional)"]
+        XCTAssertTrue(reviewBody.waitForExistence(timeout: 5))
+        reviewBody.tap()
+        reviewBody.typeText("A UI fixture review.")
 
         let addToDiary = app.switches["review-add-to-diary"]
         XCTAssertTrue(addToDiary.exists)
@@ -208,6 +215,23 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(app.textFields["review-diary-tags"].exists)
         app.swipeUp()
         XCTAssertTrue(app.buttons["Publish review and log listen"].exists)
+    }
+
+    func testReviewsFollowingFixtureAndExhaustiveRatingsSummary() throws {
+        let app = XCUIApplication()
+        app.launchArguments.append("--ui-test-diary-editor")
+        app.launch()
+
+        app.tabBars.buttons["Reviews"].tap()
+        XCTAssertTrue(app.buttons["Following"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Latest from following"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["A fixture opinion."].waitForExistence(timeout: 5))
+
+        app.buttons["Ratings"].tap()
+        let distribution = app.descendants(matching: .any).matching(NSPredicate(
+            format: "label == 'Complete current rating distribution: 2 ratings'"
+        )).firstMatch
+        XCTAssertTrue(distribution.waitForExistence(timeout: 5))
     }
 
     func testReviewFeedKeepsConversationControlsOffTheSummary() throws {
