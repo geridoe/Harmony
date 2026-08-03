@@ -133,6 +133,58 @@ struct SocialView: View {
                     }
                 }
 
+                Section("Listening history") {
+                    Button {
+                        Task { await store.recordCurrentTrackInHistory() }
+                    } label: {
+                        if store.isRecordingListeningHistory {
+                            ProgressView()
+                        } else {
+                            Label(
+                                store.historySocialVisibility == .followers ? "Log current track for followers" : "Log current track privately",
+                                systemImage: "clock.arrow.circlepath"
+                            )
+                        }
+                    }
+                    .disabled(store.nowPlaying == nil || store.isRecordingListeningHistory)
+
+                    if store.isRefreshingListeningHistory && store.listeningHistory.isEmpty {
+                        ProgressView("Loading listening history…")
+                    } else if store.listeningHistory.isEmpty {
+                        Text("No visible Harmony listening history yet.").foregroundColor(.secondary)
+                    } else {
+                        ForEach(store.listeningHistory) { entry in
+                            HStack(spacing: 12) {
+                                if let track = entry.canonicalTrack {
+                                    TrackArtwork(track: track.harmonyTrack, size: 38, cornerRadius: 8)
+                                }
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(entry.canonicalTrack.map { "\($0.title) · \($0.artist)" } ?? "Unavailable track")
+                                        .font(.subheadline.weight(.semibold))
+                                    HStack(spacing: 4) {
+                                        Text(entry.profile.displayName)
+                                        Text("·")
+                                        Text(entry.playedAt, style: .relative)
+                                        if store.isOwnHistoryEntry(entry) {
+                                            Image(systemName: entry.visibility == .followers ? "person.2.fill" : "lock.fill")
+                                                .accessibilityLabel(entry.visibility.title)
+                                        }
+                                    }
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                if store.isOwnHistoryEntry(entry) {
+                                    Button(role: .destructive) {
+                                        Task { await store.deleteListeningHistoryEntry(entry.id) }
+                                    } label: { Image(systemName: "trash") }
+                                    .accessibilityLabel("Delete history entry")
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Section("Your diary") {
                     if let track = store.nowPlaying?.track {
                         Text("Reviewing: \(track.title) · \(track.artist)")
@@ -179,11 +231,13 @@ struct SocialView: View {
                 await store.refreshAccountSettings()
                 await store.refreshSocialProfiles()
                 await store.refreshListeningFeed()
+                await store.refreshListeningHistory()
                 await store.refreshMusicReviews()
             }
             .refreshable {
                 await store.refreshSocialProfiles()
                 await store.refreshListeningFeed()
+                await store.refreshListeningHistory()
                 await store.refreshMusicReviews()
             }
         }

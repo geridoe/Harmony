@@ -177,6 +177,9 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var isRefreshingListeningFeed = false
     @Published private(set) var isPublishingListeningPresence = false
     @Published private(set) var isEavesdropping = false
+    @Published private(set) var listeningHistory: [RemoteListeningHistoryEntry] = []
+    @Published private(set) var isRefreshingListeningHistory = false
+    @Published private(set) var isRecordingListeningHistory = false
     @Published private(set) var musicReviews: [RemoteMusicReview] = []
     @Published private(set) var isRefreshingMusicReviews = false
     @Published private(set) var isPublishingMusicReview = false
@@ -231,6 +234,7 @@ final class HarmonySessionStore: ObservableObject {
     var liveSocialVisibility: SocialVisibilityOption { socialSettings?.liveVisibility ?? .privateOnly }
     var historySocialVisibility: SocialVisibilityOption { socialSettings?.historyVisibility ?? .privateOnly }
     var reviewsSocialVisibility: SocialVisibilityOption { socialSettings?.reviewsVisibility ?? .privateOnly }
+    var recordsHarmonyPlays: Bool { socialSettings?.recordHarmonyPlays ?? false }
     func providerState(for provider: MusicProvider) -> ProviderAccountStatus { providerStates[provider] ?? .notConnected }
     func canRemove(_ item: QueueItem) -> Bool { currentMember.role == .conductor || item.addedBy.id == currentMember.id }
     func contains(_ track: HarmonyTrack) -> Bool { queue.contains { Self.representsSameRecording($0.track, track) } }
@@ -291,7 +295,8 @@ final class HarmonySessionStore: ObservableObject {
             profileID: current.profileID,
             liveVisibility: category == .liveListening ? visibility : current.liveVisibility,
             historyVisibility: category == .listeningHistory ? visibility : current.historyVisibility,
-            reviewsVisibility: category == .reviews ? visibility : current.reviewsVisibility
+            reviewsVisibility: category == .reviews ? visibility : current.reviewsVisibility,
+            recordHarmonyPlays: current.recordHarmonyPlays
         )
         isUpdatingAccountSettings = true
         defer { isUpdatingAccountSettings = false }
@@ -305,6 +310,25 @@ final class HarmonySessionStore: ObservableObject {
             collaborationMessage = visibility == .followers ? "Sharing enabled for approved followers" : "Visibility changed to Only me"
         } catch {
             collaborationMessage = "Could not update privacy settings: \(error.localizedDescription)"
+        }
+    }
+
+    func updateHistoryRecording(_ enabled: Bool) async {
+        guard let current = socialSettings, !isUpdatingAccountSettings else { return }
+        let updated = RemoteSocialSettings(
+            profileID: current.profileID,
+            liveVisibility: current.liveVisibility,
+            historyVisibility: current.historyVisibility,
+            reviewsVisibility: current.reviewsVisibility,
+            recordHarmonyPlays: enabled
+        )
+        isUpdatingAccountSettings = true
+        defer { isUpdatingAccountSettings = false }
+        do {
+            socialSettings = try await collaborationRepository.updateSocialSettings(updated)
+            collaborationMessage = enabled ? "Harmony will log tracks when you skip to the next song" : "Automatic Harmony history logging disabled"
+        } catch {
+            collaborationMessage = "Could not update history consent: \(error.localizedDescription)"
         }
     }
 
@@ -539,6 +563,7 @@ final class HarmonySessionStore: ObservableObject {
 
     func skipToNext() async {
         guard canControlPlayback, queue.count > 1 else { return }
+        let completedTrack = queue.first?.track
         let expectedRevision = queueRevision
         queue.removeFirst()
         playbackState = .playing
@@ -555,6 +580,9 @@ final class HarmonySessionStore: ObservableObject {
             } catch {
                 collaborationMessage = "Spotify skip failed: \(error.localizedDescription)"
             }
+        }
+        if recordsHarmonyPlays, let completedTrack {
+            await recordListeningHistory(completedTrack)
         }
         guard let remoteSessionID else { return }
         do {
@@ -646,6 +674,43 @@ final class HarmonySessionStore: ObservableObject {
         } catch {
             collaborationMessage = "Could not refresh listening activity."
         }
+    }
+
+    func refreshListeningHistory() async {
+        guard !isRefreshingListeningHistory else { return }
+        isRefreshingListeningHistory = true
+        defer { isRefreshingListeningHistory = false }
+        do { listeningHistory = try await collaborationRepository.listeningHistory() }
+        catch { collaborationMessage = "Could not refresh listening history." }
+    }
+
+    func recordCurrentTrackInHistory() async {
+        guard let track = nowPlaying?.track else {
+            collaborationMessage = "Start a Harmony queue track before logging it."
+            return
+        }
+        await recordListeningHistory(track)
+    }
+
+    func deleteListeningHistoryEntry(_ entryID: UUID) async {
+        do {
+            try await collaborationRepository.deleteListeningHistoryEntry(entryID)
+            collaborationMessage = "History entry deleted"
+            await refreshListeningHistory()
+        } catch { collaborationMessage = "Could not delete history entry: \(error.localizedDescription)" }
+    }
+
+    func isOwnHistoryEntry(_ entry: RemoteListeningHistoryEntry) -> Bool { entry.profileID == authenticatedProfileID }
+
+    private func recordListeningHistory(_ track: HarmonyTrack) async {
+        guard !isRecordingListeningHistory else { return }
+        isRecordingListeningHistory = true
+        defer { isRecordingListeningHistory = false }
+        do {
+            try await collaborationRepository.recordListeningHistory(track: track, visibility: historySocialVisibility)
+            collaborationMessage = historySocialVisibility == .followers ? "Track added to follower-visible history" : "Track added to private history"
+            await refreshListeningHistory()
+        } catch { collaborationMessage = "Could not log listening history: \(error.localizedDescription)" }
     }
 
     func refreshSocialProfiles() async {

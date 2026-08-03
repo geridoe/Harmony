@@ -112,9 +112,9 @@ invite_code="SMK$(printf '%05d' "$((RANDOM % 100000))")"
 
 stage="private profile defaults and account settings"
 rest_get "$conductor_token" \
-  "profile_social_settings?select=profile_id,live_visibility,history_visibility,reviews_visibility&profile_id=eq.$conductor_id" \
+  "profile_social_settings?select=profile_id,live_visibility,history_visibility,reviews_visibility,record_harmony_plays&profile_id=eq.$conductor_id" \
   "$smoke_tmp/private-settings.json"
-jq -e 'length == 1 and .[0].live_visibility == "private" and .[0].history_visibility == "private" and .[0].reviews_visibility == "private"' "$smoke_tmp/private-settings.json" >/dev/null
+jq -e 'length == 1 and .[0].live_visibility == "private" and .[0].history_visibility == "private" and .[0].reviews_visibility == "private" and .[0].record_harmony_plays == false' "$smoke_tmp/private-settings.json" >/dev/null
 rest_patch "$conductor_token" \
   "profiles?id=eq.$conductor_id" \
   '{"display_name":"Harmony Smoke Conductor"}' \
@@ -122,9 +122,9 @@ rest_patch "$conductor_token" \
 jq -e 'length == 1 and .[0].display_name == "Harmony Smoke Conductor"' "$smoke_tmp/profile-update.json" >/dev/null
 rest_patch "$conductor_token" \
   "profile_social_settings?profile_id=eq.$conductor_id" \
-  '{"live_visibility":"followers","history_visibility":"private","reviews_visibility":"followers"}' \
+  '{"live_visibility":"followers","history_visibility":"private","reviews_visibility":"followers","record_harmony_plays":true}' \
   "$smoke_tmp/settings-update.json"
-jq -e 'length == 1 and .[0].live_visibility == "followers" and .[0].history_visibility == "private" and .[0].reviews_visibility == "followers"' "$smoke_tmp/settings-update.json" >/dev/null
+jq -e 'length == 1 and .[0].live_visibility == "followers" and .[0].history_visibility == "private" and .[0].reviews_visibility == "followers" and .[0].record_harmony_plays == true' "$smoke_tmp/settings-update.json" >/dev/null
 
 stage="social follow enforcement"
 rpc "$conductor_token" request_social_follow \
@@ -179,10 +179,15 @@ jq -e --arg profile "$collaborator_id" --arg track "$canonical_track_id" 'length
 rpc "$collaborator_token" record_listening_history \
   "{\"p_canonical_track_id\":\"$canonical_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-smoke-apple-track\",\"p_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_source\":\"manual\",\"p_visibility\":\"followers\"}" \
   "$smoke_tmp/history.json"
+history_entry_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/history.json")"
 rest_get "$conductor_token" \
   "listening_history_entries?select=profile_id,canonical_track_id&profile_id=eq.$collaborator_id" \
   "$smoke_tmp/follower-history.json"
 jq -e --arg profile "$collaborator_id" --arg track "$canonical_track_id" 'length == 1 and .[0].profile_id == $profile and .[0].canonical_track_id == $track' "$smoke_tmp/follower-history.json" >/dev/null
+rest_get "$conductor_token" \
+  "listening_history_entries?select=id,profile_id,played_at,source,visibility,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)&id=eq.$history_entry_id" \
+  "$smoke_tmp/history-detail.json"
+jq -e 'length == 1 and .[0].canonical_tracks.title == "Harmony Smoke Track" and (.[] | .profiles.display_name | length) > 0' "$smoke_tmp/history-detail.json" >/dev/null
 
 stage="follower music reviews"
 rpc "$collaborator_token" create_music_review \
@@ -234,6 +239,10 @@ rest_get "$conductor_token" \
   "$smoke_tmp/blocked-presence.json"
 [[ "$(jq 'length' "$smoke_tmp/blocked-presence.json")" -eq 0 ]]
 rest_get "$conductor_token" \
+  "listening_history_entries?select=id&id=eq.$history_entry_id" \
+  "$smoke_tmp/blocked-history.json"
+[[ "$(jq 'length' "$smoke_tmp/blocked-history.json")" -eq 0 ]]
+rest_get "$conductor_token" \
   "music_reviews?select=id&id=eq.$review_id" \
   "$smoke_tmp/blocked-review.json"
 [[ "$(jq 'length' "$smoke_tmp/blocked-review.json")" -eq 0 ]]
@@ -252,6 +261,14 @@ rpc "$conductor_token" remove_social_follow \
   "{\"p_profile_id\":\"$collaborator_id\"}" \
   "$smoke_tmp/unfollow.json"
 [[ "$(jq -er '.' "$smoke_tmp/unfollow.json")" == "true" ]]
+rpc "$collaborator_token" delete_listening_history_entry \
+  "{\"p_entry_id\":\"$history_entry_id\"}" \
+  "$smoke_tmp/history-delete.json"
+[[ "$(jq -er '.' "$smoke_tmp/history-delete.json")" == "true" ]]
+rest_get "$collaborator_token" \
+  "listening_history_entries?select=id&id=eq.$history_entry_id" \
+  "$smoke_tmp/deleted-history.json"
+[[ "$(jq 'length' "$smoke_tmp/deleted-history.json")" -eq 0 ]]
 rpc "$collaborator_token" delete_music_review \
   "{\"p_review_id\":\"$review_id\"}" \
   "$smoke_tmp/review-delete.json"

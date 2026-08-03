@@ -134,10 +134,15 @@ struct ConnectionsView: View {
                 }
 
                 Section("Social privacy") {
+                    Toggle("Log Harmony plays", isOn: Binding(
+                        get: { store.recordsHarmonyPlays },
+                        set: { enabled in Task { await store.updateHistoryRecording(enabled) } }
+                    ))
+                    .disabled(store.socialSettings == nil || store.isUpdatingAccountSettings)
                     privacyPicker("Live listening", selection: store.liveSocialVisibility, category: .liveListening)
                     privacyPicker("Listening history", selection: store.historySocialVisibility, category: .listeningHistory)
                     privacyPicker("Reviews", selection: store.reviewsSocialVisibility, category: .reviews)
-                    Text("Only approved followers can see follower-visible activity. New accounts begin with every social category set to Only me.")
+                    Text("When enabled, skipping to the next track logs the completed Harmony track. Only approved followers can see follower-visible activity. New accounts begin with logging off and every category set to Only me.")
                         .font(.footnote)
                         .foregroundColor(.secondary)
                 }

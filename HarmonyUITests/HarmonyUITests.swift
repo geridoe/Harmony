@@ -56,6 +56,8 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Listen"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["People"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Eavesdrop"].waitForExistence(timeout: 5))
+        app.swipeUp()
+        XCTAssertTrue(app.staticTexts["Listening history"].waitForExistence(timeout: 5))
     }
 
     func testLaunchPerformance() throws {

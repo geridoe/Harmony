@@ -3,6 +3,10 @@ import XCTest
 
 @MainActor
 final class HarmonyTests: XCTestCase {
+    func testSocialHistoryRecordingStartsDisabled() {
+        XCTAssertFalse(HarmonySessionStore().recordsHarmonyPlays)
+    }
+
     func testAddingTrackAdvancesQueueRevision() {
         let store = HarmonySessionStore()
         let initialCount = store.queue.count

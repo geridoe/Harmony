@@ -99,7 +99,17 @@ private struct UpdateSocialSettings: Encodable {
     let live_visibility: String
     let history_visibility: String
     let reviews_visibility: String
+    let record_harmony_plays: Bool
 }
+private struct RecordListeningHistoryParameters: Encodable {
+    let p_canonical_track_id: UUID
+    let p_provider: String?
+    let p_provider_track_id: String?
+    let p_played_at: Date
+    let p_source = "harmony_room"
+    let p_visibility: String
+}
+private struct HistoryEntryIDParameters: Encodable { let p_entry_id: UUID }
 private struct RemovePayload: Encodable { let queue_item_id: UUID }
 private struct MovePayload: Encodable { let queue_item_id: UUID; let position: Double }
 private struct PlaybackPayload: Encodable { let status: String }
@@ -154,11 +164,13 @@ struct RemoteSocialSettings: Decodable {
     let liveVisibility: SocialVisibilityOption
     let historyVisibility: SocialVisibilityOption
     let reviewsVisibility: SocialVisibilityOption
+    let recordHarmonyPlays: Bool
     enum CodingKeys: String, CodingKey {
         case profileID = "profile_id"
         case liveVisibility = "live_visibility"
         case historyVisibility = "history_visibility"
         case reviewsVisibility = "reviews_visibility"
+        case recordHarmonyPlays = "record_harmony_plays"
     }
 }
 
@@ -242,6 +254,23 @@ struct RemoteListeningPresence: Decodable, Identifiable {
         case providerDeepLink = "provider_deep_link"
         case startedAt = "started_at"
         case expiresAt = "expires_at"
+        case canonicalTrack = "canonical_tracks"
+        case profile = "profiles"
+    }
+}
+
+struct RemoteListeningHistoryEntry: Decodable, Identifiable {
+    let id: UUID
+    let profileID: UUID
+    let playedAt: Date
+    let source: String
+    let visibility: SocialVisibilityOption
+    let canonicalTrack: RemoteCatalogTrack?
+    let profile: RemoteProfile
+    enum CodingKeys: String, CodingKey {
+        case id, source, visibility
+        case profileID = "profile_id"
+        case playedAt = "played_at"
         case canonicalTrack = "canonical_tracks"
         case profile = "profiles"
     }
@@ -427,7 +456,7 @@ final class HarmonyCollaborationRepository {
         try await authenticate()
         let userID = try await currentUserID()
         return try await client.from("profile_social_settings")
-            .select("profile_id,live_visibility,history_visibility,reviews_visibility")
+            .select("profile_id,live_visibility,history_visibility,reviews_visibility,record_harmony_plays")
             .eq("profile_id", value: userID.uuidString)
             .single().execute().value
     }
@@ -439,10 +468,11 @@ final class HarmonyCollaborationRepository {
             .update(UpdateSocialSettings(
                 live_visibility: settings.liveVisibility.rawValue,
                 history_visibility: settings.historyVisibility.rawValue,
-                reviews_visibility: settings.reviewsVisibility.rawValue
+                reviews_visibility: settings.reviewsVisibility.rawValue,
+                record_harmony_plays: settings.recordHarmonyPlays
             ))
             .eq("profile_id", value: userID.uuidString)
-            .select("profile_id,live_visibility,history_visibility,reviews_visibility")
+            .select("profile_id,live_visibility,history_visibility,reviews_visibility,record_harmony_plays")
             .single().execute().value
     }
 
@@ -511,6 +541,14 @@ final class HarmonyCollaborationRepository {
             .order("updated_at", ascending: false)
             .execute()
             .value
+    }
+
+    func listeningHistory() async throws -> [RemoteListeningHistoryEntry] {
+        try await authenticate()
+        return try await client.from("listening_history_entries")
+            .select("id,profile_id,played_at,source,visibility,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)")
+            .order("played_at", ascending: false)
+            .limit(100).execute().value
     }
 
     func musicReviews() async throws -> [RemoteMusicReview] {
@@ -614,6 +652,24 @@ final class HarmonyCollaborationRepository {
     func stopListeningPresence() async throws {
         try await authenticate()
         _ = try await client.rpc("stop_listening_presence").execute()
+    }
+
+    func recordListeningHistory(track: HarmonyTrack, visibility: SocialVisibilityOption) async throws {
+        try await authenticate()
+        let mapping = track.mappings.first(where: { !$0.providerID.isEmpty })
+        let canonicalTrackID = try await canonicalTrackID(for: track)
+        _ = try await client.rpc("record_listening_history", params: RecordListeningHistoryParameters(
+            p_canonical_track_id: canonicalTrackID,
+            p_provider: mapping.map { $0.provider == .spotify ? "spotify" : "apple_music" },
+            p_provider_track_id: mapping?.providerID,
+            p_played_at: Date(),
+            p_visibility: visibility.rawValue
+        )).execute()
+    }
+
+    func deleteListeningHistoryEntry(_ entryID: UUID) async throws {
+        try await authenticate()
+        _ = try await client.rpc("delete_listening_history_entry", params: HistoryEntryIDParameters(p_entry_id: entryID)).execute()
     }
 
     func createTrackReview(track: HarmonyTrack, rating: Double, body: String, visibility: SocialVisibilityOption) async throws {
