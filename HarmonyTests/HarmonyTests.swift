@@ -503,6 +503,57 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(draft.visibility, .followers, "An open draft must not follow later profile-default changes")
     }
 
+    func testReviewDraftCreatesLinkedDiarySnapshotOnlyForTrackOptIn() {
+        var draft = ReviewDraft(
+            subject: .track(reviewTrack(title: "Snapshot song")),
+            rating: 3.5,
+            addToDiary: true,
+            diaryVisibility: .followers
+        )
+
+        let submitted = draft.diaryRequest
+        XCTAssertEqual(submitted?.rating, 3.5)
+        XCTAssertEqual(submitted?.visibility, .followers)
+
+        draft.rating = 1.0
+        XCTAssertEqual(submitted?.rating, 3.5, "The submitted Diary rating is an immutable snapshot")
+
+        draft.addToDiary = false
+        XCTAssertNil(draft.diaryRequest)
+
+        draft.addToDiary = true
+        draft.subject = .album(reviewAlbum(title: "Album only"))
+        XCTAssertNil(draft.diaryRequest, "Album reviews cannot create a track Diary entry")
+    }
+
+    func testReviewDraftSupportsUnratedAndCustomDiarySnapshots() {
+        var draft = ReviewDraft(
+            subject: .track(reviewTrack(title: "Separate snapshot")),
+            rating: 4.5,
+            addToDiary: true
+        )
+
+        draft.diaryRatingMode = .unrated
+        XCTAssertNil(draft.diaryRequest?.rating)
+
+        draft.diaryRatingMode = .custom
+        draft.customDiaryRating = 2.5
+        XCTAssertEqual(draft.diaryRequest?.rating, 2.5)
+    }
+
+    func testReviewDraftReusesDiaryTagNormalizationAndLimits() {
+        var draft = ReviewDraft(
+            subject: .track(reviewTrack(title: "Tagged listen")),
+            addToDiary: true,
+            tagsText: " Party,party, NIGHT "
+        )
+        XCTAssertEqual(draft.diaryRequest?.tags, ["party", "night"])
+
+        draft.tagsText = (1...11).map { "tag\($0)" }.joined(separator: ",")
+        XCTAssertNotNil(draft.diaryDraft.tagValidationMessage)
+        XCTAssertNil(draft.diaryRequest)
+    }
+
     func testMusicListDraftNormalizesAndValidatesAuthoredMetadata() {
         var draft = MusicListDraft(
             title: "  After-hours favorites  ",
@@ -1192,6 +1243,17 @@ final class HarmonyTests: XCTestCase {
             symbol: "music.note",
             mappings: [ProviderTrackMapping(provider: .spotify, providerID: "spotify:track:\(title)", availability: .playable)],
             reviewableAlbum: album
+        )
+    }
+
+    private func reviewAlbum(title: String) -> ReviewableAlbum {
+        ReviewableAlbum(
+            provider: .spotify,
+            providerID: "spotify:album:\(title)",
+            title: title,
+            artist: "Test artist",
+            artworkURL: nil,
+            deepLinkURL: nil
         )
     }
 

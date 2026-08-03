@@ -493,6 +493,14 @@ struct EavesdropBroadcastDetailState {
     var errorMessage: String?
 }
 
+struct TrackReviewDiaryRequest: Equatable {
+    let listenedAt: Date
+    let isRelisten: Bool
+    let tags: [String]
+    let rating: Double?
+    let visibility: SocialVisibilityOption
+}
+
 func mergedEavesdropBroadcasts(_ rows: [RemoteEavesdropBroadcastRow]) -> [EavesdropBroadcast] {
     var broadcasts: [UUID: EavesdropBroadcast] = [:]
     for row in rows {
@@ -3276,7 +3284,15 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     @discardableResult
-    func publishTrackReview(_ track: HarmonyTrack, rating: Double, body: String, isLoved: Bool = false, containsSpoilers: Bool = false, visibility: SocialVisibilityOption? = nil) async -> Bool {
+    func publishTrackReview(
+        _ track: HarmonyTrack,
+        rating: Double,
+        body: String,
+        isLoved: Bool = false,
+        containsSpoilers: Bool = false,
+        visibility: SocialVisibilityOption? = nil,
+        diary: TrackReviewDiaryRequest? = nil
+    ) async -> Bool {
         guard !isPublishingMusicReview else { return false }
         let resolvedVisibility = visibility ?? reviewsSocialVisibility
         isPublishingMusicReview = true
@@ -3288,14 +3304,20 @@ final class HarmonySessionStore: ObservableObject {
                 body: body,
                 visibility: resolvedVisibility,
                 isLoved: isLoved,
-                containsSpoilers: containsSpoilers
+                containsSpoilers: containsSpoilers,
+                diary: diary
             )
             collaborationMessage = resolvedVisibility == .followers
-                ? "Review published to approved followers"
-                : "Private review saved"
+                ? (diary == nil ? "Review published to approved followers" : "Review published and Diary entry saved")
+                : (diary == nil ? "Private review saved" : "Private review and Diary entry saved")
             await refreshMusicReviews()
             await refreshOwnerReviews()
             await refreshTrackSubjectShelf()
+            if diary != nil {
+                await refreshJournalEntries()
+                await refreshListeningHistory()
+                await refreshFollowingActivity()
+            }
             return true
         } catch {
             collaborationMessage = "Could not publish review: \(error.localizedDescription)"

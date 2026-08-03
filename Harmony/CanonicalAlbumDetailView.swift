@@ -237,7 +237,6 @@ struct CanonicalAlbumDetailView: View {
                     .foregroundStyle(saveMessage.hasPrefix("Saved") ? Color.secondary : Color.red)
             }
         }
-        .accessibilityIdentifier("canonical-album-owner-state")
     }
 
     private var providerSection: some View {

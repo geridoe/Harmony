@@ -97,11 +97,11 @@ The conclusions about Harmony's event-noise policy and music-specific layouts
 are product-design inferences, not claims about Letterboxd internals.
 
 The information hierarchy matters as much as the fields. Harmony's Reviews
-experience remains the fifth root tab, with its own feed, composer, and review
-detail navigation. It must not regress into a small Diary section inside the
-Listen tab. Listen remains about people, notifications, eavesdropping, and
-listening history; Reviews is where authored music opinions and their
-conversation live.
+experience remains the fifth root tab, with its own composer, owner library,
+Ratings shelf, and review-detail navigation. It must not regress into a small
+Diary section inside Listen. Listen owns the distinct listening jobs: people,
+notifications, eavesdropping, Diary, following Activity, Music shelf, and
+Lists. Reviews is where authored music opinions and their conversation live.
 
 ### Staged adaptation roadmap
 
@@ -133,10 +133,12 @@ Only the first stage should be described as implemented:
    rows. Its All / Songs / Albums scopes present half-star distributions and
    link to canonical subject pages. Canonical album pages combine private owner
    state with provider actions and RLS-filtered visible-review statistics.
-8. **Next:** a deliberate create-time opinion-linking interaction if the
-   edit-first workflow proves too hidden, plus server-side filtered search if
-   exhaustive results are required.
-9. **After moderation and ranking policy:** popular/community discovery,
+8. **Current:** a track review can optionally create a separately visible,
+   linked Diary entry in the same transaction. The Diary may copy the review
+   rating, use a different historical rating, or remain unrated.
+9. **Next:** year/month Diary grouping, a richer member profile overview, and
+   server-side filtered search if exhaustive results are required.
+10. **After moderation and ranking policy:** popular/community discovery,
    shareable lists/collections, and listening statistics/year summaries.
 
 This order emulates Letterboxd's durable separation of diary, opinion,
@@ -162,20 +164,28 @@ reader's response to that review.
 
 ## First implementation
 
-The fifth iOS tab has four full shelves and opens on Reviews:
+The fifth iOS tab is a focused Reviews page with two peer shelves:
 
 - **Reviews** contains the owner's published song and album opinions.
 - **Ratings** contains the owner's current song and album ratings independently
   of review authorship, with All / Songs / Albums scopes and ten-bucket
   half-star distributions.
-- **Diary** contains the owner's dated listening entries.
-- **Activity** contains shortcuts into the owner's journal plus
-  follower-visible review activity.
 
-The top-right **Create** menu offers **Write a review** and **Log a listen**
-from every shelf. Review composition is modal so the selected shelf and scroll
+The top-right **Write review** action opens the subject-first composer from
+either shelf. Review composition is modal so the selected shelf and scroll
 position survive dismissal. The rating control supports half-star steps, and
-Loved remains independent of the score.
+Loved remains independent of the score. Diary, Activity, Music shelf, and
+Lists are separate full-page destinations under Listen rather than sections in
+the Reviews page.
+
+For a track review, **Also add to Diary** expands the same composer with date,
+Relisten, tags, Diary rating, and a separate Diary audience. This is one user
+action but remains two domain records. `create_track_review_with_optional_diary`
+creates the optional historical listen first, creates the review second so its
+rating/Loved values remain the current subject state, then links the records.
+Any validation or persistence failure rolls back both records and their
+activity/state side effects. Album reviews do not show the Diary option because
+Harmony has not yet defined what a dated album listen means.
 
 Migration 038 introduces canonical album release identity and exact provider
 mappings. Migration 039 adds a separate owner album-state record and a
@@ -218,9 +228,8 @@ filtered search remains a later slice.
 
 ### Interaction and ownership
 
-Manual diary authoring lives in **Reviews → Diary** and the Reviews toolbar's
-**Create → Log a listen** action, not in Listen.
-Listen remains a read-only social/history surface. **Log a listen** opens a
+Manual diary authoring lives in **Listen → Diary → Log a listen**.
+**Log a listen** opens a
 track-only composer with:
 
 1. a song selected through the isolated Reviews catalog search;
@@ -367,7 +376,7 @@ rating without rewriting historical Diary rows.
 
 ### Owner Music shelf
 
-Reviews → Activity now links to a dedicated **Music shelf**. It is not another
+Listen now links to a dedicated **Music shelf**. It is not another
 Diary list: each canonical track appears once with its current Listened, Loved,
 Want-to-listen, and default-rating state. All, Loved, Want to listen, Rated,
 and Listened scopes sit alongside local title/artist/album search. Rows show

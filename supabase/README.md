@@ -60,6 +60,17 @@ supabase functions deploy spotify-token-exchange
 
 `create_music_review(...)` creates a follower/private/public review of a canonical track or provider-addressed album. Owners can edit or soft-delete it through `update_music_review(...)` and `delete_music_review(...)`. Visible viewers can use `add_review_comment(...)` and `toggle_review_reaction(...)`; comment authors or the parent-review owner can soft-delete a comment through the guarded RPC. RLS reevaluates the review’s visibility and blocks before granting access.
 
+`create_track_review_with_optional_diary(...)` is the combined track-authoring
+contract. It always creates a review and may atomically create a separately
+visible manual Diary entry linked to that review. Review and Diary ratings are
+independent snapshots; the Diary can be unrated. The review is written after
+the Diary so the review rating/Loved values become current track state, and any
+late review/link failure rolls the whole transaction back.
+
+Review deletion is a soft delete. `delete_music_review(...)` also clears the
+link from any owner Diary entry in the same transaction, preserving the Diary
+snapshot without leaving a durable pointer to an invisible review.
+
 `social_notifications` stores recipient-owned follow, comment, and reaction events with unread state. Database triggers create these events atomically with the social action, RLS hides events across blocks, and `mark_social_notifications_read(...)` is the only client mutation path. Supabase Realtime refreshes the in-app inbox; future APNs delivery should consume these rows rather than duplicate notification business logic.
 
 `resolve_harmony_track(provider, provider_id, title, artist, ...)` resolves a provider catalog item to a canonical Harmony track before queue insertion. It is idempotent by provider and provider ID, so provider-specific search clients can contribute tracks even before a cross-provider matcher has added mappings for the other services.

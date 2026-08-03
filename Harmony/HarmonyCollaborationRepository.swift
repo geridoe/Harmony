@@ -171,6 +171,21 @@ private struct RecordListeningHistoryParameters: Encodable {
     let p_tags: [String]
     let p_rating: Double?
 }
+private struct CreateTrackReviewWithDiaryParameters: Encodable {
+    let p_canonical_track_id: UUID
+    let p_provider: String?
+    let p_provider_subject_id: String?
+    let p_rating: Double
+    let p_body: String
+    let p_review_visibility: String
+    let p_contains_spoilers: Bool
+    let p_is_loved: Bool
+    let p_diary_played_at: Date
+    let p_diary_visibility: String
+    let p_is_relisten: Bool
+    let p_tags: [String]
+    let p_diary_rating: Double?
+}
 private struct UpdateListeningDiaryEntryParameters: Encodable {
     let p_entry_id: UUID
     let p_played_at: Date
@@ -2189,20 +2204,50 @@ final class HarmonyCollaborationRepository {
         _ = try await client.rpc("delete_listening_history_entry", params: HistoryEntryIDParameters(p_entry_id: entryID)).execute()
     }
 
-    func createTrackReview(track: HarmonyTrack, rating: Double, body: String, visibility: SocialVisibilityOption, isLoved: Bool, containsSpoilers: Bool = false) async throws {
+    func createTrackReview(
+        track: HarmonyTrack,
+        rating: Double,
+        body: String,
+        visibility: SocialVisibilityOption,
+        isLoved: Bool,
+        containsSpoilers: Bool = false,
+        diary: TrackReviewDiaryRequest? = nil
+    ) async throws {
         try await authenticate()
         let mapping = track.mappings.first(where: { !$0.providerID.isEmpty })
         let canonicalTrackID = try await canonicalTrackID(for: track)
-        _ = try await client.rpc("create_music_review", params: CreateTrackReviewParameters(
-            p_canonical_track_id: canonicalTrackID,
-            p_provider: mapping.map { $0.provider == .spotify ? "spotify" : "apple_music" },
-            p_provider_subject_id: mapping?.providerID,
-            p_rating: rating,
-            p_body: body,
-            p_visibility: visibility.rawValue,
-            p_contains_spoilers: containsSpoilers,
-            p_is_loved: isLoved
-        )).execute()
+        let provider = mapping.map { $0.provider == .spotify ? "spotify" : "apple_music" }
+        if let diary {
+            _ = try await client.rpc(
+                "create_track_review_with_optional_diary",
+                params: CreateTrackReviewWithDiaryParameters(
+                    p_canonical_track_id: canonicalTrackID,
+                    p_provider: provider,
+                    p_provider_subject_id: mapping?.providerID,
+                    p_rating: rating,
+                    p_body: body,
+                    p_review_visibility: visibility.rawValue,
+                    p_contains_spoilers: containsSpoilers,
+                    p_is_loved: isLoved,
+                    p_diary_played_at: diary.listenedAt,
+                    p_diary_visibility: diary.visibility.rawValue,
+                    p_is_relisten: diary.isRelisten,
+                    p_tags: diary.tags,
+                    p_diary_rating: diary.rating
+                )
+            ).execute()
+        } else {
+            _ = try await client.rpc("create_music_review", params: CreateTrackReviewParameters(
+                p_canonical_track_id: canonicalTrackID,
+                p_provider: provider,
+                p_provider_subject_id: mapping?.providerID,
+                p_rating: rating,
+                p_body: body,
+                p_visibility: visibility.rawValue,
+                p_contains_spoilers: containsSpoilers,
+                p_is_loved: isLoved
+            )).execute()
+        }
     }
 
     func createAlbumReview(album: ReviewableAlbum, rating: Double, body: String, visibility: SocialVisibilityOption, isLoved: Bool = false, containsSpoilers: Bool = false) async throws {

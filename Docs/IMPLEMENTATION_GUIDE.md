@@ -90,8 +90,8 @@ playback/catalog interaction.
 - Durable in-app notifications cover follow requests/acceptance, review
   comments/reactions, and list likes/comments. Their data is the future source for APNs delivery;
   APNs is not yet enabled.
-- Reviews is also the home of the durable following Activity feed and member
-  profiles. Intentional manual Diary logs and first-published Reviews appear as
+- Listen owns the durable following Activity page and its member-profile
+  navigation. Intentional manual Diary logs and first-published Reviews appear as
   typed events; each member profile has independently paginated Reviews,
   Diary, opt-in Loved, and Lists shelves.
 
@@ -108,13 +108,14 @@ Session       PlayerView / SessionView        rooms, queue, playback intent
 Add music     SearchView                       catalog search and album review
 Connections   ConnectionsView                  providers, profile, privacy
 Listen        SocialView                        follows, live activity, history, inbox
-Reviews       ReviewsView                       reviews, ratings, diary, activity, lists
+Reviews       ReviewsView                       authored reviews and current ratings
 ```
 
-The Reviews destination is a root tab, never a child of Listen. It opens on a
-social Activity shelf and provides sibling Reviews, Ratings, and Diary shelves.
-That hierarchy follows the product distinction between discovering authored
-opinions, maintaining one's current ratings, and recording dated listens.
+The Reviews destination is a root tab, never a child of Listen. It opens on
+Reviews and provides a sibling Ratings shelf. Diary, Following Activity,
+Music shelf, and Lists are full-page destinations reached from Listen. That
+hierarchy keeps authored opinions and current ratings out of the listening
+utility page while keeping dated listens distinct from reviews.
 My Reviews uses an auth-bound keyset-paginated owner library and exhaustive
 server totals for review count, average rating, and Loved count. Search and
 Songs/Albums/Loved scope apply to the currently loaded owner pages, while the
@@ -283,11 +284,21 @@ remains: clear only after success and preserve the whole draft/search context
 on catalog, auth, validation, RPC, or RLS failure. Picker selection and
 publication do not enqueue media or create listening-history entries.
 
+Track drafts may opt into a dated Diary snapshot. `ReviewDraft` keeps the
+Diary date, Relisten flag, normalized tags, audience, and rating mode separate
+from the review. The rating mode is **Review rating**, **Unrated**, or
+**Different rating**. Publication uses migration 044's
+`create_track_review_with_optional_diary` RPC; there is deliberately no
+sequential client fallback because reporting success after only one record was
+saved would violate the authoring contract. The database creates the optional
+Diary row first, the review second, and then links them in one transaction.
+This preserves an independent historical Diary rating while making the
+review's rating and Loved values the newest current track state.
+
 ### Implemented: manual dated music diary
 
-The authoring surface is **Reviews → Diary → Log a listen** or the Reviews
-toolbar's **Create → Log a listen** action. The Listen
-tab continues to show social listening history but does not own diary creation.
+The authoring surface is **Listen → Diary → Log a listen**. The top-level
+Reviews tab remains dedicated to authored reviews and current ratings.
 `DiaryEntryComposer` uses the track-only form of `ReviewSubjectPicker`, so song
 selection reuses purpose-isolated `.reviews` catalog state without exposing an
 album choice or causing queue, playback, history, or review side effects.
@@ -320,7 +331,7 @@ Relisten or tags.
 
 ### Diary editing and optional opinion linkage
 
-Manual entries in **Reviews → Diary** expose a pencil action with the
+Manual entries in **Listen → Diary** expose a pencil action with the
 accessible label `Edit journal entry for <track>`. Imported and Harmony-room
 history does not expose it. `DiaryEntryEditor` keeps the track immutable and
 seeds `DiaryEntryDraft` from the existing date, Relisten flag, tags, audience,
@@ -364,7 +375,7 @@ rows, and `updateListeningDiaryEntry(...)` using the exact named RPC fields.
 
 ### Implemented: owner-paginated journal browsing
 
-Reviews → Diary now reads `HarmonySessionStore.journalEntries`, a
+Listen → Diary now reads `HarmonySessionStore.journalEntries`, a
 separate owner-only manual-diary collection, instead of filtering the recent
 social `listeningHistory` snapshot. `refreshJournalEntries()` replaces the
 loaded journal with its first 50 rows; `loadMoreJournalEntries()` uses the last
@@ -479,7 +490,7 @@ still fails while any Diary/history entry or active review exists.
 
 ### Implemented: typed following Activity and member shelves
 
-Reviews → Activity is now a durable following feed rather than a snapshot of
+Listen → Following activity is a durable following feed rather than a snapshot of
 the current review query. `social_activity_events` records only the first
 follower-visible publication of a Review or List, or an intentional manual Diary log.
 Provider imports, Harmony-room history, historical rows, edits, ratings, and
@@ -739,7 +750,7 @@ Music-diary coverage should verify stable tag normalization/deduplication,
 client and server tag limits, rejection of future manual timestamps,
 manual-only Relisten/tag metadata, follower/private visibility, repeat manual
 listens, and preservation of the composer after a failed save. UI coverage
-should keep Log a listen in Diary and the Reviews Create menu and verify the track-only picker, date,
+should keep Log a listen in Listen → Diary and verify the track-only picker, date,
 Relisten, tags, audience, and disabled-until-valid Save flow.
 
 Edit/link coverage should decode `review_id` and nested canonical identity,

@@ -116,19 +116,15 @@ class HarmonyUITests: XCTestCase {
             reviewsTab.tap()
         }
         XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Activity"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Diary"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Reviews"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Ratings"].waitForExistence(timeout: 5))
-        app.buttons["Activity"].tap()
-        XCTAssertTrue(app.staticTexts["Your music journal"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Following activity"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Create"].waitForExistence(timeout: 5))
-        app.buttons["Create"].tap()
-        XCTAssertTrue(app.buttons["Write a review"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Log a listen"].exists)
-        XCTAssertTrue(app.buttons["Create a list"].exists)
-        app.buttons["Write a review"].tap()
+        XCTAssertFalse(app.buttons["Activity"].exists)
+        XCTAssertFalse(app.buttons["Diary"].exists)
+        XCTAssertTrue(app.buttons["Write review"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS 'Listening events stay in Diary under Listen'"
+        )).firstMatch.exists)
+        app.buttons["Write review"].tap()
         XCTAssertTrue(app.navigationBars["Write a review"].waitForExistence(timeout: 5))
         let chooseMusic = app.buttons["Choose a song or album"]
         XCTAssertTrue(chooseMusic.waitForExistence(timeout: 5))
@@ -147,6 +143,19 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Only me"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Choose different music"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["Your diary"].exists)
+
+        let addToDiary = app.switches["review-add-to-diary"]
+        XCTAssertTrue(addToDiary.exists)
+        for _ in 0..<3 where !addToDiary.isHittable { app.swipeUp() }
+        XCTAssertTrue(addToDiary.isHittable)
+        addToDiary.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        XCTAssertEqual(addToDiary.value as? String, "1")
+        for _ in 0..<2 where !app.staticTexts["Listened on"].exists { app.swipeUp() }
+        XCTAssertTrue(app.staticTexts["Listened on"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.switches["Relisten"].exists)
+        XCTAssertTrue(app.textFields["review-diary-tags"].exists)
+        app.swipeUp()
+        XCTAssertTrue(app.buttons["Publish review and log listen"].exists)
     }
 
     func testReviewFeedKeepsConversationControlsOffTheSummary() throws {
@@ -171,13 +180,10 @@ class HarmonyUITests: XCTestCase {
         app.launchArguments.append("--ui-test-diary-editor")
         app.launch()
 
-        let reviewsTab = app.tabBars.buttons["Reviews"]
-        XCTAssertTrue(reviewsTab.waitForExistence(timeout: 5))
-        reviewsTab.tap()
-        let reviewsNavigation = app.navigationBars["Reviews"]
-        if !reviewsNavigation.waitForExistence(timeout: 3) { reviewsTab.tap() }
-        XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
-        app.buttons["Activity"].tap()
+        let listenTab = app.tabBars.buttons["Listen"]
+        XCTAssertTrue(listenTab.waitForExistence(timeout: 5))
+        listenTab.tap()
+        XCTAssertTrue(app.navigationBars["Listen"].waitForExistence(timeout: 5))
 
         let musicShelf = app.buttons["Music shelf"]
         XCTAssertTrue(musicShelf.waitForExistence(timeout: 5))
@@ -198,13 +204,10 @@ class HarmonyUITests: XCTestCase {
         app.launchArguments.append("--ui-test-diary-editor")
         app.launch()
 
-        let reviewsTab = app.tabBars.buttons["Reviews"]
-        XCTAssertTrue(reviewsTab.waitForExistence(timeout: 5))
-        reviewsTab.tap()
-        let reviewsNavigation = app.navigationBars["Reviews"]
-        if !reviewsNavigation.waitForExistence(timeout: 3) { reviewsTab.tap() }
-        XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
-        app.buttons["Activity"].tap()
+        let listenTab = app.tabBars.buttons["Listen"]
+        XCTAssertTrue(listenTab.waitForExistence(timeout: 5))
+        listenTab.tap()
+        XCTAssertTrue(app.navigationBars["Listen"].waitForExistence(timeout: 5))
 
         let musicShelf = app.buttons["Music shelf"]
         XCTAssertTrue(musicShelf.waitForExistence(timeout: 5))
@@ -280,13 +283,12 @@ class HarmonyUITests: XCTestCase {
         app.launchArguments.append("--ui-test-social-activity")
         app.launch()
 
-        let reviewsTab = app.tabBars.buttons["Reviews"]
-        XCTAssertTrue(reviewsTab.waitForExistence(timeout: 5))
-        reviewsTab.tap()
-        let reviewsNavigation = app.navigationBars["Reviews"]
-        if !reviewsNavigation.waitForExistence(timeout: 3) { reviewsTab.tap() }
-        XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
-        app.buttons["Activity"].tap()
+        let listenTab = app.tabBars.buttons["Listen"]
+        XCTAssertTrue(listenTab.waitForExistence(timeout: 5))
+        listenTab.tap()
+        XCTAssertTrue(app.navigationBars["Listen"].waitForExistence(timeout: 5))
+        app.buttons["Following activity"].tap()
+        XCTAssertTrue(app.navigationBars["Activity"].waitForExistence(timeout: 5))
 
         XCTAssertTrue(app.descendants(matching: .any)["following-activity-card-review-50000000-0000-0000-0000-000000000005"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.descendants(matching: .any)["following-activity-card-diary-60000000-0000-0000-0000-000000000006"].exists)
@@ -319,17 +321,14 @@ class HarmonyUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
-        let reviewsTab = app.tabBars.buttons["Reviews"]
-        XCTAssertTrue(reviewsTab.waitForExistence(timeout: 5))
-        reviewsTab.tap()
-        let reviewsNavigation = app.navigationBars["Reviews"]
-        if !reviewsNavigation.waitForExistence(timeout: 3) {
-            reviewsTab.tap()
-        }
-        XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
-        let journalShelf = app.buttons["Diary"]
-        XCTAssertTrue(journalShelf.waitForExistence(timeout: 5))
-        journalShelf.tap()
+        let listenTab = app.tabBars.buttons["Listen"]
+        XCTAssertTrue(listenTab.waitForExistence(timeout: 5))
+        listenTab.tap()
+        XCTAssertTrue(app.navigationBars["Listen"].waitForExistence(timeout: 5))
+        let diary = app.buttons["Diary"]
+        XCTAssertTrue(diary.waitForExistence(timeout: 5))
+        diary.tap()
+        XCTAssertTrue(app.navigationBars["Diary"].waitForExistence(timeout: 5))
 
         let logListen = app.buttons["Log a listen"]
         for _ in 0..<3 where !logListen.exists { app.swipeUp() }
@@ -366,13 +365,12 @@ class HarmonyUITests: XCTestCase {
         app.launchArguments.append("--ui-test-diary-editor")
         app.launch()
 
-        let reviewsTab = app.tabBars.buttons["Reviews"]
-        XCTAssertTrue(reviewsTab.waitForExistence(timeout: 5))
-        reviewsTab.tap()
-        let reviewsNavigation = app.navigationBars["Reviews"]
-        if !reviewsNavigation.waitForExistence(timeout: 3) { reviewsTab.tap() }
-        XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
+        let listenTab = app.tabBars.buttons["Listen"]
+        XCTAssertTrue(listenTab.waitForExistence(timeout: 5))
+        listenTab.tap()
+        XCTAssertTrue(app.navigationBars["Listen"].waitForExistence(timeout: 5))
         app.buttons["Diary"].tap()
+        XCTAssertTrue(app.navigationBars["Diary"].waitForExistence(timeout: 5))
 
         let edit = app.buttons["Edit journal entry for Afterglow"]
         for _ in 0..<3 where !edit.exists { app.swipeUp() }
@@ -387,8 +385,10 @@ class HarmonyUITests: XCTestCase {
         XCTAssertEqual(app.switches["Relisten"].value as? String, "1")
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS '#party' AND label CONTAINS '#vinyl'")).firstMatch.exists)
         XCTAssertTrue(app.staticTexts["Linked opinion"].exists)
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS '4.5' AND label CONTAINS 'Afterglow'")).firstMatch.exists)
-        XCTAssertTrue(app.staticTexts["Audience"].exists)
+        let linkedOpinion = app.descendants(matching: .any)["diary-edit-linked-opinion"]
+        XCTAssertTrue(linkedOpinion.exists)
+        let linkedOpinionValue = linkedOpinion.value as? String ?? linkedOpinion.label
+        XCTAssertNotEqual(linkedOpinionValue, "No linked opinion")
         XCTAssertTrue(app.buttons["Save changes"].exists)
         XCTAssertFalse(app.buttons["Choose a different song"].exists, "Editing preserves the logged recording")
 
@@ -406,13 +406,12 @@ class HarmonyUITests: XCTestCase {
         app.launchArguments.append("--ui-test-diary-editor")
         app.launch()
 
-        let reviewsTab = app.tabBars.buttons["Reviews"]
-        XCTAssertTrue(reviewsTab.waitForExistence(timeout: 5))
-        reviewsTab.tap()
-        let reviewsNavigation = app.navigationBars["Reviews"]
-        if !reviewsNavigation.waitForExistence(timeout: 3) { reviewsTab.tap() }
-        XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
+        let listenTab = app.tabBars.buttons["Listen"]
+        XCTAssertTrue(listenTab.waitForExistence(timeout: 5))
+        listenTab.tap()
+        XCTAssertTrue(app.navigationBars["Listen"].waitForExistence(timeout: 5))
         app.buttons["Diary"].tap()
+        XCTAssertTrue(app.navigationBars["Diary"].waitForExistence(timeout: 5))
 
         let search = app.textFields["Search journal"]
         for _ in 0..<3 where !search.exists { app.swipeUp() }
@@ -439,7 +438,11 @@ class HarmonyUITests: XCTestCase {
         let reviewsTab = app.tabBars.buttons["Reviews"]
         XCTAssertTrue(reviewsTab.waitForExistence(timeout: 5))
         reviewsTab.tap()
-        XCTAssertTrue(app.navigationBars["Reviews"].waitForExistence(timeout: 5))
+        let reviewsNavigation = app.navigationBars["Reviews"]
+        if !reviewsNavigation.waitForExistence(timeout: 3) {
+            reviewsTab.tap()
+        }
+        XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
         app.buttons["Ratings"].tap()
         app.buttons["Albums"].tap()
 
@@ -458,6 +461,9 @@ class HarmonyUITests: XCTestCase {
             app.descendants(matching: .any)["canonical-album-rating"].value as? String,
             "4.5 out of 5"
         )
+        for _ in 0..<3 where !app.staticTexts["Average across reviews visible to you"].exists {
+            app.swipeUp()
+        }
         XCTAssertTrue(app.staticTexts["Average across reviews visible to you"].exists)
     }
 
