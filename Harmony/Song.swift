@@ -202,6 +202,10 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var isEavesdropping = false
     @Published private(set) var listeningHistory: [RemoteListeningHistoryEntry] = []
     @Published private(set) var isRefreshingListeningHistory = false
+    @Published private(set) var journalEntries: [RemoteListeningHistoryEntry] = []
+    @Published private(set) var isRefreshingJournalEntries = false
+    @Published private(set) var isLoadingMoreJournalEntries = false
+    @Published private(set) var hasMoreJournalEntries = false
     @Published private(set) var isRecordingListeningHistory = false
     @Published private(set) var isSavingDiaryEntry = false
     @Published private(set) var isImportingSpotifyHistory = false
@@ -234,6 +238,7 @@ final class HarmonySessionStore: ObservableObject {
     private let spotifyRemote: any SpotifyPlaybackProviding
     private let appleMusicProvider: any AppleMusicProviding
     private var spotifyLoadedProviderID: String?
+    private let journalPageSize = 50
 #if DEBUG
     private var isDiaryEditorUITestFixtureActive = false
 #endif
@@ -851,9 +856,10 @@ final class HarmonySessionStore: ObservableObject {
             async let profiles: Void = self.refreshSocialProfiles()
             async let feed: Void = self.refreshListeningFeed()
             async let history: Void = self.refreshListeningHistory()
+            async let journal: Void = self.refreshJournalEntries()
             async let reviews: Void = self.refreshMusicReviews()
             async let notifications: Void = self.refreshSocialNotifications()
-            _ = await (profiles, feed, history, reviews, notifications)
+            _ = await (profiles, feed, history, journal, reviews, notifications)
         }
     }
 
@@ -868,12 +874,64 @@ final class HarmonySessionStore: ObservableObject {
         catch { collaborationMessage = "Could not refresh listening history." }
     }
 
+    func refreshJournalEntries() async {
+#if DEBUG
+        guard !isDiaryEditorUITestFixtureActive else { return }
+#endif
+        guard !isRefreshingJournalEntries, !isLoadingMoreJournalEntries else { return }
+        isRefreshingJournalEntries = true
+        defer { isRefreshingJournalEntries = false }
+        do {
+            let page = try await collaborationRepository.listeningDiaryPage(limit: journalPageSize + 1)
+            journalEntries = Array(page.prefix(journalPageSize))
+            hasMoreJournalEntries = page.count > journalPageSize
+        } catch {
+            collaborationMessage = "Could not refresh your journal."
+        }
+    }
+
+    func loadMoreJournalEntries() async {
+        guard hasMoreJournalEntries,
+              !isRefreshingJournalEntries,
+              !isLoadingMoreJournalEntries,
+              let cursor = journalEntries.last else { return }
+        isLoadingMoreJournalEntries = true
+        defer { isLoadingMoreJournalEntries = false }
+        do {
+            let page = try await collaborationRepository.listeningDiaryPage(
+                beforePlayedAt: cursor.playedAt,
+                beforeID: cursor.id,
+                limit: journalPageSize + 1
+            )
+            let visiblePage = page.prefix(journalPageSize)
+            let existingIDs = Set(journalEntries.map(\.id))
+            journalEntries.append(contentsOf: visiblePage.filter { !existingIDs.contains($0.id) })
+            hasMoreJournalEntries = page.count > journalPageSize
+        } catch {
+            collaborationMessage = "Could not load older journal entries."
+        }
+    }
+
     func recordCurrentTrackInHistory() async {
         guard let track = nowPlaying?.track else {
             collaborationMessage = "Start a Harmony queue track before logging it."
             return
         }
         await recordListeningHistory(track)
+    }
+
+    func quickLogCurrentTrackToJournal() async {
+        guard let track = nowPlaying?.track else {
+            collaborationMessage = "Start a Harmony queue track before logging it."
+            return
+        }
+        _ = await createDiaryEntry(
+            track: track,
+            listenedOn: Date(),
+            isRelisten: false,
+            tags: [],
+            visibility: historySocialVisibility
+        )
     }
 
     @discardableResult
@@ -899,6 +957,7 @@ final class HarmonySessionStore: ObservableObject {
                 ? "Listen added to your follower-visible journal"
                 : "Private journal entry saved"
             await refreshListeningHistory()
+            await refreshJournalEntries()
             return true
         } catch {
             collaborationMessage = "Could not save journal entry: \(error.localizedDescription)"
@@ -939,6 +998,7 @@ final class HarmonySessionStore: ObservableObject {
             )
             collaborationMessage = "Journal entry updated"
             await refreshListeningHistory()
+            await refreshJournalEntries()
             return true
         } catch {
             collaborationMessage = "Could not update journal entry: \(error.localizedDescription)"
@@ -996,7 +1056,7 @@ final class HarmonySessionStore: ObservableObject {
         authenticatedProfileID = profileID
         isDiaryEditorUITestFixtureActive = true
         musicReviews = [review]
-        listeningHistory = [RemoteListeningHistoryEntry(
+        let entry = RemoteListeningHistoryEntry(
             id: entryID,
             profileID: profileID,
             playedAt: Calendar.current.date(byAdding: .day, value: -2, to: Date())!,
@@ -1007,7 +1067,9 @@ final class HarmonySessionStore: ObservableObject {
             reviewID: reviewID,
             canonicalTrack: track,
             profile: profile
-        )]
+        )
+        listeningHistory = [entry]
+        journalEntries = [entry]
     }
 #endif
 
@@ -1016,6 +1078,7 @@ final class HarmonySessionStore: ObservableObject {
             try await collaborationRepository.deleteListeningHistoryEntry(entryID)
             collaborationMessage = "History entry deleted"
             await refreshListeningHistory()
+            await refreshJournalEntries()
         } catch { collaborationMessage = "Could not delete history entry: \(error.localizedDescription)" }
     }
 

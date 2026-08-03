@@ -1,7 +1,7 @@
 # Reviews and listening journal design
 
 **Decision date:** 2 August 2026  
-**Status:** dedicated reviews, manual music-diary entry, and edit/link implementation deployed
+**Status:** first-class Reviews experience, owner-paginated Diary, and independent track-state foundation deployed
 
 ## Why this is a separate product surface
 
@@ -75,11 +75,19 @@ Only the first stage should be described as implemented:
    tags, and per-entry audience.
 2. **Current:** owner editing for manual diary metadata and an optional link to
    the owner's opinion for the same canonical track.
-3. **Next:** richer Journal browsing/filtering and a deliberate create-time
-   opinion-linking interaction if the edit-first workflow proves too hidden.
-4. **Later:** profile Reviews/Journal/Loved shelves and a richer typed following
+3. **Current:** recent journal browsing with text search, All /
+   Relistens / Linked opinions scopes, Newest / Oldest ordering, and stable
+   owner-only pagination.
+4. **Current backend foundation:** historical ratings can belong to individual
+   Diary entries, while Listened, default rating, Loved, and Want to listen are
+   independent owner/track state. The existing review UI remains compatible
+   while the new fields are wired into the client.
+5. **Next:** a deliberate create-time opinion-linking interaction if the
+   edit-first workflow proves too hidden, plus server-side filtered search if
+   exhaustive results are required.
+6. **Later:** profile Reviews/Journal/Loved shelves and a richer typed following
    activity feed. Bulk provider-history imports must not flood that feed.
-5. **After moderation and ranking policy:** popular/community discovery,
+7. **After moderation and ranking policy:** popular/community discovery,
    shareable lists/collections, and listening statistics/year summaries.
 
 This order emulates Letterboxd's durable separation of diary, opinion,
@@ -91,9 +99,10 @@ tags, lists, or stats already exist.
 | Concept | Harmony representation | Behavior |
 | --- | --- | --- |
 | Playing now | queue/provider playback | ephemeral; not automatically a social post |
-| Listening journal | `listening_history_entries` | dated and repeatable; manual entries may carry Relisten/tags, while provider imports are deduplicated |
+| Listening journal | `listening_history_entries` | dated and repeatable; manual entries may carry Relisten/tags and a historical rating, while provider imports are deduplicated |
 | Opinion | `music_reviews` | current 0.5–5.0 rating and optional review |
-| Affinity | `music_reviews.is_loved` | independent Loved signal; not a social reaction |
+| Track state | `profile_track_subject_states` | private owner-scoped Listened, default rating, Loved, and Want to listen state independent of reviews |
+| Compatibility affinity | `music_reviews.is_loved` | retained while the client migrates Loved controls to track state |
 | Spoiler disclosure | `music_reviews.contains_spoilers` | author-controlled metadata; clients conceal the body until the reader reveals it |
 | Community reaction | `review_reactions` | another listener reacting to a published review |
 
@@ -103,21 +112,24 @@ reader's response to that review.
 
 ## First implementation
 
-The fifth iOS tab has two shelves:
+The fifth iOS tab has three shelves:
 
-- **Community** contains a current-track composer and follower-visible review
-  feed. The rating control supports half-star steps. The author can mark the
-  music Loved independently of the score.
-- **My journal** contains the owner's dated listening entries and their own
-  reviews. **Log a listen** creates a manual track entry with a selected date,
-  Relisten flag, tags, and audience. The copy explicitly explains that logs
-  and opinions are independent.
+- **Activity** contains shortcuts into the owner's journal plus
+  follower-visible review activity.
+- **Diary** contains the owner's dated listening entries.
+- **Reviews** contains the owner's published song and album opinions.
+
+The top-right **Create** menu offers **Write a review** and **Log a listen**
+from every shelf. Review composition is modal so the selected shelf and scroll
+position survive dismissal. The rating control supports half-star steps, and
+Loved remains independent of the score.
 
 ## Implemented manual music-diary slice
 
 ### Interaction and ownership
 
-Manual diary authoring lives in **Reviews → My journal**, not in Listen.
+Manual diary authoring lives in **Reviews → Diary** and the Reviews toolbar's
+**Create → Log a listen** action, not in Listen.
 Listen remains a read-only social/history surface. **Log a listen** opens a
 track-only composer with:
 
@@ -144,9 +156,10 @@ Migration `202608020025_music_diary_entries.sql` extends
 `listening_history_entries` with `is_relisten` and `tags`. The selected calendar
 date is stored in the existing `played_at` timestamp; no second diary-date
 column exists. The migration replaces `record_listening_history` with one
-eight-parameter signature, retaining defaults for the new trailing
-`p_is_relisten` and `p_tags` inputs so existing named-parameter callers remain
-compatible.
+signature, retaining defaults for the new trailing `p_is_relisten` and
+`p_tags` inputs so existing named-parameter callers remain compatible.
+Migration 028 later adds optional trailing `p_rating` without changing those
+named calls.
 
 The RPC rejects future manual timestamps, normalizes tags again on the server,
 and allows Relisten/nonempty tags only when `source = 'manual'`. Harmony-room
@@ -188,6 +201,61 @@ visibility remain unchanged and independent for the two records.
 The migration is deployed to the linked Supabase project. A diary entry still
 never creates or updates `music_reviews`, enqueues its track, or starts
 playback.
+
+### Journal browsing and pagination slice
+
+**Diary** now browses the owner's manual diary independently of the
+follower listening-history feed. Search matches title, artist, album, or tags
+after case- and diacritic-insensitive folding. The scope control offers **All**,
+**Relistens**, and **Linked opinions**; ordering offers **Newest** and
+**Oldest**. Equal timestamps retain their loaded order, preventing controls
+from visibly reshuffling ties. A filtered empty state explains that entries
+were not removed.
+
+`JournalBrowseFilter` owns query/scope/sort and `browseJournalEntries` is a
+pure transformation over pages already loaded in `journalEntries`. Search and
+scope therefore describe the loaded portion, not an exhaustive server search.
+When `hasMoreJournalEntries` is true, **Load older entries** requests another
+page; a user may need to load older pages before an older matching listen can
+appear. This distinction prevents the client from claiming complete counts or
+absence while older pages remain unloaded.
+
+Migration `202608030027_paginated_music_diary.sql` adds the auth-bound
+`list_my_listening_diary` RPC and a partial
+`(profile_id, played_at DESC, id DESC) WHERE source = 'manual'` index. Pages
+use the `(played_at, id)` pair as a keyset cursor, so identical timestamps do
+not produce gaps or duplicates. The app requests 51 rows, displays 50, and
+uses the extra row only to determine whether another page exists. The RPC
+accepts 1–100 rows, requires both cursor parts or neither, and returns only the
+authenticated owner's manual rows under existing RLS.
+
+Migration 027 is deployed to the linked project. Hosted smoke covers owner
+isolation, keyset pagination across identical timestamps, and rejection of a
+partial cursor. Filtering remains intentionally local; making text/tag filters
+exhaustive would require server parameters, appropriate indexes, and product
+copy that distinguishes a complete result from a loaded-page preview.
+
+### Independent track state and historical ratings foundation
+
+Migration `202608030028_track_subject_state.sql` is deployed. It adds an
+optional half-step `rating` snapshot to manual Diary rows and introduces
+`profile_track_subject_states`, keyed by owner and canonical track. That state
+holds undated Listened, default rating, Loved, and Want to listen independently
+of any review. Existing active track reviews seed the initial state, but review
+edits do not rewrite the new state or old Diary ratings.
+
+History writes mark the track Listened and clear Want to listen. A manual Diary
+rating becomes the current default through a database trigger, while earlier
+Diary rows preserve their own value. `set_listening_diary_rating` updates or
+clears one owned manual entry; `set_my_track_subject_state` replaces the
+caller's private state and rejects clearing Listened while history or an active
+track review still exists. Direct client mutation is revoked and owner-only RLS
+protects reads. The existing `music_reviews` schema is intentionally unchanged
+until Swift stops assuming a required review rating and review-scoped Loved.
+
+Hosted smoke covers half-step validation, owner isolation, foreign-entry
+rejection, state synchronization, independent Loved/Want-to-listen behavior,
+and the guarantee that later review edits do not mutate historical ratings.
 
 Album review creation remains available on Spotify/Apple catalog results in
 Add music. The server migration `202608020023_review_affinity.sql` adds the
@@ -327,7 +395,7 @@ continues to prove that another viewer cannot change spoiler metadata.
 
 ## Implemented review detail flow
 
-Community and personal shelves now render compact `ReviewCard` summaries.
+Activity and Reviews shelves now render compact `ReviewCard` summaries.
 Each summary shows author, rating, Loved, media, a three-line non-spoiler
 preview (or spoiler warning), reaction/comment counts, and date. Its
 `NavigationLink` opens `ReviewDetailView`, where the full review, provider
@@ -380,5 +448,7 @@ the entire authored draft. Only confirmed publication resets it.
 2. Add profile shelves for Journal, Reviews, Loved, and Collections.
 3. Extend dated-log context with structured first-listen/live/setting fields
    without requiring them for a quick log.
-4. Add discovery only after report/block/moderation and ranking policies are
+4. Move journal search/scope filters server-side if product requirements call
+   for exhaustive results across unloaded pages.
+5. Add discovery only after report/block/moderation and ranking policies are
    defined; bulk history imports should not flood follower activity.

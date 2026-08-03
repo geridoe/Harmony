@@ -414,6 +414,58 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(entry.tags, ["party", "vinyl"])
     }
 
+    func testJournalSearchMatchesTitleArtistAlbumAndTagsWithoutCaseOrDiacritics() {
+        let entry = journalEntry(
+            title: "Halo",
+            artist: "Beyoncé",
+            album: "Café Bleu",
+            tags: ["Après party"]
+        )
+
+        for query in ["HALO", "beyonce", "cafe bleu", "apres"] {
+            let matches = browseJournalEntries([entry], using: JournalBrowseFilter(query: query))
+            XCTAssertEqual(matches.map(\.id), [entry.id], "Expected journal search to match \(query)")
+        }
+        XCTAssertTrue(browseJournalEntries([entry], using: JournalBrowseFilter(query: "midnight" )).isEmpty)
+    }
+
+    func testJournalBrowseScopesSelectAllRelistensAndLinkedOpinions() {
+        let ordinary = journalEntry(title: "Ordinary")
+        let relisten = journalEntry(title: "Again", isRelisten: true)
+        let linked = journalEntry(title: "With opinion", reviewID: UUID())
+        let entries = [ordinary, relisten, linked]
+
+        XCTAssertEqual(
+            browseJournalEntries(entries, using: JournalBrowseFilter(scope: .all)).map(\.id),
+            entries.map(\.id)
+        )
+        XCTAssertEqual(
+            browseJournalEntries(entries, using: JournalBrowseFilter(scope: .relistens)).map(\.id),
+            [relisten.id]
+        )
+        XCTAssertEqual(
+            browseJournalEntries(entries, using: JournalBrowseFilter(scope: .linkedOpinions)).map(\.id),
+            [linked.id]
+        )
+    }
+
+    func testJournalBrowseSortsNewestAndOldestWithStableTies() {
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let oldest = journalEntry(title: "Oldest", playedAt: baseDate)
+        let tiedNewestFirst = journalEntry(title: "First tie", playedAt: baseDate.addingTimeInterval(60))
+        let tiedNewestSecond = journalEntry(title: "Second tie", playedAt: baseDate.addingTimeInterval(60))
+        let entries = [oldest, tiedNewestFirst, tiedNewestSecond]
+
+        XCTAssertEqual(
+            browseJournalEntries(entries, using: JournalBrowseFilter(sort: .newest)).map(\.id),
+            [tiedNewestFirst.id, tiedNewestSecond.id, oldest.id]
+        )
+        XCTAssertEqual(
+            browseJournalEntries(entries, using: JournalBrowseFilter(sort: .oldest)).map(\.id),
+            [oldest.id, tiedNewestFirst.id, tiedNewestSecond.id]
+        )
+    }
+
     func testClearingSessionRemovesRoomStateAndRestoresLocalOwnership() {
         let store = HarmonySessionStore()
 
@@ -441,6 +493,38 @@ final class HarmonyTests: XCTestCase {
             symbol: "music.note",
             mappings: [ProviderTrackMapping(provider: .spotify, providerID: "spotify:track:\(title)", availability: .playable)],
             reviewableAlbum: album
+        )
+    }
+
+    private func journalEntry(
+        title: String,
+        artist: String = "Test artist",
+        album: String = "Test album",
+        playedAt: Date = Date(timeIntervalSince1970: 1_700_000_000),
+        isRelisten: Bool = false,
+        tags: [String] = [],
+        reviewID: UUID? = nil
+    ) -> RemoteListeningHistoryEntry {
+        RemoteListeningHistoryEntry(
+            id: UUID(),
+            profileID: UUID(),
+            playedAt: playedAt,
+            source: "manual",
+            visibility: .privateOnly,
+            isRelisten: isRelisten,
+            tags: tags,
+            reviewID: reviewID,
+            canonicalTrack: RemoteCatalogTrack(
+                id: UUID(),
+                title: title,
+                artist: artist,
+                album: album,
+                durationMilliseconds: 180_000,
+                artworkURL: nil,
+                isExplicit: false,
+                providerTracks: nil
+            ),
+            profile: RemoteProfile(displayName: "Test listener")
         )
     }
 }

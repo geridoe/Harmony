@@ -85,9 +85,17 @@ class HarmonyUITests: XCTestCase {
             reviewsTab.tap()
         }
         XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Community"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["My journal"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Review music"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Activity"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Diary"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Reviews"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Your music journal"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Following activity"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Create"].waitForExistence(timeout: 5))
+        app.buttons["Create"].tap()
+        XCTAssertTrue(app.buttons["Write a review"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Log a listen"].exists)
+        app.buttons["Write a review"].tap()
+        XCTAssertTrue(app.navigationBars["Write a review"].waitForExistence(timeout: 5))
         let chooseMusic = app.buttons["Choose a song or album"]
         XCTAssertTrue(chooseMusic.waitForExistence(timeout: 5))
         chooseMusic.tap()
@@ -136,7 +144,7 @@ class HarmonyUITests: XCTestCase {
             reviewsTab.tap()
         }
         XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
-        let journalShelf = app.buttons["My journal"]
+        let journalShelf = app.buttons["Diary"]
         XCTAssertTrue(journalShelf.waitForExistence(timeout: 5))
         journalShelf.tap()
 
@@ -174,7 +182,7 @@ class HarmonyUITests: XCTestCase {
         let reviewsNavigation = app.navigationBars["Reviews"]
         if !reviewsNavigation.waitForExistence(timeout: 3) { reviewsTab.tap() }
         XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
-        app.buttons["My journal"].tap()
+        app.buttons["Diary"].tap()
 
         let edit = app.buttons["Edit journal entry for Afterglow"]
         for _ in 0..<3 where !edit.exists { app.swipeUp() }
@@ -182,7 +190,8 @@ class HarmonyUITests: XCTestCase {
         edit.tap()
 
         XCTAssertTrue(app.navigationBars["Edit journal entry"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Afterglow"].exists)
+        let fixtureEntry = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Afterglow'")).firstMatch
+        XCTAssertTrue(fixtureEntry.exists)
         XCTAssertTrue(app.staticTexts["Wolves at Noon"].exists)
         XCTAssertTrue(app.staticTexts["Listened on"].exists)
         XCTAssertEqual(app.switches["Relisten"].value as? String, "1")
@@ -192,6 +201,36 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Audience"].exists)
         XCTAssertTrue(app.buttons["Save changes"].exists)
         XCTAssertFalse(app.buttons["Choose a different song"].exists, "Editing preserves the logged recording")
+    }
+
+    func testJournalBrowsingControlsAndFilteredEmptyState() throws {
+        let app = XCUIApplication()
+        app.launchArguments.append("--ui-test-diary-editor")
+        app.launch()
+
+        let reviewsTab = app.tabBars.buttons["Reviews"]
+        XCTAssertTrue(reviewsTab.waitForExistence(timeout: 5))
+        reviewsTab.tap()
+        let reviewsNavigation = app.navigationBars["Reviews"]
+        if !reviewsNavigation.waitForExistence(timeout: 3) { reviewsTab.tap() }
+        XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
+        app.buttons["Diary"].tap()
+
+        let search = app.textFields["Search journal"]
+        for _ in 0..<3 where !search.exists { app.swipeUp() }
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["All"].exists)
+        XCTAssertTrue(app.buttons["Relistens"].exists)
+        XCTAssertTrue(app.buttons["Linked opinions"].exists)
+        let fixtureEntry = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Afterglow'")).firstMatch
+        XCTAssertTrue(fixtureEntry.exists)
+
+        search.tap()
+        search.typeText("no such recording")
+
+        XCTAssertTrue(app.staticTexts["No matching listens"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Try another search, scope, or sort option. Your journal entries have not been removed."].exists)
+        XCTAssertFalse(fixtureEntry.exists)
     }
 
     func testLaunchPerformance() throws {

@@ -253,7 +253,8 @@ publication do not enqueue media or create listening-history entries.
 
 ### Implemented: manual dated music diary
 
-The authoring surface is **Reviews → My journal → Log a listen**. The Listen
+The authoring surface is **Reviews → Diary → Log a listen** or the Reviews
+toolbar's **Create → Log a listen** action. The Listen
 tab continues to show social listening history but does not own diary creation.
 `DiaryEntryComposer` uses the track-only form of `ReviewSubjectPicker`, so song
 selection reuses purpose-isolated `.reviews` catalog state without exposing an
@@ -275,8 +276,9 @@ request retains every draft field.
 Migration `202608020025_music_diary_entries.sql` adds `is_relisten` and `tags`
 to `listening_history_entries`; the selected calendar date uses its existing
 `played_at` timestamp. It replaces the prior `record_listening_history` RPC
-with a single eight-argument signature whose two new trailing arguments have
-defaults. The server rejects future manual timestamps, normalizes and validates
+with a single signature whose new trailing arguments have defaults. Migration
+028 later extends that RPC with an optional ninth `p_rating` argument while
+preserving all existing named callers. The server rejects future manual timestamps, normalizes and validates
 tags, and rejects Relisten/tags on non-manual history. Provider-import repeats
 remain governed by the pre-existing import-only unique index; separate manual
 listens remain repeatable.
@@ -286,7 +288,7 @@ Relisten or tags.
 
 ### Diary editing and optional opinion linkage
 
-Manual entries in **Reviews → My journal** expose a pencil action with the
+Manual entries in **Reviews → Diary** expose a pencil action with the
 accessible label `Edit journal entry for <track>`. Imported and Harmony-room
 history does not expose it. `DiaryEntryEditor` keeps the track immutable and
 seeds `DiaryEntryDraft` from the existing date, Relisten flag, tags, audience,
@@ -328,6 +330,66 @@ rejection. The DTO/repository contract adds
 `RemoteListeningHistoryEntry.reviewID`, canonical track IDs in nested catalog
 rows, and `updateListeningDiaryEntry(...)` using the exact named RPC fields.
 
+### Implemented: owner-paginated journal browsing
+
+Reviews → Diary now reads `HarmonySessionStore.journalEntries`, a
+separate owner-only manual-diary collection, instead of filtering the recent
+social `listeningHistory` snapshot. `refreshJournalEntries()` replaces the
+loaded journal with its first 50 rows; `loadMoreJournalEntries()` uses the last
+row's `(playedAt, id)` cursor, deduplicates IDs defensively, and appends up to
+50 older rows. Loading and has-more state are independent of the follower feed.
+Create, edit, delete, and the journal-specific quick log refresh this owner
+collection after success.
+
+`JournalBrowseFilter` combines a query, `JournalBrowseScope` (`All`,
+`Relistens`, `Linked opinions`), and `JournalBrowseSort` (`Newest`, `Oldest`).
+`browseJournalEntries` searches title, artist, album, and tags with
+case/diacritic folding, applies scope, and orders by `playedAt`, retaining input
+order for timestamp ties. The SwiftUI controls use stable accessibility IDs
+`journal-search`, `journal-scope`, and `journal-sort`; a no-match result uses
+`journal-filtered-empty-state`. `journal-load-older` appears only when another
+server page exists.
+
+Filtering operates only on loaded `journalEntries`. It is a responsive recent
+browsing aid, not an exhaustive server search: while Load older entries is
+available, a no-match state means no match in loaded pages. Do not derive total
+counts or claim that older matches do not exist. If exhaustive search becomes
+a launch requirement, query/scope/tag filters need server parameters and
+supporting indexes.
+
+Migration `202608030027_paginated_music_diary.sql` defines
+`list_my_listening_diary(p_before_played_at, p_before_id, p_limit)`. It is
+auth-bound, manual-only, ordered `(played_at DESC, id DESC)`, requires the two
+cursor values together, and accepts page sizes from 1 through 100. A matching
+partial index supports that owner/cursor path. The repository requests 51
+rows, exposes 50, and treats the extra row as the has-more sentinel. Migration
+027 is deployed; hosted smoke covers owner isolation, identical-timestamp
+keyset paging, and partial-cursor rejection.
+
+### Implemented backend foundation: historical ratings and track state
+
+Migration `202608030028_track_subject_state.sql` adds a nullable half-step
+`rating` to manual `listening_history_entries` and creates private
+`profile_track_subject_states`, keyed by `(profile_id, canonical_track_id)`.
+The latter stores undated Listened, default rating, Loved, and Want to listen
+without requiring a review row. Existing history and the newest active track
+review per owner/track are backfilled for compatibility; `music_reviews`
+remains unchanged.
+
+`record_listening_history` now has one nine-argument signature with optional
+trailing `p_rating`. `set_listening_diary_rating` updates or clears the rating
+snapshot on one owned manual entry. `set_my_track_subject_state` replaces the
+caller's private state, makes a rating imply Listened, clears Want to listen
+when Listened becomes true, and refuses to clear Listened while a Diary row or
+active review still exists. Database triggers keep newly logged music and the
+current default rating synchronized without rewriting older Diary ratings.
+
+The migration is deployed. Hosted smoke covers rating validation, owner-only
+state reads, foreign-entry mutation rejection, rating-to-state synchronization,
+independent Loved and Want-to-listen values, and review-edit isolation. Swift
+integration is the next slice; the additive schema is already compatible with
+the current app.
+
 ## 4. Supabase data model
 
 ### Collaboration tables
@@ -356,7 +418,8 @@ too close; that is not a current correctness concern.
 | `social_follows` | request/accepted follower edges |
 | `profile_blocks` | directional blocks; visibility helper treats either direction as blocked |
 | `listening_presence` | one expiring now-listening record per profile |
-| `listening_history_entries` | immutable, owner-removable logged/imported plays |
+| `listening_history_entries` | owner-removable history; manual rows support dated diary metadata, editing, and optional review links |
+| `profile_track_subject_states` | private per-owner track state for Listened, default rating, Loved, and Want to listen |
 | `music_reviews` | track or provider-album opinion, rating, Loved signal, visibility, soft delete |
 | `review_comments` | comments with author-owned soft deletion |
 | `review_reactions` | one reaction per viewer/review/kind |
@@ -429,6 +492,8 @@ The main social RPCs are `request_social_follow`,
 `remove_social_follower`, `block_social_profile`, `unblock_social_profile`,
 `publish_listening_presence`, `stop_listening_presence`,
 `record_listening_history`, `delete_listening_history_entry`,
+`list_my_listening_diary`, `update_listening_diary_entry`,
+`set_listening_diary_rating`, `set_my_track_subject_state`,
 `create_music_review`, `update_music_review`, `delete_music_review`,
 `add_review_comment`, `delete_review_comment`, `toggle_review_reaction`, and
 `mark_social_notifications_read`.
@@ -517,7 +582,7 @@ Music-diary coverage should verify stable tag normalization/deduplication,
 client and server tag limits, rejection of future manual timestamps,
 manual-only Relisten/tag metadata, follower/private visibility, repeat manual
 listens, and preservation of the composer after a failed save. UI coverage
-should keep Log a listen in My journal and verify the track-only picker, date,
+should keep Log a listen in Diary and the Reviews Create menu and verify the track-only picker, date,
 Relisten, tags, audience, and disabled-until-valid Save flow.
 
 Edit/link coverage should decode `review_id` and nested canonical identity,
@@ -529,6 +594,13 @@ the pencil affordance, fixed track, prefilled date/Relisten/tags, compatible
 Linked opinion, audience, and Save changes without depending on a developer's
 hosted diary contents. The fixture bypasses remote history/review refresh only
 in DEBUG builds while that launch argument is present.
+
+Journal-browse unit coverage verifies case/diacritic-insensitive matching for
+title, artist, album, and tags; every scope; newest/oldest order; and stable
+ties. UI coverage uses the same deterministic diary fixture to verify controls
+and the filtered empty state without hosted data. Backend coverage must prove
+owner/manual-only pagination, cursor tie behavior, page-size/cursor validation,
+and isolation from follower-visible history.
 
 ### Local development and deployment
 
@@ -595,7 +667,8 @@ MusicKit library/playback authorization.
 3. Review detail and spoiler conceal/reveal are implemented; extend that
    surface with additional reaction choices, comment moderation, and
    notification-to-review deep links.
-4. Add Journal filtering without moving authoring into Listen.
+4. Decide whether loaded-page journal search is sufficient or exhaustive
+   server-side filtering is required.
 5. Enroll/configure the Apple developer assets, enable MusicKit, and implement
    the equivalent Apple catalog resolution, playback, and opted-in history
    source. Keep its adapter local and submit only canonical/provider metadata

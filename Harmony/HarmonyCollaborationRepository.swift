@@ -137,6 +137,11 @@ private struct UpdateListeningDiaryEntryParameters: Encodable {
     let p_tags: [String]
     let p_review_id: UUID?
 }
+private struct ListeningDiaryPageParameters: Encodable {
+    let p_before_played_at: Date?
+    let p_before_id: UUID?
+    let p_limit: Int
+}
 private struct HistoryEntryIDParameters: Encodable { let p_entry_id: UUID }
 private struct RemovePayload: Encodable { let queue_item_id: UUID }
 private struct MovePayload: Encodable { let queue_item_id: UUID; let position: Double }
@@ -673,6 +678,24 @@ final class HarmonyCollaborationRepository {
             .select("id,profile_id,played_at,source,visibility,is_relisten,tags,review_id,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)")
             .order("played_at", ascending: false)
             .limit(100).execute().value
+    }
+
+    func listeningDiaryPage(
+        beforePlayedAt: Date? = nil,
+        beforeID: UUID? = nil,
+        limit: Int = 51
+    ) async throws -> [RemoteListeningHistoryEntry] {
+        try await authenticate()
+        return try await client.rpc(
+            "list_my_listening_diary",
+            params: ListeningDiaryPageParameters(
+                p_before_played_at: beforePlayedAt,
+                p_before_id: beforeID,
+                p_limit: limit
+            )
+        )
+        .select("id,profile_id,played_at,source,visibility,is_relisten,tags,review_id,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)")
+        .execute().value
     }
 
     func musicReviews() async throws -> [RemoteMusicReview] {

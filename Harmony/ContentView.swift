@@ -333,8 +333,9 @@ struct SocialView: View {
 }
 
 private enum ReviewsShelf: String, CaseIterable, Identifiable {
-    case community = "Community"
-    case journal = "My journal"
+    case activity = "Activity"
+    case diary = "Diary"
+    case reviews = "Reviews"
     var id: String { rawValue }
 }
 
@@ -415,14 +416,75 @@ struct DiaryEntryDraft: Equatable {
     }
 }
 
+enum JournalBrowseScope: String, CaseIterable, Identifiable {
+    case all = "All"
+    case relistens = "Relistens"
+    case linkedOpinions = "Linked opinions"
+
+    var id: String { rawValue }
+}
+
+enum JournalBrowseSort: String, CaseIterable, Identifiable {
+    case newest = "Newest"
+    case oldest = "Oldest"
+
+    var id: String { rawValue }
+}
+
+struct JournalBrowseFilter: Equatable {
+    var query = ""
+    var scope = JournalBrowseScope.all
+    var sort = JournalBrowseSort.newest
+}
+
+func browseJournalEntries(
+    _ entries: [RemoteListeningHistoryEntry],
+    using filter: JournalBrowseFilter
+) -> [RemoteListeningHistoryEntry] {
+    let query = journalSearchKey(filter.query.trimmingCharacters(in: .whitespacesAndNewlines))
+    return entries.enumerated()
+        .filter { _, entry in
+            switch filter.scope {
+            case .all: true
+            case .relistens: entry.isRelisten
+            case .linkedOpinions: entry.reviewID != nil
+            }
+        }
+        .filter { _, entry in
+            guard !query.isEmpty else { return true }
+            let searchableValues = [
+                entry.canonicalTrack?.title,
+                entry.canonicalTrack?.artist,
+                entry.canonicalTrack?.album
+            ].compactMap { $0 } + entry.tags
+            return searchableValues.contains { journalSearchKey($0).contains(query) }
+        }
+        .sorted { left, right in
+            if left.element.playedAt == right.element.playedAt {
+                return left.offset < right.offset
+            }
+            switch filter.sort {
+            case .newest: return left.element.playedAt > right.element.playedAt
+            case .oldest: return left.element.playedAt < right.element.playedAt
+            }
+        }
+        .map(\.element)
+}
+
+private func journalSearchKey(_ value: String) -> String {
+    value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil).lowercased()
+}
+
 struct ReviewsView: View {
     @EnvironmentObject private var store: HarmonySessionStore
-    @State private var shelf = ReviewsShelf.community
+    @State private var shelf = ReviewsShelf.activity
     @State private var draft = ReviewDraft()
     @State private var hasSeededDraftVisibility = false
+    @State private var isComposingReview = false
     @State private var isChoosingReviewSubject = false
     @State private var isCreatingDiaryEntry = false
     @State private var editingDiaryEntry: RemoteListeningHistoryEntry?
+    @State private var journalBrowseFilter = JournalBrowseFilter()
     @State private var editingReview: RemoteMusicReview?
     @State private var editingRating = 4.0
     @State private var editingBody = ""
@@ -435,7 +497,11 @@ struct ReviewsView: View {
     }
 
     private var ownHistory: [RemoteListeningHistoryEntry] {
-        store.listeningHistory.filter(store.isOwnHistoryEntry)
+        store.journalEntries
+    }
+
+    private var browsedOwnHistory: [RemoteListeningHistoryEntry] {
+        browseJournalEntries(ownHistory, using: journalBrowseFilter)
     }
 
     var body: some View {
@@ -448,19 +514,41 @@ struct ReviewsView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                    .accessibilityIdentifier("reviews-shelf-picker")
                     .listRowInsets(EdgeInsets())
                     .listRowBackground(Color.clear)
                 }
 
-                if shelf == .community {
-                    reviewComposer
+                switch shelf {
+                case .activity:
+                    personalSummary
                     communityReviews
-                } else {
+                case .diary:
                     listeningJournal
+                case .reviews:
                     personalReviews
                 }
             }
             .navigationTitle("Reviews")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            isComposingReview = true
+                        } label: {
+                            Label("Write a review", systemImage: "square.and.pencil")
+                        }
+                        Button {
+                            isCreatingDiaryEntry = true
+                        } label: {
+                            Label("Log a listen", systemImage: "calendar.badge.plus")
+                        }
+                    } label: {
+                        Label("Create", systemImage: "plus")
+                    }
+                    .accessibilityIdentifier("reviews-create-menu")
+                }
+            }
             .task {
                 await store.refreshAccountSettings()
                 if !hasSeededDraftVisibility {
@@ -468,11 +556,13 @@ struct ReviewsView: View {
                     hasSeededDraftVisibility = true
                 }
                 await store.refreshListeningHistory()
+                await store.refreshJournalEntries()
                 await store.refreshMusicReviews()
                 await store.activateSocialRealtime()
             }
             .refreshable {
                 await store.refreshListeningHistory()
+                await store.refreshJournalEntries()
                 await store.refreshMusicReviews()
             }
         }
@@ -519,12 +609,8 @@ struct ReviewsView: View {
                 }
             }
         }
-        .sheet(isPresented: $isChoosingReviewSubject) {
-            ReviewSubjectPicker { subject in
-                draft = ReviewDraft(subject: subject, visibility: draft.visibility)
-                isChoosingReviewSubject = false
-            }
-            .environmentObject(store)
+        .sheet(isPresented: $isComposingReview) {
+            reviewComposerDestination
         }
         .sheet(isPresented: $isCreatingDiaryEntry) {
             DiaryEntryComposer(defaultVisibility: store.historySocialVisibility)
@@ -535,6 +621,29 @@ struct ReviewsView: View {
                 entry: entry,
                 compatibleReviews: store.compatibleOwnTrackReviews(for: entry)
             )
+            .environmentObject(store)
+        }
+    }
+
+    private var reviewComposerDestination: some View {
+        NavigationStack {
+            Form {
+                reviewComposer
+            }
+            .navigationTitle("Write a review")
+            .navigationBarTitleDisplayMode(.inline)
+            .accessibilityIdentifier("review-composer")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { isComposingReview = false }
+                }
+            }
+        }
+        .sheet(isPresented: $isChoosingReviewSubject) {
+            ReviewSubjectPicker { subject in
+                draft = ReviewDraft(subject: subject, visibility: draft.visibility)
+                isChoosingReviewSubject = false
+            }
             .environmentObject(store)
         }
     }
@@ -595,6 +704,7 @@ struct ReviewsView: View {
                         }
                         if didPublish {
                             draft = ReviewDraft(subject: submittedDraft.subject, visibility: submittedDraft.visibility)
+                            isComposingReview = false
                         }
                     }
                 }
@@ -641,7 +751,7 @@ struct ReviewsView: View {
     }
 
     private var communityReviews: some View {
-        Section("Recent reviews") {
+        Section("Following activity") {
             if store.isRefreshingMusicReviews && store.musicReviews.isEmpty {
                 ProgressView("Loading reviews…")
             } else if store.musicReviews.isEmpty {
@@ -649,6 +759,28 @@ struct ReviewsView: View {
             } else {
                 ForEach(store.musicReviews) { review in reviewCard(review) }
             }
+        }
+    }
+
+    private var personalSummary: some View {
+        Section("Your music journal") {
+            HStack(spacing: 12) {
+                Button {
+                    shelf = .diary
+                } label: {
+                    Label("Open diary", systemImage: "calendar")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                Button {
+                    shelf = .reviews
+                } label: {
+                    Label("My reviews", systemImage: "star.bubble")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
+            .accessibilityIdentifier("reviews-personal-summary")
         }
     }
 
@@ -661,79 +793,141 @@ struct ReviewsView: View {
             }
 
             Button {
-                Task { await store.recordCurrentTrackInHistory() }
+                Task { await store.quickLogCurrentTrackToJournal() }
             } label: {
-                if store.isRecordingListeningHistory {
+                if store.isSavingDiaryEntry {
                     ProgressView()
                 } else {
                     Label("Quick log the current track", systemImage: "plus.circle")
                 }
             }
-            .disabled(store.nowPlaying == nil || store.isRecordingListeningHistory)
+            .disabled(store.nowPlaying == nil || store.isSavingDiaryEntry)
 
-            if store.isRefreshingListeningHistory && ownHistory.isEmpty {
+            if store.isRefreshingJournalEntries && ownHistory.isEmpty {
                 ProgressView("Loading your journal…")
             } else if ownHistory.isEmpty {
                 Text("Your dated listens will appear here. Logging and reviewing are separate, so you can revisit music without rewriting your opinion.")
                     .font(.footnote)
                     .foregroundColor(.secondary)
             } else {
-                ForEach(ownHistory.prefix(25)) { entry in
-                    HStack(spacing: 12) {
-                        if let track = entry.canonicalTrack {
-                            TrackArtwork(track: track.harmonyTrack, size: 40, cornerRadius: 8)
-                        }
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(entry.canonicalTrack.map { "\($0.title) · \($0.artist)" } ?? "Unavailable track")
-                                .font(.subheadline.weight(.semibold))
-                            if entry.source == "manual" {
-                                Text(entry.playedAt, format: .dateTime.month().day().year())
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            } else {
-                                Text(entry.playedAt, format: .dateTime.month().day().year().hour().minute())
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                            if entry.isRelisten || !entry.tags.isEmpty || entry.reviewID != nil {
-                                HStack(spacing: 5) {
-                                    if entry.isRelisten {
-                                        Label("Relisten", systemImage: "arrow.clockwise")
-                                    }
-                                    ForEach(entry.tags.prefix(3), id: \.self) { tag in
-                                        Text("#\(tag)")
-                                    }
-                                    if entry.reviewID != nil {
-                                        Label("Opinion", systemImage: "link")
-                                    }
-                                }
-                                .font(.caption2)
-                                .foregroundColor(.indigo)
-                            }
-                        }
-                        Spacer()
-                        Image(systemName: entry.visibility == .followers ? "person.2.fill" : "lock.fill")
-                            .font(.caption)
+                journalBrowseControls
+                if browsedOwnHistory.isEmpty {
+                    VStack(spacing: 6) {
+                        Label("No matching listens", systemImage: "magnifyingglass")
+                            .font(.headline)
+                        Text("Try another search, scope, or sort option. Your journal entries have not been removed.")
+                            .font(.footnote)
                             .foregroundColor(.secondary)
-                            .accessibilityLabel(entry.visibility.title)
-                        if entry.source == "manual" {
-                            Button {
-                                editingDiaryEntry = entry
-                            } label: {
-                                Image(systemName: "pencil.circle")
-                            }
-                            .buttonStyle(.borderless)
-                            .accessibilityLabel("Edit journal entry for \(entry.canonicalTrack?.title ?? "unavailable track")")
-                            .accessibilityIdentifier("edit-diary-entry-\(entry.id.uuidString)")
-                        }
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .accessibilityIdentifier("journal-filtered-empty-state")
+                } else {
+                    ForEach(browsedOwnHistory) { entry in
+                        journalEntryRow(entry)
                     }
                 }
+                if store.hasMoreJournalEntries {
+                    Button {
+                        Task { await store.loadMoreJournalEntries() }
+                    } label: {
+                        if store.isLoadingMoreJournalEntries {
+                            ProgressView("Loading older entries…")
+                        } else {
+                            Label("Load older entries", systemImage: "arrow.down.circle")
+                        }
+                    }
+                    .disabled(store.isLoadingMoreJournalEntries)
+                    .accessibilityIdentifier("journal-load-older")
+                }
+            }
+        }
+    }
+
+    private var journalBrowseControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Search title, artist, album, or tags", text: $journalBrowseFilter.query)
+                .textInputAutocapitalization(.never)
+                .accessibilityLabel("Search journal")
+                .accessibilityIdentifier("journal-search")
+            Picker("Journal scope", selection: $journalBrowseFilter.scope) {
+                ForEach(JournalBrowseScope.allCases) { scope in
+                    Text(scope.rawValue).tag(scope)
+                }
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("journal-scope")
+            Picker("Sort journal", selection: $journalBrowseFilter.sort) {
+                ForEach(JournalBrowseSort.allCases) { sort in
+                    Text(sort.rawValue).tag(sort)
+                }
+            }
+            .pickerStyle(.menu)
+            .accessibilityIdentifier("journal-sort")
+        }
+        .accessibilityIdentifier("journal-browse-controls")
+    }
+
+    private func journalEntryRow(_ entry: RemoteListeningHistoryEntry) -> some View {
+        HStack(spacing: 12) {
+            if let track = entry.canonicalTrack {
+                TrackArtwork(track: track.harmonyTrack, size: 40, cornerRadius: 8)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.canonicalTrack.map { "\($0.title) · \($0.artist)" } ?? "Unavailable track")
+                    .font(.subheadline.weight(.semibold))
+                if entry.source == "manual" {
+                    Text(entry.playedAt, format: .dateTime.month().day().year())
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    Text(entry.playedAt, format: .dateTime.month().day().year().hour().minute())
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                if entry.isRelisten || !entry.tags.isEmpty || entry.reviewID != nil {
+                    HStack(spacing: 5) {
+                        if entry.isRelisten {
+                            Label("Relisten", systemImage: "arrow.clockwise")
+                        }
+                        ForEach(entry.tags.prefix(3), id: \.self) { tag in
+                            Text("#\(tag)")
+                        }
+                        if entry.reviewID != nil {
+                            Label("Opinion", systemImage: "link")
+                        }
+                    }
+                    .font(.caption2)
+                    .foregroundColor(.indigo)
+                }
+            }
+            Spacer()
+            Image(systemName: entry.visibility == .followers ? "person.2.fill" : "lock.fill")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .accessibilityLabel(entry.visibility.title)
+            if entry.source == "manual" {
+                Button {
+                    editingDiaryEntry = entry
+                } label: {
+                    Image(systemName: "pencil.circle")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Edit journal entry for \(entry.canonicalTrack?.title ?? "unavailable track")")
+                .accessibilityIdentifier("edit-diary-entry-\(entry.id.uuidString)")
             }
         }
     }
 
     private var personalReviews: some View {
         Section("My reviews") {
+            Button {
+                isComposingReview = true
+            } label: {
+                Label("Write a review", systemImage: "square.and.pencil")
+            }
+            .accessibilityIdentifier("reviews-write-review")
             if ownReviews.isEmpty {
                 Text("Your ratings and reviews will appear here independently of your listening journal.")
                     .font(.footnote)
