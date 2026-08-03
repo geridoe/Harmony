@@ -1766,6 +1766,7 @@ private struct OwnerTrackDetailView: View {
     @State private var draft: TrackSubjectStateDraft
     @State private var savedDraft: TrackSubjectStateDraft
     @State private var saveMessage: String?
+    @State private var showingAddToList = false
 
     init(initialState: RemoteTrackSubjectState) {
         self.initialState = initialState
@@ -1940,6 +1941,20 @@ private struct OwnerTrackDetailView: View {
                 }
             }
 
+            Section("Collections") {
+                Button {
+                    showingAddToList = true
+                } label: {
+                    Label("Add to a list", systemImage: "text.badge.plus")
+                }
+                .disabled(canonicalTrack == nil)
+                .accessibilityIdentifier("owner-track-add-to-list")
+
+                Text("Adding to a list does not play or queue this song and does not change your Diary or rating.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Diary") {
                 if relatedDiaryEntries.isEmpty {
                     Text("No loaded Diary entries for this song yet.")
@@ -1972,6 +1987,10 @@ private struct OwnerTrackDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("owner-track-detail-page")
         .task { await refreshCurrentState() }
+        .sheet(isPresented: $showingAddToList) {
+            AddTrackToMusicListSheet(track: track)
+                .environmentObject(store)
+        }
     }
 
     private func save() {

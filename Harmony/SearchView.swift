@@ -33,6 +33,7 @@ struct SearchView: View {
     @EnvironmentObject private var store: HarmonySessionStore
     @State private var query = ""
     @State private var reviewAlbum: ReviewableAlbum?
+    @State private var trackForList: HarmonyTrack?
     @State private var albumRating = 3.5
     @State private var albumReviewBody = ""
 
@@ -105,10 +106,21 @@ struct SearchView: View {
                             }
                         }
                         Spacer()
+                        Button {
+                            trackForList = track
+                        } label: {
+                            Image(systemName: "text.badge.plus").font(.title3)
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Add \(track.title) to a list")
+                        .accessibilityIdentifier("search-add-to-list-\(track.id.uuidString)")
                         Button { store.add(track) } label: {
                             Image(systemName: "plus.circle.fill").font(.title3)
                         }
+                        .buttonStyle(.borderless)
                         .disabled(store.contains(track))
+                        .accessibilityLabel("Add \(track.title) to the queue")
+                        .accessibilityIdentifier("search-add-to-queue-\(track.id.uuidString)")
                     }
                 }
             }
@@ -167,6 +179,10 @@ struct SearchView: View {
                         }
                     }
                 }
+            }
+            .sheet(item: $trackForList) { track in
+                AddTrackToMusicListSheet(track: track)
+                    .environmentObject(store)
             }
         }
     }

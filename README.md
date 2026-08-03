@@ -1,0 +1,98 @@
+# Harmony
+
+Harmony is an iOS social music app built around two ideas:
+
+1. a provider-agnostic collaborative queue for parties and live sessions; and
+2. a durable music network for live listening, follows, diaries, ratings,
+   reviews, and curated lists.
+
+Harmony stores canonical music intent and social data. Spotify or Apple Music
+remains responsible for licensed playback on each listener's own account and
+device; Harmony never rebroadcasts audio.
+
+## Current product surfaces
+
+| iOS destination | Responsibility |
+| --- | --- |
+| Session | Conductor/collaborator room, queue ordering, playback intent |
+| Add music | Connected-catalog search and queue insertion |
+| Connections | Spotify/Apple setup, profile, consent, social privacy |
+| Listen | follows, notifications, live eavesdrop presence, passive history |
+| Reviews | first-class Reviews, Ratings, Diary, Activity, and Lists routes |
+
+The Reviews architecture is intentionally Letterboxd-inspired without copying
+its film-specific presentation. Current rating, Loved state, a dated listen,
+and a written review are separate records. Reviews and Lists are addressable
+social objects with comments/reactions; automatic provider plays are not
+broadcast into followers' feeds one song at a time.
+
+## Architecture
+
+```text
+SwiftUI views
+  -> HarmonySessionStore (@MainActor presentation/cache authority)
+    -> HarmonyCollaborationRepository (typed Supabase boundary)
+      -> Postgres RLS + security-definer RPC transactions
+      -> Supabase Realtime refresh signals
+      -> Edge Functions for provider-token operations
+
+MusicProvider adapters
+  -> Spotify Web API search/OAuth + Spotify App Remote playback
+  -> MusicKit catalog/playback after Apple entitlement is available
+```
+
+Canonical tracks and provider mappings prevent a Spotify ID from becoming the
+shared identity of a song. Queue commands and ordered-list edits use explicit
+revisions; stale mutations reject atomically and the client reloads the
+authoritative snapshot.
+
+## Build and test
+
+The project currently uses the Xcode installation at:
+
+```text
+/Users/geridoe/Downloads/Xcode.app/Contents/Developer
+```
+
+Simulator unit tests:
+
+```sh
+DEVELOPER_DIR='/Users/geridoe/Downloads/Xcode.app/Contents/Developer' \
+  xcodebuild test \
+  -project Harmony.xcodeproj \
+  -scheme Harmony \
+  -destination 'platform=iOS Simulator,id=A509714B-2C46-4429-84C3-E3EA8A681554' \
+  -only-testing:HarmonyTests \
+  CODE_SIGNING_ALLOWED=NO
+```
+
+Linked Supabase verification:
+
+```sh
+supabase db lint --linked
+supabase db push --linked --dry-run
+HARMONY_NODE_BINARY='/Users/geridoe/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node' \
+  bash supabase/tests/live_smoke.sh
+```
+
+The smoke test creates disposable anonymous accounts and deletes them on exit.
+It verifies RLS, follows/blocks, queue authority, revision conflicts, review and
+list privacy, notification/activity shapes, and Realtime delivery.
+
+## External gates
+
+Spotify catalog search, OAuth, App Remote playback, live sharing, and manual
+history import can be developed and tested now with a Spotify developer app and
+Premium account. Apple Music authorization/playback requires the Apple
+Developer Program, a MusicKit-enabled App ID, signing entitlements, and a real
+device/account. That gate does not block Supabase, social, queue, Reviews,
+Ratings, Lists, Spotify, or simulator work.
+
+## Design references
+
+- [Product specification](Docs/PRODUCT_SPEC.md)
+- [System design plan](Docs/DESIGN_PLAN.md)
+- [Implementation guide](Docs/IMPLEMENTATION_GUIDE.md)
+- [Reviews and Diary design](Docs/REVIEW_DESIGN.md)
+- [Collections design](Docs/COLLECTIONS_DESIGN.md)
+- [Social expansion specification](Docs/SOCIAL_EXPANSION_SPEC.md)

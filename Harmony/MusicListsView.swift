@@ -1,5 +1,178 @@
 import SwiftUI
 
+/// Returns true only when the currently cached list entries establish that the
+/// same canonical recording is already present. The backend's unique
+/// constraint remains authoritative when a long list is only partly cached.
+func musicListContainsTrack(_ track: HarmonyTrack, entries: [RemoteMusicListEntry]) -> Bool {
+    if let canonicalTrackID = track.canonicalTrackID,
+       entries.contains(where: { $0.canonicalTrackID == canonicalTrackID }) {
+        return true
+    }
+
+    var draft = MusicListDraft(entries: entries.compactMap { entry in
+        guard let canonicalTrack = entry.canonicalTrack else { return nil }
+        return MusicListDraftEntry(track: canonicalTrack.musicListHarmonyTrack)
+    })
+    return !draft.addTrack(track)
+}
+
+/// A reusable, collection-only destination for adding one recording. This
+/// view deliberately exposes no queue, playback, Diary, or rating actions.
+struct AddTrackToMusicListSheet: View {
+    @EnvironmentObject private var store: HarmonySessionStore
+    @Environment(\.dismiss) private var dismiss
+    let track: HarmonyTrack
+
+    @State private var attemptedInitialLoad = false
+    @State private var pendingListID: UUID?
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Song") {
+                    HStack(spacing: 12) {
+                        TrackArtwork(track: track, size: 48, cornerRadius: 9)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(track.title).font(.headline)
+                            Text(track.artist)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            if !track.album.isEmpty {
+                                Text(track.album)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .accessibilityIdentifier("add-track-to-list-song")
+                }
+
+                if let errorMessage {
+                    Section {
+                        CollectionsErrorBanner(message: errorMessage, retry: nil)
+                            .accessibilityIdentifier("add-track-to-list-error")
+                    }
+                }
+
+                Section("Choose a list") {
+                    if store.isRefreshingOwnerMusicLists && store.ownerMusicLists.isEmpty {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text("Loading your lists…").foregroundStyle(.secondary)
+                        }
+                        .accessibilityIdentifier("add-track-to-list-loading")
+                    } else if attemptedInitialLoad && store.ownerMusicLists.isEmpty {
+                        Text("You do not have any lists yet. Create one with this song below.")
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("add-track-to-list-empty")
+                    } else {
+                        ForEach(store.ownerMusicLists) { list in
+                            listButton(list)
+                        }
+                    }
+                }
+
+                Section {
+                    NavigationLink {
+                        MusicListEditorView(
+                            list: nil,
+                            initialTrack: track,
+                            onSaved: { dismiss() }
+                        )
+                    } label: {
+                        Label("Create new list", systemImage: "plus.circle.fill")
+                    }
+                    .disabled(pendingListID != nil)
+                    .accessibilityIdentifier("add-track-to-list-create")
+                } footer: {
+                    Text("This only adds the song to a collection. It will not play, enter the queue, change your rating, or create listening history.")
+                }
+            }
+            .navigationTitle("Add to list")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .accessibilityIdentifier("add-track-to-list-cancel")
+                }
+            }
+            .task {
+                await store.refreshOwnerMusicLists()
+                attemptedInitialLoad = true
+            }
+            .accessibilityIdentifier("add-track-to-list-sheet")
+        }
+    }
+
+    @ViewBuilder
+    private func listButton(_ list: RemoteMusicList) -> some View {
+        let entries = store.musicListDetail(for: list.id).entries.items
+        let isKnownDuplicate = musicListContainsTrack(track, entries: entries)
+        Button {
+            add(to: list)
+        } label: {
+            HStack(spacing: 10) {
+                MusicListArtworkMosaic(entries: entries, size: 44)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(list.title).font(.headline)
+                    Text(isKnownDuplicate ? "Already in this list" : list.visibility.title)
+                        .font(.caption)
+                        .foregroundStyle(isKnownDuplicate ? .orange : .secondary)
+                }
+                Spacer()
+                if pendingListID == list.id {
+                    ProgressView()
+                } else {
+                    Image(systemName: isKnownDuplicate ? "checkmark.circle.fill" : "plus.circle")
+                        .foregroundStyle(isKnownDuplicate ? .orange : .indigo)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(pendingListID != nil || isKnownDuplicate || store.mutatingMusicListIDs.contains(list.id))
+        .accessibilityLabel(isKnownDuplicate ? "\(track.title) is already in \(list.title)" : "Add \(track.title) to \(list.title)")
+        .accessibilityIdentifier("add-track-to-list-row-\(list.id.uuidString)")
+    }
+
+    private func add(to list: RemoteMusicList) {
+        guard pendingListID == nil else { return }
+        pendingListID = list.id
+        errorMessage = nil
+        Task {
+            // Refresh the visible entry window so common duplicate attempts are
+            // explained locally. The database still catches duplicates outside
+            // that window without any unrelated side effects.
+            await store.refreshMusicListEntries(list.id)
+            let entries = store.musicListDetail(for: list.id).entries.items
+            if musicListContainsTrack(track, entries: entries) {
+                errorMessage = "\(track.title) is already in \(list.title)."
+                pendingListID = nil
+                return
+            }
+
+            if await store.addTrackToMusicList(track, listID: list.id) {
+                dismiss()
+            } else {
+                errorMessage = addFailureMessage(for: list)
+                pendingListID = nil
+            }
+        }
+    }
+
+    private func addFailureMessage(for list: RemoteMusicList) -> String {
+        let message = store.collaborationMessage
+        let lowercased = message.lowercased()
+        if lowercased.contains("duplicate")
+            || lowercased.contains("unique")
+            || lowercased.contains("23505")
+            || lowercased.contains("already") {
+            return "\(track.title) is already in \(list.title)."
+        }
+        return message.isEmpty ? "Could not add this song. Try again." : message
+    }
+}
+
 /// Owner-facing Collections index. The parent decides where this page enters
 /// the app's navigation; the feature keeps its own editor and detail routes.
 struct MusicListsView: View {
@@ -389,6 +562,7 @@ struct MusicListEditorView: View {
     @EnvironmentObject private var store: HarmonySessionStore
     @Environment(\.dismiss) private var dismiss
     let list: RemoteMusicList?
+    let onSaved: (() -> Void)?
 
     @State private var draft: MusicListDraft
     @State private var showingCatalogPicker = false
@@ -396,15 +570,20 @@ struct MusicListEditorView: View {
     @State private var initializedExistingEntries = false
     @State private var saveError: String?
 
-    init(list: RemoteMusicList?) {
+    init(
+        list: RemoteMusicList?,
+        initialTrack: HarmonyTrack? = nil,
+        onSaved: (() -> Void)? = nil
+    ) {
         self.list = list
+        self.onSaved = onSaved
         _draft = State(initialValue: MusicListDraft(
             title: list?.title ?? "",
             description: list?.description ?? "",
             tagsText: list?.tags.joined(separator: ", ") ?? "",
             isRanked: list?.isRanked ?? false,
             visibility: list?.visibility ?? .privateOnly,
-            entries: []
+            entries: initialTrack.map { [MusicListDraftEntry(track: $0)] } ?? []
         ))
     }
 
@@ -549,11 +728,13 @@ struct MusicListEditorView: View {
         Task {
             if let list {
                 if await store.updateMusicList(list, from: draft) {
+                    onSaved?()
                     dismiss()
                 } else {
                     saveError = store.collaborationMessage
                 }
             } else if await store.createMusicList(from: draft) != nil {
+                onSaved?()
                 dismiss()
             } else {
                 saveError = store.collaborationMessage

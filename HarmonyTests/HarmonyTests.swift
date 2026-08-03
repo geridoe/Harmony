@@ -418,6 +418,86 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(draft.entries.count, 2)
     }
 
+    func testAddToListPickerRecognizesCanonicalDuplicate() {
+        let canonicalID = UUID()
+        let track = HarmonyTrack(
+            canonicalTrackID: canonicalID,
+            title: "Same recording",
+            artist: "Test Artist",
+            album: "Test Album",
+            duration: 180,
+            symbol: "music.note",
+            mappings: []
+        )
+        let entry = musicListEntry(
+            canonicalTrackID: canonicalID,
+            canonicalTrack: RemoteCatalogTrack(
+                id: canonicalID,
+                title: "Older display title",
+                artist: "Test Artist",
+                album: "Test Album",
+                durationMilliseconds: 180_000,
+                artworkURL: nil,
+                isExplicit: false,
+                providerTracks: nil
+            )
+        )
+
+        XCTAssertTrue(musicListContainsTrack(track, entries: [entry]))
+    }
+
+    func testAddToListPickerRecognizesProviderMappingDuplicateWithoutCanonicalID() {
+        let track = HarmonyTrack(
+            title: "Provider copy",
+            artist: "Test Artist",
+            album: "Test Album",
+            duration: 180,
+            symbol: "music.note",
+            mappings: [ProviderTrackMapping(
+                provider: .spotify,
+                providerID: "spotify:track:list-picker",
+                availability: .playable
+            )]
+        )
+        let entry = musicListEntry(
+            canonicalTrackID: UUID(),
+            canonicalTrack: RemoteCatalogTrack(
+                id: UUID(),
+                title: "Different metadata",
+                artist: "Test Artist",
+                album: "Test Album",
+                durationMilliseconds: 181_000,
+                artworkURL: nil,
+                isExplicit: false,
+                providerTracks: [RemoteProviderTrack(
+                    provider: "spotify",
+                    providerID: "spotify:track:list-picker",
+                    storefront: "global",
+                    availability: "playable",
+                    deepLink: nil
+                )]
+            )
+        )
+
+        XCTAssertTrue(musicListContainsTrack(track, entries: [entry]))
+    }
+
+    func testCheckingAddToListAvailabilityHasNoPlaybackQueueOrHistorySideEffects() {
+        let store = HarmonySessionStore()
+        let track = reviewTrack(title: "Collection only")
+        let initialQueue = store.queue
+        let initialRevision = store.queueRevision
+        let initialPlayback = store.playbackState
+        let initialHistory = store.listeningHistory
+
+        XCTAssertFalse(musicListContainsTrack(track, entries: []))
+
+        XCTAssertEqual(store.queue, initialQueue)
+        XCTAssertEqual(store.queueRevision, initialRevision)
+        XCTAssertEqual(store.playbackState, initialPlayback)
+        XCTAssertEqual(store.listeningHistory.map(\.id), initialHistory.map(\.id))
+    }
+
     func testChoosingReviewSubjectHasNoQueueOrHistorySideEffects() {
         let store = HarmonySessionStore()
         let initialQueue = store.queue
@@ -992,6 +1072,23 @@ final class HarmonyTests: XCTestCase {
             updatedAt: now,
             deletedAt: nil,
             owner: RemoteProfile(displayName: "Test listener")
+        )
+    }
+
+    private func musicListEntry(
+        canonicalTrackID: UUID,
+        canonicalTrack: RemoteCatalogTrack?
+    ) -> RemoteMusicListEntry {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        return RemoteMusicListEntry(
+            id: UUID(),
+            listID: UUID(),
+            canonicalTrackID: canonicalTrackID,
+            position: 1,
+            note: "",
+            createdAt: now,
+            updatedAt: now,
+            canonicalTrack: canonicalTrack
         )
     }
 }

@@ -833,9 +833,9 @@ MusicKit library/playback authorization.
 7. Add production operational work: error reporting, scheduled cleanup of
    expired presence, rate limiting/abuse reporting, privacy-policy copy,
    TestFlight build settings, and device-pair collaboration tests.
-8. Add **Add to list** actions on canonical song detail and catalog search. The
-   track-first Collections backend and dedicated index/editor/detail are now
-   implemented and deployed; album membership follows canonical album identity.
+8. Validate the implemented **Add to list** actions, ranked editor, comments,
+   and activity on a physical iPhone. Track-first Collections is deployed;
+   album membership follows canonical album identity.
 9. If public discovery is desired, design moderation/reporting, profile
    discovery queries, rate limits, and explicit migration from follower-only
    UI before exposing the existing `public` data value.

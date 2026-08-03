@@ -1,7 +1,7 @@
 # Music lists and collections design
 
 **Decision date:** 3 August 2026  
-**Status:** migration 036 deployed; Swift repository/store and dedicated iOS index/editor/detail implemented; hosted contract smoke in final verification
+**Status:** migrations 036–037 deployed; hosted contract smoke, Swift repository/store, dedicated iOS index/editor/detail, profile/activity integration, and Add-to-list entry points implemented
 
 ## Product decision
 
@@ -164,8 +164,9 @@ with RLS remaining the visibility authority.
 3. **Implemented:** dedicated owner Lists index, complete atomic editor, catalog
    picker, detail, likes, comments, and moderation.
 4. **Implemented:** member profile shelf and typed following activity.
-5. **Next:** Add-to-list actions on canonical song detail and broader search,
-   plus UI automation and visual polish on a physical iPhone.
+5. **Implemented:** Add-to-list actions on canonical song detail and catalog
+   search, plus list likes/comments, notifications, and typed activity.
+   Physical-iPhone visual polish remains.
 6. **Later:** canonical album identity followed by mixed song/album lists.
 
 ## Required verification
