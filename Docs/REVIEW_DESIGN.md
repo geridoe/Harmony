@@ -612,8 +612,9 @@ the entire authored draft. Only confirmed publication resets it.
 
 ## Subsequent review-specific slices
 
-1. Expand the implemented detail page with additional reaction choices,
-   comment moderation/reporting, and deep links from notifications.
+1. Expand the implemented detail page with additional reaction choices and
+   reporting. Comment-author/review-owner deletion and exact review routing
+   from comment/reaction notifications are implemented.
 2. Add Collections and optional profile favorites; Reviews, Diary, and Loved
    member shelves are implemented.
 3. Extend dated-log context with structured first-listen/live/setting fields

@@ -254,16 +254,18 @@ that reader opts in. The flag does not change the review body or persist a
 reader-specific reveal choice. Feed summaries never show a spoiler excerpt.
 
 The detail screen owns the interactive social surface: the current heart
-reaction, full comment list, comment author deletion, and an add-comment
-draft. A review owner sees Edit and Delete both from their compact card and in
+reaction, full comment list, comment-author deletion, review-owner thread
+moderation, and an add-comment draft. A review owner sees Edit and Delete both from their compact card and in
 the detail toolbar; deletion dismisses the detail only after the server
 confirms success. `updateReview`, `deleteReview`, comment add/delete, and
 publication return `Bool` from the store’s guarded mutation path. The editor
 dismisses only on `true`, and the comment text clears only on a successful
 insert, preserving author input after validation, RLS, or network failures.
 The current reaction choice is heart only. Provider deep links from a detail
-are implemented; deep links *from notifications*, additional reaction kinds,
-and moderation workflows remain follow-up work.
+are implemented. Review comment/reaction notifications carry the durable review
+UUID and open that exact RLS-visible review even when it is outside the bounded
+feed caches or the notification is already read. Additional reaction kinds,
+reporting, and broader moderation policy remain follow-up work.
 
 ### Reviews picker and draft guarantees
 
@@ -538,7 +540,7 @@ too close; that is not a current correctness concern.
 | `profile_track_subject_states` | private per-owner track state for Listened, default rating, Loved, and Want to listen |
 | `social_activity_events` | append-only typed pointers for intentional Diary/Review follower activity |
 | `music_reviews` | canonical track/album opinion with retained provider snapshot, rating, Loved signal, visibility, soft delete |
-| `review_comments` | comments with author-owned soft deletion |
+| `review_comments` | comments with author deletion and review-owner moderation |
 | `review_reactions` | one reaction per viewer/review/kind |
 | `social_notifications` | recipient-owned in-app inbox and read state |
 | `music_lists` | owner-authored track collections with visibility and an entry revision |
@@ -837,9 +839,9 @@ MusicKit library/playback authorization.
 2. Extend the isolated Reviews picker with richer provider-specific empty and
    recovery states while retaining its separate journal/opinion/Loved model
    and no-queue/no-history guarantees.
-3. Review detail and spoiler conceal/reveal are implemented; extend that
-   surface with additional reaction choices, comment moderation, and
-   notification-to-review deep links.
+3. Review detail, spoiler conceal/reveal, owner thread moderation, and exact
+   notification-to-review routing are implemented; extend that surface with
+   additional reaction choices and reporting controls.
 4. Decide whether loaded-page journal search is sufficient or exhaustive
    server-side filtering is required.
 5. Enroll/configure the Apple developer assets, enable MusicKit, and implement

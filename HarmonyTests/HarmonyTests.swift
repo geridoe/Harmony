@@ -456,6 +456,31 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(review.subjectTitle, "Legacy Album")
     }
 
+    func testReviewNotificationDecodesDurableReviewIdentity() throws {
+        let reviewID = UUID(uuidString: "30000000-0000-0000-0000-000000000003")!
+        let json = """
+        {
+          "id": "70000000-0000-0000-0000-000000000007",
+          "kind": "review_comment",
+          "created_at": "2026-08-03T12:00:00Z",
+          "read_at": null,
+          "review_id": "\(reviewID.uuidString)",
+          "listening_broadcast_id": null,
+          "actor": {"display_name": "Commenter"},
+          "review": {"subject_title": "Afterglow", "canonical_tracks": null},
+          "music_list": null
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let notification = try decoder.decode(RemoteSocialNotification.self, from: Data(json.utf8))
+
+        XCTAssertEqual(notification.reviewID, reviewID)
+        XCTAssertEqual(notification.review?.subjectTitle, "Afterglow")
+        XCTAssertEqual(notification.actor.displayName, "Commenter")
+    }
+
     func testReviewDraftSnapshotsAudienceAndKeepsAllAuthoredFields() {
         var profileDefault = SocialVisibilityOption.followers
         let subject = ReviewDraftSubject.track(reviewTrack(title: "Snapshot song"))
@@ -1053,6 +1078,32 @@ final class HarmonyTests: XCTestCase {
 
         XCTAssertTrue(visible.isEmpty)
         XCTAssertEqual(raw.map(\.id), [diary.id], "Filtering must not consume or reorder the raw paginated feed")
+    }
+
+    func testReviewCommentDeletionAllowsAuthorOrReviewOwnerOnly() {
+        let authorID = UUID()
+        let ownerID = UUID()
+
+        XCTAssertTrue(reviewCommentCanBeDeleted(
+            commentAuthorID: authorID,
+            reviewOwnerID: ownerID,
+            viewerID: authorID
+        ))
+        XCTAssertTrue(reviewCommentCanBeDeleted(
+            commentAuthorID: authorID,
+            reviewOwnerID: ownerID,
+            viewerID: ownerID
+        ))
+        XCTAssertFalse(reviewCommentCanBeDeleted(
+            commentAuthorID: authorID,
+            reviewOwnerID: ownerID,
+            viewerID: UUID()
+        ))
+        XCTAssertFalse(reviewCommentCanBeDeleted(
+            commentAuthorID: authorID,
+            reviewOwnerID: ownerID,
+            viewerID: nil
+        ))
     }
 
     func testMusicRatingDistributionUsesHalfStarBucketsAndExcludesUnratedTracks() {

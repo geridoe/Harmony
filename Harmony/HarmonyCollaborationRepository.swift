@@ -4,6 +4,7 @@ import Supabase
 private enum HarmonyRepositoryError: LocalizedError {
     case invalidCanonicalAlbumAggregate
     case canonicalAlbumUnavailable
+    case reviewCommentDeletionUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -11,6 +12,8 @@ private enum HarmonyRepositoryError: LocalizedError {
             "The album rating summary was unavailable."
         case .canonicalAlbumUnavailable:
             "Harmony could not load this canonical album."
+        case .reviewCommentDeletionUnavailable:
+            "This comment could not be deleted."
         }
     }
 }
@@ -496,11 +499,13 @@ struct RemoteSocialNotification: Decodable, Identifiable {
     let createdAt: Date
     let readAt: Date?
     let actor: RemoteProfile
+    let reviewID: UUID?
     let review: RemoteNotificationReview?
     let musicList: RemoteNotificationMusicList?
     let listeningBroadcastID: UUID?
     enum CodingKeys: String, CodingKey {
         case id, kind, actor, review
+        case reviewID = "review_id"
         case musicList = "music_list"
         case listeningBroadcastID = "listening_broadcast_id"
         case createdAt = "created_at"
@@ -1309,7 +1314,7 @@ final class HarmonyCollaborationRepository {
     func socialNotifications() async throws -> [RemoteSocialNotification] {
         try await authenticate()
         return try await client.from("social_notifications")
-            .select("id,kind,created_at,read_at,listening_broadcast_id,actor:profiles!social_notifications_actor_id_fkey(display_name),review:music_reviews!social_notifications_review_id_fkey(subject_title,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit)),music_list:music_lists!social_notifications_music_list_id_fkey(title)")
+            .select("id,kind,created_at,read_at,review_id,listening_broadcast_id,actor:profiles!social_notifications_actor_id_fkey(display_name),review:music_reviews!social_notifications_review_id_fkey(subject_title,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit)),music_list:music_lists!social_notifications_music_list_id_fkey(title)")
             .order("created_at", ascending: false)
             .limit(50).execute().value
     }
@@ -1940,6 +1945,23 @@ final class HarmonyCollaborationRepository {
         }
     }
 
+    func musicReview(id: UUID) async throws -> RemoteMusicReview {
+        try await authenticate()
+        do {
+            return try await client.from("music_reviews")
+                .select(Self.musicReviewSelection)
+                .eq("id", value: id.uuidString)
+                .single()
+                .execute().value
+        } catch where Self.isMissingCanonicalAlbumContract(error) {
+            return try await client.from("music_reviews")
+                .select(Self.legacyMusicReviewSelection)
+                .eq("id", value: id.uuidString)
+                .single()
+                .execute().value
+        }
+    }
+
     func ownerReviewStats() async throws -> RemoteOwnerReviewStats {
         try await authenticate()
         let rows: [RemoteOwnerReviewStats] = try await client
@@ -2232,7 +2254,11 @@ final class HarmonyCollaborationRepository {
 
     func deleteComment(_ commentID: UUID) async throws {
         try await authenticate()
-        _ = try await client.rpc("delete_review_comment", params: CommentIDParameters(p_comment_id: commentID)).execute()
+        let deleted: Bool = try await client.rpc(
+            "delete_review_comment",
+            params: CommentIDParameters(p_comment_id: commentID)
+        ).execute().value
+        guard deleted else { throw HarmonyRepositoryError.reviewCommentDeletionUnavailable }
     }
 
     func updateReview(_ reviewID: UUID, rating: Double, body: String, visibility: SocialVisibilityOption, isLoved: Bool, containsSpoilers: Bool = false) async throws {

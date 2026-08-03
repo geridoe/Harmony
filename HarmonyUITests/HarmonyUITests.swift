@@ -83,6 +83,26 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(listeningHistory.waitForExistence(timeout: 5))
     }
 
+    func testReviewNotificationOpensExactReviewEvenWhenAlreadyRead() throws {
+        let app = XCUIApplication()
+        app.launchArguments.append("--ui-test-social-activity")
+        app.launch()
+
+        let listenTab = app.tabBars.buttons["Listen"]
+        XCTAssertTrue(listenTab.waitForExistence(timeout: 5))
+        listenTab.tap()
+        XCTAssertTrue(app.navigationBars["Listen"].waitForExistence(timeout: 5))
+
+        let notification = app.descendants(matching: .any)[
+            "notification-review-30000000-0000-0000-0000-000000000003"
+        ]
+        XCTAssertTrue(notification.waitForExistence(timeout: 5))
+        notification.tap()
+
+        XCTAssertTrue(app.navigationBars["Afterglow"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["A fixture opinion."].exists)
+    }
+
     func testReviewsTabIsAFirstClassDestination() throws {
         let app = XCUIApplication()
         app.launch()

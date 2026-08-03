@@ -906,7 +906,8 @@ rest_get "$collaborator_token" \
   "listening_history_entries?select=rating&id=eq.$history_entry_id" \
   "$smoke_tmp/review-independent-diary-rating.json"
 jq -e 'length == 1 and .[0].rating == 2.5' "$smoke_tmp/review-independent-diary-rating.json" >/dev/null
-rpc "$conductor_token" delete_review_comment \
+# The review owner may moderate another member's comment.
+rpc "$collaborator_token" delete_review_comment \
   "{\"p_comment_id\":\"$comment_id\"}" \
   "$smoke_tmp/comment-delete.json"
 [[ "$(jq -er '.' "$smoke_tmp/comment-delete.json")" == "true" ]]
@@ -914,6 +915,24 @@ rest_get "$conductor_token" \
   "review_comments?select=id&id=eq.$comment_id" \
   "$smoke_tmp/deleted-comment.json"
 [[ "$(jq 'length' "$smoke_tmp/deleted-comment.json")" -eq 0 ]]
+repeat_comment_delete_status="$(rpc_status "$collaborator_token" delete_review_comment \
+  "{\"p_comment_id\":\"$comment_id\"}" \
+  "$smoke_tmp/repeat-comment-delete.json")"
+[[ "$repeat_comment_delete_status" == "200" ]]
+[[ "$(jq -er '.' "$smoke_tmp/repeat-comment-delete.json")" == "false" ]]
+rpc "$conductor_token" add_review_comment \
+  "{\"p_review_id\":\"$review_id\",\"p_body\":\"I can remove my own follow-up.\"}" \
+  "$smoke_tmp/author-owned-review-comment.json"
+author_owned_comment_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/author-owned-review-comment.json")"
+direct_review_comment_write_status="$(rest_patch_status "$collaborator_token" \
+  "review_comments?id=eq.$author_owned_comment_id" \
+  '{"body":"Direct moderation must remain forbidden."}' \
+  "$smoke_tmp/direct-review-comment-write.json")"
+[[ "$direct_review_comment_write_status" == "403" ]]
+rpc "$conductor_token" delete_review_comment \
+  "{\"p_comment_id\":\"$author_owned_comment_id\"}" \
+  "$smoke_tmp/author-comment-delete.json"
+[[ "$(jq -er '.' "$smoke_tmp/author-comment-delete.json")" == "true" ]]
 
 stage="atomic private music lists"
 rest_get "$collaborator_token" \

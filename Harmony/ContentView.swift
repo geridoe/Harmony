@@ -53,30 +53,7 @@ struct SocialView: View {
                         Text("No social notifications yet.").foregroundColor(.secondary)
                     } else {
                         ForEach(store.socialNotifications) { notification in
-                            Button {
-                                guard notification.readAt == nil else { return }
-                                Task { await store.markSocialNotificationsRead(notification.id) }
-                            } label: {
-                                HStack(alignment: .top, spacing: 10) {
-                                    Image(systemName: notificationIcon(notification.kind))
-                                        .foregroundColor(.indigo)
-                                        .frame(width: 22)
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(notificationMessage(notification))
-                                            .foregroundColor(.primary)
-                                            .font(notification.readAt == nil ? .subheadline.weight(.semibold) : .subheadline)
-                                        Text(notification.createdAt, style: .relative)
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                    Spacer()
-                                    if notification.readAt == nil {
-                                        Circle().fill(Color.indigo).frame(width: 8, height: 8)
-                                            .accessibilityLabel("Unread")
-                                    }
-                                }
-                            }
-                            .buttonStyle(.plain)
+                            notificationRow(notification)
                         }
                     }
                 } header: {
@@ -352,6 +329,89 @@ struct SocialView: View {
         case "listening_broadcast_comment": return "\(actor) commented on your live listening"
         case "listening_broadcast_reaction": return "\(actor) reacted to your live listening"
         default: return "New activity from \(actor)"
+        }
+    }
+
+    @ViewBuilder
+    private func notificationRow(_ notification: RemoteSocialNotification) -> some View {
+        if let reviewID = notification.reviewID,
+           notification.kind == "review_comment" || notification.kind == "review_reaction" {
+            NavigationLink {
+                NotificationReviewDestination(
+                    reviewID: reviewID,
+                    notificationID: notification.readAt == nil ? notification.id : nil
+                )
+            } label: {
+                notificationLabel(notification)
+            }
+            .accessibilityIdentifier("notification-review-\(reviewID.uuidString)")
+        } else {
+            Button {
+                guard notification.readAt == nil else { return }
+                Task { await store.markSocialNotificationsRead(notification.id) }
+            } label: {
+                notificationLabel(notification)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func notificationLabel(_ notification: RemoteSocialNotification) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: notificationIcon(notification.kind))
+                .foregroundColor(.indigo)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(notificationMessage(notification))
+                    .foregroundColor(.primary)
+                    .font(notification.readAt == nil ? .subheadline.weight(.semibold) : .subheadline)
+                Text(notification.createdAt, style: .relative)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            if notification.readAt == nil {
+                Circle().fill(Color.indigo).frame(width: 8, height: 8)
+                    .accessibilityLabel("Unread")
+            }
+        }
+    }
+}
+
+private struct NotificationReviewDestination: View {
+    @EnvironmentObject private var store: HarmonySessionStore
+    let reviewID: UUID
+    let notificationID: UUID?
+    @State private var review: RemoteMusicReview?
+    @State private var didFinishLoading = false
+
+    var body: some View {
+        Group {
+            if let review {
+                ReviewDetailView(reviewID: reviewID, fallbackReview: review, onEdit: nil)
+            } else if didFinishLoading {
+                VStack(spacing: 10) {
+                    Image(systemName: "text.book.closed")
+                        .font(.largeTitle)
+                        .foregroundColor(.secondary)
+                    Text("Review unavailable").font(.headline)
+                    Text("It may have been removed or is no longer visible to you.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding()
+                .accessibilityIdentifier("notification-review-unavailable")
+            } else {
+                ProgressView("Loading review…")
+            }
+        }
+        .task {
+            review = await store.loadReview(withID: reviewID)
+            didFinishLoading = true
+            if let notificationID {
+                await store.markSocialNotificationsRead(notificationID)
+            }
         }
     }
 }
@@ -3084,13 +3144,18 @@ private struct ReviewDetailView: View {
                                 Text(comment.body)
                             }
                             Spacer()
-                            if store.isOwnComment(comment) {
+                            if store.canDeleteReviewComment(comment, from: review) {
                                 Button(role: .destructive) {
-                                    Task { await store.deleteReviewComment(comment.id, from: review.id) }
+                                    Task { await store.deleteReviewComment(comment, from: review) }
                                 } label: {
                                     Image(systemName: "trash").font(.caption)
                                 }
-                                .accessibilityLabel("Delete comment")
+                                .accessibilityLabel(
+                                    store.isOwnComment(comment)
+                                        ? "Delete your comment"
+                                        : "Remove comment from your review"
+                                )
+                                .accessibilityIdentifier("review-comment-delete-\(comment.id.uuidString)")
                             }
                         }
                     }

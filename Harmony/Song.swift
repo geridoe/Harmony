@@ -395,6 +395,15 @@ enum SocialPrivacyCategory: Equatable {
     case musicShelf
 }
 
+func reviewCommentCanBeDeleted(
+    commentAuthorID: UUID,
+    reviewOwnerID: UUID,
+    viewerID: UUID?
+) -> Bool {
+    guard let viewerID else { return false }
+    return viewerID == commentAuthorID || viewerID == reviewOwnerID
+}
+
 struct PaginatedShelfState<Item> {
     var items: [Item] = []
     var isRefreshing = false
@@ -603,6 +612,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var spotifyHistoryImportMessage: String?
     @Published private(set) var musicReviews: [RemoteMusicReview] = []
     @Published private(set) var ownerReviews: [RemoteMusicReview] = []
+    @Published private(set) var reviewDetailsByID: [UUID: RemoteMusicReview] = [:]
     @Published private(set) var ownerReviewStats: RemoteOwnerReviewStats = .empty
     @Published private(set) var isRefreshingMusicReviews = false
     @Published private(set) var isRefreshingOwnerReviews = false
@@ -2983,6 +2993,20 @@ final class HarmonySessionStore: ObservableObject {
             canonicalTrack: track
         )]
         publicProfileShelves[entry.profileID] = shelves
+        socialNotifications = [RemoteSocialNotification(
+            id: UUID(uuidString: "70000000-0000-0000-0000-000000000007")!,
+            kind: "review_comment",
+            createdAt: Date(),
+            readAt: Date(),
+            actor: RemoteProfile(displayName: "UI Test Commenter"),
+            reviewID: review.id,
+            review: RemoteNotificationReview(
+                subjectTitle: review.subjectTitle,
+                canonicalTrack: track
+            ),
+            musicList: nil,
+            listeningBroadcastID: nil
+        )]
     }
 #endif
 
@@ -3044,6 +3068,9 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     func refreshSocialNotifications() async {
+#if DEBUG
+        guard !isDiaryEditorUITestFixtureActive else { return }
+#endif
         do { socialNotifications = try await collaborationRepository.socialNotifications() }
         catch { collaborationMessage = "Could not refresh social notifications." }
     }
@@ -3225,8 +3252,21 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     func review(withID reviewID: UUID) -> RemoteMusicReview? {
-        ownerReviews.first(where: { $0.id == reviewID })
+        reviewDetailsByID[reviewID]
+            ?? ownerReviews.first(where: { $0.id == reviewID })
             ?? musicReviews.first(where: { $0.id == reviewID })
+    }
+
+    func loadReview(withID reviewID: UUID) async -> RemoteMusicReview? {
+        if let cached = review(withID: reviewID) { return cached }
+        do {
+            let loaded = try await collaborationRepository.musicReview(id: reviewID)
+            reviewDetailsByID[reviewID] = loaded
+            return loaded
+        } catch {
+            collaborationMessage = "This review is no longer available."
+            return nil
+        }
     }
 
     @discardableResult
@@ -3304,6 +3344,13 @@ final class HarmonySessionStore: ObservableObject {
 
     func isOwnReview(_ review: RemoteMusicReview) -> Bool { review.profileID == authenticatedProfileID }
     func isOwnComment(_ comment: RemoteReviewComment) -> Bool { comment.authorID == authenticatedProfileID }
+    func canDeleteReviewComment(_ comment: RemoteReviewComment, from review: RemoteMusicReview) -> Bool {
+        reviewCommentCanBeDeleted(
+            commentAuthorID: comment.authorID,
+            reviewOwnerID: review.profileID,
+            viewerID: authenticatedProfileID
+        )
+    }
     func hasHeart(on review: RemoteMusicReview) -> Bool {
         guard let authenticatedProfileID else { return false }
         return review.reactions.contains { $0.profileID == authenticatedProfileID && $0.kind == "heart" }
@@ -3322,9 +3369,13 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     @discardableResult
-    func deleteReviewComment(_ commentID: UUID, from reviewID: UUID) async -> Bool {
-        await performReviewMutation(reviewID, successMessage: "Comment deleted") {
-            try await self.collaborationRepository.deleteComment(commentID)
+    func deleteReviewComment(_ comment: RemoteReviewComment, from review: RemoteMusicReview) async -> Bool {
+        guard canDeleteReviewComment(comment, from: review) else {
+            collaborationMessage = "This comment could not be deleted."
+            return false
+        }
+        return await performReviewMutation(review.id, successMessage: "Comment deleted") {
+            try await self.collaborationRepository.deleteComment(comment.id)
         }
     }
 
@@ -3368,6 +3419,13 @@ final class HarmonySessionStore: ObservableObject {
             collaborationMessage = successMessage
             await refreshMusicReviews()
             await refreshOwnerReviews()
+            if reviewDetailsByID[reviewID] != nil {
+                if let refreshed = try? await collaborationRepository.musicReview(id: reviewID) {
+                    reviewDetailsByID[reviewID] = refreshed
+                } else {
+                    reviewDetailsByID.removeValue(forKey: reviewID)
+                }
+            }
             if let affectedAlbum {
                 _ = await refreshAlbumSubjectState(for: affectedAlbum)
                 await refreshCanonicalAlbumDetail(affectedAlbum)
