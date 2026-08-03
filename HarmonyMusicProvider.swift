@@ -42,7 +42,7 @@ enum SpotifyAuthorizationRequest {
             URLQueryItem(name: "code_challenge_method", value: "S256"),
             URLQueryItem(name: "code_challenge", value: challenge.challenge),
             URLQueryItem(name: "state", value: state),
-            URLQueryItem(name: "scope", value: "user-read-private user-read-email user-read-playback-state user-modify-playback-state app-remote-control")
+            URLQueryItem(name: "scope", value: "user-read-private user-read-email user-read-playback-state user-read-recently-played user-modify-playback-state app-remote-control")
         ]
         return components.url!
     }

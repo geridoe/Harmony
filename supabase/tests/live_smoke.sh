@@ -73,6 +73,21 @@ rpc_status() {
     -w '%{http_code}'
 }
 
+function_status() {
+  local token="$1"
+  local function_name="$2"
+  local body="$3"
+  local output_file="$4"
+  curl --silent --show-error \
+    -X POST "$supabase_url/functions/v1/$function_name" \
+    -H "apikey: $publishable_key" \
+    -H "Authorization: Bearer $token" \
+    -H "Content-Type: application/json" \
+    --data "$body" \
+    -o "$output_file" \
+    -w '%{http_code}'
+}
+
 rest_get() {
   local token="$1"
   local path="$2"
@@ -109,6 +124,11 @@ collaborator_token="$(anonymous_token "$smoke_tmp/collaborator-auth.json")"
 conductor_id="$(jq -er '.user.id' "$smoke_tmp/conductor-auth.json")"
 collaborator_id="$(jq -er '.user.id' "$smoke_tmp/collaborator-auth.json")"
 invite_code="SMK$(printf '%05d' "$((RANDOM % 100000))")"
+
+stage="Spotify history import authentication boundary"
+spotify_history_status="$(function_status "$conductor_token" spotify-history-import '{}' "$smoke_tmp/spotify-history.json")"
+[[ "$spotify_history_status" == "404" ]]
+jq -e '.error == "spotify_not_connected"' "$smoke_tmp/spotify-history.json" >/dev/null
 
 stage="private profile defaults and account settings"
 rest_get "$conductor_token" \

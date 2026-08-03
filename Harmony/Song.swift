@@ -180,6 +180,8 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var listeningHistory: [RemoteListeningHistoryEntry] = []
     @Published private(set) var isRefreshingListeningHistory = false
     @Published private(set) var isRecordingListeningHistory = false
+    @Published private(set) var isImportingSpotifyHistory = false
+    @Published private(set) var spotifyHistoryImportMessage: String?
     @Published private(set) var musicReviews: [RemoteMusicReview] = []
     @Published private(set) var isRefreshingMusicReviews = false
     @Published private(set) var isPublishingMusicReview = false
@@ -698,6 +700,22 @@ final class HarmonySessionStore: ObservableObject {
             collaborationMessage = "History entry deleted"
             await refreshListeningHistory()
         } catch { collaborationMessage = "Could not delete history entry: \(error.localizedDescription)" }
+    }
+
+    func importRecentSpotifyHistory() async {
+        guard providerState(for: .spotify) == .connected, !isImportingSpotifyHistory else { return }
+        isImportingSpotifyHistory = true
+        spotifyHistoryImportMessage = nil
+        defer { isImportingSpotifyHistory = false }
+        do {
+            let result = try await collaborationRepository.importSpotifyHistory()
+            spotifyHistoryImportMessage = result.imported == 0
+                ? "Spotify history is already up to date."
+                : "Imported \(result.imported) recent Spotify \(result.imported == 1 ? "play" : "plays")."
+            await refreshListeningHistory()
+        } catch {
+            spotifyHistoryImportMessage = error.localizedDescription
+        }
     }
 
     func isOwnHistoryEntry(_ entry: RemoteListeningHistoryEntry) -> Bool { entry.profileID == authenticatedProfileID }

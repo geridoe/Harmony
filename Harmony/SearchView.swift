@@ -142,6 +142,27 @@ struct ConnectionsView: View {
                     privacyPicker("Live listening", selection: store.liveSocialVisibility, category: .liveListening)
                     privacyPicker("Listening history", selection: store.historySocialVisibility, category: .listeningHistory)
                     privacyPicker("Reviews", selection: store.reviewsSocialVisibility, category: .reviews)
+                    if store.providerState(for: .spotify) == .connected {
+                        Button {
+                            Task { await store.importRecentSpotifyHistory() }
+                        } label: {
+                            if store.isImportingSpotifyHistory {
+                                ProgressView()
+                            } else {
+                                Label("Import recent Spotify plays", systemImage: "arrow.down.circle")
+                            }
+                        }
+                        .disabled(store.isImportingSpotifyHistory)
+                        if let message = store.spotifyHistoryImportMessage {
+                            Text(message).font(.footnote).foregroundColor(.secondary)
+                            if message.contains("Reconnect Spotify") {
+                                Button("Reconnect Spotify for history access") {
+                                    Task { await store.connectSpotify() }
+                                }
+                                .disabled(store.isConnectingSpotify)
+                            }
+                        }
+                    }
                     Text("When enabled, skipping to the next track logs the completed Harmony track. Only approved followers can see follower-visible activity. New accounts begin with logging off and every category set to Only me.")
                         .font(.footnote)
                         .foregroundColor(.secondary)

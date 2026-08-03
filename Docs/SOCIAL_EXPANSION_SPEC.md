@@ -18,7 +18,7 @@ small group. Social listening extends that experience between rooms:
 ## Non-negotiable privacy defaults
 
 1. Social visibility starts **off** for every account.
-2. Live listening defaults to **followers-only**, is manually enabled, and
+2. Live listening defaults to **private**, is manually enabled, and
    expires automatically after a short TTL when the client stops refreshing it.
 3. Provider tokens, raw playback position, private Spotify sessions, Apple
    Music library contents, and unapproved listening history are never exposed.
@@ -90,8 +90,10 @@ review’s public identity.
    deep link, and an explicit Stop sharing control.
 3. **Diary** — user-owned listening history, track/album rating/review,
    comments, reactions, edit/delete, and RLS tests.
-4. **Provider import** — Spotify current/recent refresh and MusicKit recent
-   content only after each provider’s authorization is available.
+4. **Provider import** — Spotify recent-history import is implemented as an
+   explicit foreground action with exact-play deduplication. Spotify current
+   playback publishing and MusicKit recent content follow after their provider
+   authorization paths are available.
 
 ## Out of scope for this expansion
 

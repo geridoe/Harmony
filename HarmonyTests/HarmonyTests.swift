@@ -142,6 +142,7 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(parameters["redirect_uri"], redirectURI.absoluteString)
         XCTAssertEqual(parameters["code_challenge_method"], "S256")
         XCTAssertEqual(parameters["code_challenge"], challenge.challenge)
+        XCTAssertTrue((parameters["scope"] ?? nil)?.contains("user-read-recently-played") == true)
         XCTAssertEqual(parameters["state"], "expected-state")
         XCTAssertFalse(challenge.verifier.isEmpty)
         XCTAssertFalse(challenge.challenge.isEmpty)

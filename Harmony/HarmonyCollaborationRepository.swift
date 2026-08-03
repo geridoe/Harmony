@@ -332,6 +332,20 @@ private struct EdgeFunctionErrorResponse: Decodable {
     let error: String
     let upstreamStatus: Int?
 }
+struct SpotifyHistoryImportResponse: Decodable { let imported: Int; let skipped: Int }
+enum SpotifyHistoryImportError: LocalizedError {
+    case reconnectRequired
+    case rateLimited
+    case unavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .reconnectRequired: return "Reconnect Spotify to approve recent-listening access."
+        case .rateLimited: return "Spotify is rate limiting history imports. Try again shortly."
+        case .unavailable: return "Spotify listening history is temporarily unavailable."
+        }
+    }
+}
 struct SpotifySearchTrack: Decodable {
     let title: String
     let artist: String
@@ -607,6 +621,22 @@ final class HarmonyCollaborationRepository {
                 throw SpotifyCatalogError.rateLimited
             default:
                 throw SpotifyCatalogError.temporarilyUnavailable
+            }
+        }
+    }
+
+    func importSpotifyHistory() async throws -> SpotifyHistoryImportResponse {
+        try await authenticate()
+        do {
+            return try await client.functions.invoke("spotify-history-import")
+        } catch let FunctionsError.httpError(_, data) {
+            let response = try? JSONDecoder().decode(EdgeFunctionErrorResponse.self, from: data)
+            switch response?.error {
+            case "spotify_history_scope_missing", "spotify_not_connected", "spotify_refresh_failed":
+                throw SpotifyHistoryImportError.reconnectRequired
+            default:
+                if response?.upstreamStatus == 429 { throw SpotifyHistoryImportError.rateLimited }
+                throw SpotifyHistoryImportError.unavailable
             }
         }
     }
