@@ -393,6 +393,7 @@ struct DiaryEntryDraft: Equatable {
     var listenedOn = Date()
     var isRelisten = false
     var tagsText = ""
+    var rating: Double?
     var visibility: SocialVisibilityOption = .privateOnly
     var linkedReviewID: UUID?
 
@@ -886,13 +887,17 @@ struct ReviewsView: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
-                if entry.isRelisten || !entry.tags.isEmpty || entry.reviewID != nil {
+                if entry.isRelisten || !entry.tags.isEmpty || entry.rating != nil || entry.reviewID != nil {
                     HStack(spacing: 5) {
                         if entry.isRelisten {
                             Label("Relisten", systemImage: "arrow.clockwise")
                         }
                         ForEach(entry.tags.prefix(3), id: \.self) { tag in
                             Text("#\(tag)")
+                        }
+                        if let rating = entry.rating {
+                            Label("\(String(format: "%.1f", rating))", systemImage: "star.fill")
+                                .accessibilityLabel("Rated \(String(format: "%.1f", rating)) out of 5")
                         }
                         if entry.reviewID != nil {
                             Label("Opinion", systemImage: "link")
@@ -1120,6 +1125,10 @@ private struct DiaryEntryComposer: View {
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
+                    OptionalDiaryRatingControl(
+                        rating: $draft.rating,
+                        accessibilityPrefix: "diary-create"
+                    )
                 }
 
                 Section("Visibility") {
@@ -1146,6 +1155,7 @@ private struct DiaryEntryComposer: View {
                                 listenedOn: submittedDraft.listenedOnForSubmission,
                                 isRelisten: submittedDraft.isRelisten,
                                 tags: submittedDraft.normalizedTags,
+                                rating: submittedDraft.rating,
                                 visibility: submittedDraft.visibility
                             )
                             if didSave { dismiss() }
@@ -1184,6 +1194,7 @@ private struct DiaryEntryEditor: View {
             listenedOn: entry.playedAt,
             isRelisten: entry.isRelisten,
             tagsText: entry.tags.joined(separator: ", "),
+            rating: entry.rating,
             visibility: entry.visibility,
             linkedReviewID: linkedReviewID
         ))
@@ -1222,6 +1233,10 @@ private struct DiaryEntryEditor: View {
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
+                    OptionalDiaryRatingControl(
+                        rating: $draft.rating,
+                        accessibilityPrefix: "diary-edit"
+                    )
                 }
 
                 Section("Opinion") {
@@ -1265,6 +1280,7 @@ private struct DiaryEntryEditor: View {
                                 listenedOn: submittedDraft.listenedOnForSubmission,
                                 isRelisten: submittedDraft.isRelisten,
                                 tags: submittedDraft.normalizedTags,
+                                rating: submittedDraft.rating,
                                 visibility: submittedDraft.visibility,
                                 reviewID: submittedDraft.linkedReviewID
                             )
@@ -1276,6 +1292,35 @@ private struct DiaryEntryEditor: View {
                 }
             }
         }
+    }
+}
+
+private struct OptionalDiaryRatingControl: View {
+    @Binding var rating: Double?
+    let accessibilityPrefix: String
+
+    private var isRating: Binding<Bool> {
+        Binding(
+            get: { rating != nil },
+            set: { enabled in rating = enabled ? (rating ?? 4.0) : nil }
+        )
+    }
+
+    private var selectedRating: Binding<Double> {
+        Binding(
+            get: { rating ?? 4.0 },
+            set: { rating = $0 }
+        )
+    }
+
+    var body: some View {
+        Toggle("Rate this listen", isOn: isRating)
+            .accessibilityIdentifier("\(accessibilityPrefix)-rating-toggle")
+        RatingPicker(rating: selectedRating)
+            .accessibilityLabel(rating == nil ? "Diary rating, unrated" : "Diary rating")
+            .accessibilityIdentifier("\(accessibilityPrefix)-rating")
+            .disabled(rating == nil)
+            .opacity(rating == nil ? 0.55 : 1)
     }
 }
 

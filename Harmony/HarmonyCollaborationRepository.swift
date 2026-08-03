@@ -128,6 +128,7 @@ private struct RecordListeningHistoryParameters: Encodable {
     let p_visibility: String
     let p_is_relisten: Bool
     let p_tags: [String]
+    let p_rating: Double?
 }
 private struct UpdateListeningDiaryEntryParameters: Encodable {
     let p_entry_id: UUID
@@ -136,6 +137,14 @@ private struct UpdateListeningDiaryEntryParameters: Encodable {
     let p_is_relisten: Bool
     let p_tags: [String]
     let p_review_id: UUID?
+    let p_rating: Double?
+}
+private struct SetTrackSubjectStateParameters: Encodable {
+    let p_canonical_track_id: UUID
+    let p_has_listened: Bool
+    let p_default_rating: Double?
+    let p_is_loved: Bool
+    let p_want_to_listen: Bool
 }
 private struct ListeningDiaryPageParameters: Encodable {
     let p_before_played_at: Date?
@@ -325,16 +334,67 @@ struct RemoteListeningHistoryEntry: Decodable, Identifiable {
     let isRelisten: Bool
     let tags: [String]
     let reviewID: UUID?
+    let rating: Double?
     let canonicalTrack: RemoteCatalogTrack?
     let profile: RemoteProfile
     enum CodingKeys: String, CodingKey {
-        case id, source, visibility, tags
+        case id, source, visibility, tags, rating
         case reviewID = "review_id"
         case profileID = "profile_id"
         case playedAt = "played_at"
         case isRelisten = "is_relisten"
         case canonicalTrack = "canonical_tracks"
         case profile = "profiles"
+    }
+
+    init(
+        id: UUID,
+        profileID: UUID,
+        playedAt: Date,
+        source: String,
+        visibility: SocialVisibilityOption,
+        isRelisten: Bool,
+        tags: [String],
+        rating: Double? = nil,
+        reviewID: UUID?,
+        canonicalTrack: RemoteCatalogTrack?,
+        profile: RemoteProfile
+    ) {
+        self.id = id
+        self.profileID = profileID
+        self.playedAt = playedAt
+        self.source = source
+        self.visibility = visibility
+        self.isRelisten = isRelisten
+        self.tags = tags
+        self.rating = rating
+        self.reviewID = reviewID
+        self.canonicalTrack = canonicalTrack
+        self.profile = profile
+    }
+}
+
+struct RemoteTrackSubjectState: Decodable, Identifiable {
+    let profileID: UUID
+    let canonicalTrackID: UUID
+    let hasListened: Bool
+    let defaultRating: Double?
+    let isLoved: Bool
+    let wantToListen: Bool
+    let createdAt: Date
+    let updatedAt: Date
+
+    var id: UUID { canonicalTrackID }
+
+    enum CodingKeys: String, CodingKey {
+        case profileID = "profile_id"
+        case canonicalTrackID = "canonical_track_id"
+        case hasListened = "has_listened"
+        case defaultRating = "default_rating"
+        case isLoved = "is_loved"
+        case wantToListen = "want_to_listen"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
     }
 }
 
@@ -675,7 +735,7 @@ final class HarmonyCollaborationRepository {
     func listeningHistory() async throws -> [RemoteListeningHistoryEntry] {
         try await authenticate()
         return try await client.from("listening_history_entries")
-            .select("id,profile_id,played_at,source,visibility,is_relisten,tags,review_id,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)")
+            .select("id,profile_id,played_at,source,visibility,is_relisten,tags,review_id,rating,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)")
             .order("played_at", ascending: false)
             .limit(100).execute().value
     }
@@ -694,8 +754,59 @@ final class HarmonyCollaborationRepository {
                 p_limit: limit
             )
         )
-        .select("id,profile_id,played_at,source,visibility,is_relisten,tags,review_id,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)")
+        .select("id,profile_id,played_at,source,visibility,is_relisten,tags,review_id,rating,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)")
         .execute().value
+    }
+
+    func trackSubjectState(canonicalTrackID: UUID) async throws -> RemoteTrackSubjectState? {
+        try await authenticate()
+        let states: [RemoteTrackSubjectState] = try await client
+            .from("profile_track_subject_states")
+            .select("profile_id,canonical_track_id,has_listened,default_rating,is_loved,want_to_listen,created_at,updated_at")
+            .eq("canonical_track_id", value: canonicalTrackID.uuidString)
+            .limit(1)
+            .execute().value
+        return states.first
+    }
+
+    func trackSubjectState(for track: HarmonyTrack) async throws -> RemoteTrackSubjectState? {
+        try await trackSubjectState(canonicalTrackID: canonicalTrackID(for: track))
+    }
+
+    func updateTrackSubjectState(
+        canonicalTrackID: UUID,
+        hasListened: Bool,
+        defaultRating: Double?,
+        isLoved: Bool,
+        wantToListen: Bool
+    ) async throws -> RemoteTrackSubjectState {
+        try await authenticate()
+        return try await client.rpc(
+            "set_my_track_subject_state",
+            params: SetTrackSubjectStateParameters(
+                p_canonical_track_id: canonicalTrackID,
+                p_has_listened: hasListened,
+                p_default_rating: defaultRating,
+                p_is_loved: isLoved,
+                p_want_to_listen: wantToListen
+            )
+        ).execute().value
+    }
+
+    func updateTrackSubjectState(
+        for track: HarmonyTrack,
+        hasListened: Bool,
+        defaultRating: Double?,
+        isLoved: Bool,
+        wantToListen: Bool
+    ) async throws -> RemoteTrackSubjectState {
+        try await updateTrackSubjectState(
+            canonicalTrackID: canonicalTrackID(for: track),
+            hasListened: hasListened,
+            defaultRating: defaultRating,
+            isLoved: isLoved,
+            wantToListen: wantToListen
+        )
     }
 
     func musicReviews() async throws -> [RemoteMusicReview] {
@@ -845,7 +956,8 @@ final class HarmonyCollaborationRepository {
             p_source: "harmony_room",
             p_visibility: visibility.rawValue,
             p_is_relisten: false,
-            p_tags: []
+            p_tags: [],
+            p_rating: nil
         )).execute()
     }
 
@@ -854,7 +966,8 @@ final class HarmonyCollaborationRepository {
         playedAt: Date,
         isRelisten: Bool,
         tags: [String],
-        visibility: SocialVisibilityOption
+        visibility: SocialVisibilityOption,
+        rating: Double? = nil
     ) async throws -> RemoteListeningHistoryEntry {
         try await authenticate()
         let mapping = track.mappings.first(where: { !$0.providerID.isEmpty })
@@ -869,7 +982,8 @@ final class HarmonyCollaborationRepository {
                 p_source: "manual",
                 p_visibility: visibility.rawValue,
                 p_is_relisten: isRelisten,
-                p_tags: tags
+                p_tags: tags,
+                p_rating: rating
             )
         ).execute().value
     }
@@ -880,18 +994,20 @@ final class HarmonyCollaborationRepository {
         isRelisten: Bool,
         tags: [String],
         visibility: SocialVisibilityOption,
-        reviewID: UUID?
+        reviewID: UUID?,
+        rating: Double? = nil
     ) async throws {
         try await authenticate()
         _ = try await client.rpc(
-            "update_listening_diary_entry",
+            "update_listening_diary_entry_with_rating",
             params: UpdateListeningDiaryEntryParameters(
                 p_entry_id: entryID,
                 p_played_at: playedAt,
                 p_visibility: visibility.rawValue,
                 p_is_relisten: isRelisten,
                 p_tags: tags,
-                p_review_id: reviewID
+                p_review_id: reviewID,
+                p_rating: rating
             )
         ).execute()
     }
@@ -901,14 +1017,16 @@ final class HarmonyCollaborationRepository {
         listenedOn: Date,
         isRelisten: Bool,
         tags: [String],
-        visibility: SocialVisibilityOption
+        visibility: SocialVisibilityOption,
+        rating: Double? = nil
     ) async throws -> RemoteListeningHistoryEntry {
         try await createListeningDiaryEntry(
             track: track,
             playedAt: listenedOn,
             isRelisten: isRelisten,
             tags: tags,
-            visibility: visibility
+            visibility: visibility,
+            rating: rating
         )
     }
 

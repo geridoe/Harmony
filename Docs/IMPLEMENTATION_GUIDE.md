@@ -387,8 +387,20 @@ current default rating synchronized without rewriting older Diary ratings.
 The migration is deployed. Hosted smoke covers rating validation, owner-only
 state reads, foreign-entry mutation rejection, rating-to-state synchronization,
 independent Loved and Want-to-listen values, and review-edit isolation. Swift
-integration is the next slice; the additive schema is already compatible with
-the current app.
+decodes and caches this private track state for the next subject-detail slice.
+
+Diary creation and editing are already integrated. `DiaryEntryDraft.rating` is
+nullable, and **Rate this listen** activates the otherwise disabled shared
+half-star picker when the author opts in. Creation sends optional `p_rating`. Editing calls the
+migration-029 `update_listening_diary_entry_with_rating` RPC so date, audience,
+Relisten, tags, linked opinion, and rating commit or roll back together. Rated
+Journal rows show their historical score; unrated rows do not manufacture one.
+
+Migration `202608030029_atomic_diary_rating_update.sql` is deployed, and hosted
+smoke covers invalid-rating rejection, foreign-owner rejection, setting and
+clearing the rating/default state, normalized companion fields, incompatible
+review rollback, and isolation from later review edits. The older diary update
+RPC remains available for installed-client compatibility.
 
 ## 4. Supabase data model
 
@@ -493,6 +505,7 @@ The main social RPCs are `request_social_follow`,
 `publish_listening_presence`, `stop_listening_presence`,
 `record_listening_history`, `delete_listening_history_entry`,
 `list_my_listening_diary`, `update_listening_diary_entry`,
+`update_listening_diary_entry_with_rating`,
 `set_listening_diary_rating`, `set_my_track_subject_state`,
 `create_music_review`, `update_music_review`, `delete_music_review`,
 `add_review_comment`, `delete_review_comment`, `toggle_review_reaction`, and

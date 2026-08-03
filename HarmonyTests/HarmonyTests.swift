@@ -332,6 +332,7 @@ final class HarmonyTests: XCTestCase {
             listenedOn: listenedOn,
             isRelisten: true,
             tagsText: " Party, vinyl, PARTY, , late night ",
+            rating: 4.5,
             visibility: .followers,
             linkedReviewID: linkedReviewID
         )
@@ -340,9 +341,21 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(draft.listenedOn, listenedOn)
         XCTAssertTrue(draft.isRelisten)
         XCTAssertEqual(draft.normalizedTags, ["party", "vinyl", "late night"])
+        XCTAssertEqual(draft.rating, 4.5)
         XCTAssertEqual(draft.visibility, .followers)
         XCTAssertEqual(draft.linkedReviewID, linkedReviewID)
         XCTAssertNil(draft.tagValidationMessage)
+    }
+
+    func testDiaryRatingIsOptionalAndPreservesHalfStarValues() {
+        var draft = DiaryEntryDraft()
+        XCTAssertNil(draft.rating, "A diary log must not imply a rating without explicit opt-in")
+
+        draft.rating = 3.5
+        XCTAssertEqual(draft.rating, 3.5)
+
+        draft.rating = nil
+        XCTAssertNil(draft.rating, "Turning rating off removes the historical event rating")
     }
 
     func testDiaryDraftEnforcesBackendTagLimits() {
@@ -387,6 +400,7 @@ final class HarmonyTests: XCTestCase {
           "visibility": "followers",
           "is_relisten": true,
           "tags": ["party", "vinyl"],
+          "rating": 4.5,
           "review_id": "\(reviewID.uuidString)",
           "canonical_tracks": {
             "id": "\(trackID.uuidString)",
@@ -412,6 +426,7 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(entry.canonicalTrack?.id, trackID)
         XCTAssertTrue(entry.isRelisten)
         XCTAssertEqual(entry.tags, ["party", "vinyl"])
+        XCTAssertEqual(entry.rating, 4.5)
     }
 
     func testJournalSearchMatchesTitleArtistAlbumAndTagsWithoutCaseOrDiacritics() {
@@ -503,6 +518,7 @@ final class HarmonyTests: XCTestCase {
         playedAt: Date = Date(timeIntervalSince1970: 1_700_000_000),
         isRelisten: Bool = false,
         tags: [String] = [],
+        rating: Double? = nil,
         reviewID: UUID? = nil
     ) -> RemoteListeningHistoryEntry {
         RemoteListeningHistoryEntry(
@@ -513,6 +529,7 @@ final class HarmonyTests: XCTestCase {
             visibility: .privateOnly,
             isRelisten: isRelisten,
             tags: tags,
+            rating: rating,
             reviewID: reviewID,
             canonicalTrack: RemoteCatalogTrack(
                 id: UUID(),

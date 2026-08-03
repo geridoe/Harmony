@@ -1,7 +1,7 @@
 # Reviews and listening journal design
 
 **Decision date:** 2 August 2026  
-**Status:** first-class Reviews experience, owner-paginated Diary, and independent track-state foundation deployed
+**Status:** first-class Reviews experience, owner-paginated Diary, historical ratings, and independent track-state foundation deployed
 
 ## Why this is a separate product surface
 
@@ -256,6 +256,18 @@ until Swift stops assuming a required review rating and review-scoped Loved.
 Hosted smoke covers half-step validation, owner isolation, foreign-entry
 rejection, state synchronization, independent Loved/Want-to-listen behavior,
 and the guarantee that later review edits do not mutate historical ratings.
+
+Migration `202608030029_atomic_diary_rating_update.sql` adds
+`update_listening_diary_entry_with_rating`, keeping the older update RPC for
+installed-client compatibility. The new RPC updates date, audience, Relisten,
+tags, linked opinion, and nullable historical rating in one transaction. A bad
+rating or incompatible review link rolls back every field.
+
+The iOS Diary composer and editor now expose an optional **Rate this listen**
+control. An unrated log remains `nil` with a disabled scale; enabling it starts
+at 4.0 and uses the same half-star picker as reviews. Journal rows display only ratings actually
+stored on that listen. Swift also decodes/caches the new private track state,
+but Loved/Listened/Want-to-listen UI remains a later subject-detail slice.
 
 Album review creation remains available on Spotify/Apple catalog results in
 Add music. The server migration `202608020023_review_affinity.sql` adds the

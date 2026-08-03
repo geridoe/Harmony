@@ -162,6 +162,13 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Save"].exists)
         XCTAssertFalse(app.staticTexts["Linked opinion"].exists, "Opinion linkage belongs to editing an existing manual diary entry")
 
+        let ratingToggle = app.switches["diary-create-rating-toggle"]
+        let ratingPicker = app.descendants(matching: .any)["diary-create-rating"]
+        XCTAssertTrue(ratingToggle.exists)
+        XCTAssertEqual(ratingToggle.value as? String, "0")
+        XCTAssertTrue(ratingPicker.exists)
+        XCTAssertFalse(ratingPicker.isEnabled, "An unrated listen keeps the rating picker inactive")
+
         app.buttons["Choose a song"].tap()
         XCTAssertTrue(app.navigationBars["Choose music"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["Albums"].exists, "A diary log selects one track, not an album review subject")
@@ -201,6 +208,14 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Audience"].exists)
         XCTAssertTrue(app.buttons["Save changes"].exists)
         XCTAssertFalse(app.buttons["Choose a different song"].exists, "Editing preserves the logged recording")
+
+        let ratingToggle = app.switches["diary-edit-rating-toggle"]
+        let ratingPicker = app.descendants(matching: .any)["diary-edit-rating"]
+        XCTAssertTrue(ratingToggle.exists)
+        XCTAssertEqual(ratingToggle.value as? String, "1")
+        XCTAssertTrue(ratingPicker.exists)
+        XCTAssertTrue(ratingPicker.isEnabled)
+        XCTAssertEqual(ratingPicker.value as? String, "4.5 out of 5")
     }
 
     func testJournalBrowsingControlsAndFilteredEmptyState() throws {

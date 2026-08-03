@@ -208,6 +208,8 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var hasMoreJournalEntries = false
     @Published private(set) var isRecordingListeningHistory = false
     @Published private(set) var isSavingDiaryEntry = false
+    @Published private(set) var trackSubjectStates: [UUID: RemoteTrackSubjectState] = [:]
+    @Published private(set) var mutatingTrackSubjectStateIDs: Set<UUID> = []
     @Published private(set) var isImportingSpotifyHistory = false
     @Published private(set) var spotifyHistoryImportMessage: String?
     @Published private(set) var musicReviews: [RemoteMusicReview] = []
@@ -940,6 +942,7 @@ final class HarmonySessionStore: ObservableObject {
         listenedOn: Date,
         isRelisten: Bool,
         tags: [String],
+        rating: Double? = nil,
         visibility: SocialVisibilityOption
     ) async -> Bool {
         guard !isSavingDiaryEntry else { return false }
@@ -951,7 +954,8 @@ final class HarmonySessionStore: ObservableObject {
                 listenedOn: listenedOn,
                 isRelisten: isRelisten,
                 tags: tags,
-                visibility: visibility
+                visibility: visibility,
+                rating: rating
             )
             collaborationMessage = visibility == .followers
                 ? "Listen added to your follower-visible journal"
@@ -971,6 +975,7 @@ final class HarmonySessionStore: ObservableObject {
         listenedOn: Date,
         isRelisten: Bool,
         tags: [String],
+        rating: Double? = nil,
         visibility: SocialVisibilityOption,
         reviewID: UUID?
     ) async -> Bool {
@@ -994,7 +999,8 @@ final class HarmonySessionStore: ObservableObject {
                 isRelisten: isRelisten,
                 tags: tags,
                 visibility: visibility,
-                reviewID: reviewID
+                reviewID: reviewID,
+                rating: rating
             )
             collaborationMessage = "Journal entry updated"
             await refreshListeningHistory()
@@ -1012,6 +1018,46 @@ final class HarmonySessionStore: ObservableObject {
             isOwnReview(review)
                 && review.subjectKind == "track"
                 && review.canonicalTrack?.id == entryTrackID
+        }
+    }
+
+    @discardableResult
+    func refreshTrackSubjectState(for track: HarmonyTrack) async -> RemoteTrackSubjectState? {
+        do {
+            let state = try await collaborationRepository.trackSubjectState(for: track)
+            if let state { trackSubjectStates[state.canonicalTrackID] = state }
+            return state
+        } catch {
+            collaborationMessage = "Could not load your track status: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    @discardableResult
+    func updateTrackSubjectState(
+        for track: HarmonyTrack,
+        hasListened: Bool,
+        defaultRating: Double?,
+        isLoved: Bool,
+        wantToListen: Bool
+    ) async -> Bool {
+        guard !mutatingTrackSubjectStateIDs.contains(track.id) else { return false }
+        mutatingTrackSubjectStateIDs.insert(track.id)
+        defer { mutatingTrackSubjectStateIDs.remove(track.id) }
+        do {
+            let state = try await collaborationRepository.updateTrackSubjectState(
+                for: track,
+                hasListened: hasListened,
+                defaultRating: defaultRating,
+                isLoved: isLoved,
+                wantToListen: wantToListen
+            )
+            trackSubjectStates[state.canonicalTrackID] = state
+            collaborationMessage = "Track status updated"
+            return true
+        } catch {
+            collaborationMessage = "Could not update track status: \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -1064,6 +1110,7 @@ final class HarmonySessionStore: ObservableObject {
             visibility: .privateOnly,
             isRelisten: true,
             tags: ["party", "vinyl"],
+            rating: 4.5,
             reviewID: reviewID,
             canonicalTrack: track,
             profile: profile
