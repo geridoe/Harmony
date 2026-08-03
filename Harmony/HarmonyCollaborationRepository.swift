@@ -258,6 +258,12 @@ private struct EavesdropReactionParameters: Encodable {
     let p_broadcast_id: UUID
     let p_kind: String
 }
+private struct SocialProfileDiscoveryParameters: Encodable {
+    let p_search: String?
+    let p_after_display_name: String?
+    let p_after_id: UUID?
+    let p_limit: Int
+}
 private struct ResolveCanonicalAlbumParameters: Encodable {
     let p_provider: String
     let p_provider_id: String
@@ -511,6 +517,11 @@ struct RemoteSocialProfile: Decodable, Identifiable {
     let id: UUID
     let displayName: String
     enum CodingKeys: String, CodingKey { case id; case displayName = "display_name" }
+}
+
+struct RemoteSocialProfileCursor: Equatable {
+    let displayName: String
+    let id: UUID
 }
 
 struct RemoteSocialFollow: Decodable, Identifiable {
@@ -1378,14 +1389,31 @@ final class HarmonyCollaborationRepository {
             .single().execute().value
     }
 
-    func socialProfiles() async throws -> [RemoteSocialProfile] {
+    func socialProfiles(ids: [UUID]) async throws -> [RemoteSocialProfile] {
+        guard !ids.isEmpty else { return [] }
         try await authenticate()
-        let userID = try await currentUserID()
         return try await client.from("profiles")
             .select("id,display_name")
-            .neq("id", value: userID.uuidString)
+            .in("id", values: ids.map(\.uuidString))
             .order("display_name")
             .execute().value
+    }
+
+    func discoverSocialProfiles(
+        search: String?,
+        after: RemoteSocialProfileCursor? = nil,
+        limit: Int = 51
+    ) async throws -> [RemoteSocialProfile] {
+        try await authenticate()
+        return try await client.rpc(
+            "list_social_profiles",
+            params: SocialProfileDiscoveryParameters(
+                p_search: search,
+                p_after_display_name: after?.displayName,
+                p_after_id: after?.id,
+                p_limit: limit
+            )
+        ).execute().value
     }
 
     func socialFollows() async throws -> [RemoteSocialFollow] {
@@ -1400,6 +1428,11 @@ final class HarmonyCollaborationRepository {
         return try await client.from("profile_blocks")
             .select("blocked_id")
             .execute().value
+    }
+
+    func myBlockedSocialProfiles() async throws -> [RemoteSocialProfile] {
+        try await authenticate()
+        return try await client.rpc("list_my_blocked_profiles").execute().value
     }
 
     func socialNotificationsPage(

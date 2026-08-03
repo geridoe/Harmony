@@ -633,6 +633,29 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(notifications[1].listeningBroadcastID, broadcastID)
     }
 
+    func testSocialProfileDiscoveryMergeDeduplicatesOverlappingPages() {
+        let firstID = UUID()
+        let secondID = UUID()
+        let first = RemoteSocialProfile(id: firstID, displayName: "Alpha Listener")
+        let refreshedDuplicate = RemoteSocialProfile(id: firstID, displayName: "Alpha Listener")
+        let second = RemoteSocialProfile(id: secondID, displayName: "Beta Listener")
+
+        let merged = mergedSocialProfileDiscovery(
+            existing: [first],
+            incoming: [refreshedDuplicate, second]
+        )
+
+        XCTAssertEqual(merged.map(\.id), [firstID, secondID])
+    }
+
+    func testSocialProfileDiscoveryCursorUsesOriginalDisplayNameAndStableID() {
+        let id = UUID()
+        let cursor = RemoteSocialProfileCursor(displayName: "MiXeD Case", id: id)
+
+        XCTAssertEqual(cursor.displayName, "MiXeD Case")
+        XCTAssertEqual(cursor.id, id)
+    }
+
     func testRealtimeNotificationWindowMergePreservesLoadedDepthAndPrefersRefreshedRows() {
         let sharedID = UUID(uuidString: "30000000-0000-0000-0000-000000000003")!
         let olderID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!

@@ -67,6 +67,14 @@ playback/catalog interaction.
 
 - Follow is a request/accept relationship. People can remove an outgoing
   follow, remove a follower, block, and unblock.
+- Connections owns follower management in four independent sections: incoming
+  requests, sent requests, Following, and Followers. Incoming and outgoing
+  edges are never collapsed, so an incoming Accept action remains available
+  even when the viewer already follows or has requested the same person.
+- Account discovery is an authenticated, block-aware, keyset-paginated search.
+  The app no longer downloads the full profile directory. A separate Manage
+  blocked projection returns only people the caller blocked so Unblock remains
+  reachable without revealing people who blocked the caller.
 - Blocking removes both follow edges and hides each person’s follower-visible
   data immediately through database policy.
 - Eavesdrop is an explicit foreground action. It publishes one active card per
@@ -188,9 +196,10 @@ App Remote needs one.
 
 **Social visibility:** Connections lets an owner update display name,
 Harmony-play recording consent, and separate live/history/review visibility.
-The UI offers Only me and Followers. The database supports `public` for a
-future intentional discovery feature, but no public-discovery product surface
-is implemented.
+The UI offers Only me and Followers. The database supports `public` for future
+intentional **content** discovery, but no public-content surface is implemented.
+Authenticated account search in Connections is identity discovery only and
+does not grant access to reviews, history, shelves, or live listening.
 
 ### Implemented: isolated Reviews subject picker
 
@@ -863,10 +872,13 @@ return a linked review ID only when the same viewer can open that review.
 
 `list_profile_loved_tracks` likewise returns only its pagination fields and a
 public canonical-track projection; it never returns the private subject-state
-row. Profile discovery is block-aware at the `profiles` policy boundary. The
-database may decode legacy/future `public` visibility rows, but iOS authoring
-continues to offer only Only me and Followers until public discovery,
-moderation, and abuse controls are designed.
+row. `list_social_profiles` returns only `id` and `display_name`, excludes self
+and either-direction blocks, applies optional literal case-insensitive search,
+and pages by `(lower(display_name), id)`. `list_my_blocked_profiles` is the
+sole policy exception: it returns minimal identity only for blocks created by
+the caller. The database may decode legacy/future `public` visibility rows,
+but iOS authoring continues to offer only Only me and Followers until public
+content discovery, moderation, and abuse controls are designed.
 
 ### Atomic Review and Diary activity
 

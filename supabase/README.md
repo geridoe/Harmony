@@ -56,6 +56,14 @@ supabase functions deploy spotify-token-exchange
 
 `profile_social_settings` starts with live listening, history, and reviews all set to `private`. A user may expose each category to approved followers independently. `request_social_follow(profile_id)` creates a follower request; the target accepts or rejects it with `respond_to_social_follow(requester_id, accept)`. `remove_social_follow(profile_id)` removes only the caller's outgoing edge, while `remove_social_follower(profile_id)` removes only an incoming edge. `block_social_profile(profile_id)` removes both edges and prevents a new request; `unblock_social_profile(profile_id)` restores the ability to request a relationship. These operations are dedicated security-definer RPCs, not direct client writes. The visibility helpers used by later listening activity and review tables deny access across blocks and require an accepted follower for follower-visible data.
 
+`list_social_profiles(search, after_display_name, after_id, limit)` is the
+bounded account-discovery path. It returns only ID/display name, excludes self
+and both directions of a block, and uses stable `(lower(display_name), id)`
+keyset pagination. Discovery grants no social-content visibility. Normal
+profile RLS intentionally hides blocked accounts; `list_my_blocked_profiles()`
+is a narrow owner-only projection used by Manage blocked and never reveals an
+account merely because it blocked the caller.
+
 `publish_listening_presence(...)` writes a single user-owned, short-lived eavesdrop card. It must expire within ten minutes and is hidden by RLS unless its owner allows the viewer. `stop_listening_presence()` removes it. `record_listening_history(...)` is the user-owned history path; `record_harmony_plays` is a separate default-off consent setting, and history visibility remains independently private or follower-visible. Harmony never imports a provider’s data without an explicit user choice.
 
 `create_music_review(...)` creates a follower/private/public review of a canonical track or provider-addressed album. Its rating is optional; a row must contain either a valid half-star rating or nonblank writing. Clearing a review rating intentionally clears the current subject rating, while any linked Diary rating remains an independent historical snapshot. Owners can edit or soft-delete it through `update_music_review(...)` and `delete_music_review(...)`. Visible viewers can use `add_review_comment(...)` and `toggle_review_reaction(...)`; comment authors or the parent-review owner can soft-delete a comment through the guarded RPC. RLS reevaluates the review’s visibility and blocks before granting access.

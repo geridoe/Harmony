@@ -217,6 +217,7 @@ struct ConnectionsView: View {
     @EnvironmentObject private var store: HarmonySessionStore
     @State private var showingDeleteAccountConfirmation = false
     @State private var displayName = ""
+    @State private var discoverySearch = ""
     var body: some View {
         NavigationView {
             List {
@@ -231,6 +232,98 @@ struct ConnectionsView: View {
                     Text("This name is visible to session members and other signed-in Harmony listeners.")
                         .font(.footnote)
                         .foregroundColor(.secondary)
+                }
+
+                if store.isRefreshingSocialProfiles && store.socialProfiles.isEmpty {
+                    Section("Follower relationships") {
+                        ProgressView("Loading relationships…")
+                    }
+                }
+
+                if !incomingRequests.isEmpty {
+                    Section("Follow requests") {
+                        ForEach(incomingRequests) { profile in
+                            profileRow(profile, context: .incomingRequest)
+                        }
+                    }
+                }
+
+                if !outgoingRequests.isEmpty {
+                    Section("Pending requests") {
+                        ForEach(outgoingRequests) { profile in
+                            profileRow(profile, context: .outgoingRequest)
+                        }
+                    }
+                }
+
+                if !followingProfiles.isEmpty {
+                    Section("Following") {
+                        ForEach(followingProfiles) { profile in
+                            profileRow(profile, context: .following)
+                        }
+                    }
+                }
+
+                if !followerProfiles.isEmpty {
+                    Section("Followers") {
+                        ForEach(followerProfiles) { profile in
+                            profileRow(profile, context: .follower)
+                        }
+                    }
+                }
+
+                if !store.blockedSocialProfiles.isEmpty {
+                    Section("Manage blocked") {
+                        ForEach(store.blockedSocialProfiles) { profile in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(profile.displayName)
+                                    Text("Blocked listener")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button("Unblock") {
+                                    Task { await store.unblockSocialProfile(profile.id) }
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                            .accessibilityIdentifier("blocked-profile-\(profile.id.uuidString)")
+                        }
+                    }
+                }
+
+                Section("Find people") {
+                    TextField("Search listeners", text: $discoverySearch)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("connections-people-search")
+
+                    if store.isRefreshingSocialDiscovery {
+                        ProgressView("Searching…")
+                    } else if store.discoveredSocialProfiles.isEmpty {
+                        Text(discoverySearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ? "No discoverable listeners yet."
+                            : "No listeners match this search.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(store.discoveredSocialProfiles) { profile in
+                            profileRow(profile, context: .discovery)
+                        }
+                        if store.hasMoreSocialDiscovery {
+                            Button {
+                                Task { await store.loadMoreSocialDiscovery() }
+                            } label: {
+                                if store.isLoadingMoreSocialDiscovery {
+                                    ProgressView("Loading more listeners…")
+                                } else {
+                                    Label("Load more listeners", systemImage: "arrow.down.circle")
+                                }
+                            }
+                            .disabled(store.isLoadingMoreSocialDiscovery)
+                            .accessibilityIdentifier("connections-people-load-more")
+                        }
+                    }
                 }
 
                 Section("Social privacy") {
@@ -358,11 +451,23 @@ struct ConnectionsView: View {
                 await store.refreshAccountSettings()
                 displayName = store.accountProfile?.displayName ?? ""
                 await store.refreshProviderConnections()
+                await store.refreshSocialProfiles()
+            }
+            .task(id: discoverySearch) {
+                do {
+                    try await Task.sleep(for: .milliseconds(350))
+                    guard !Task.isCancelled else { return }
+                    await store.refreshSocialDiscovery(search: discoverySearch)
+                } catch {
+                    // A newer keystroke cancelled this debounce window.
+                }
             }
             .refreshable {
                 await store.refreshAccountSettings()
                 displayName = store.accountProfile?.displayName ?? displayName
                 await store.refreshProviderConnections()
+                await store.refreshSocialProfiles()
+                await store.refreshSocialDiscovery(search: discoverySearch)
             }
             .alert(
                 "Spotify playback unavailable",
@@ -388,6 +493,156 @@ struct ConnectionsView: View {
                 Text("This cannot be undone. Sessions you conduct will end and all Harmony account data will be removed.")
             }
         }
+    }
+
+    private enum ProfileRowContext {
+        case incomingRequest
+        case outgoingRequest
+        case following
+        case follower
+        case discovery
+    }
+
+    private var incomingRequests: [RemoteSocialProfile] {
+        store.socialProfiles.filter { store.incomingSocialFollowState(with: $0.id) == "requested" }
+    }
+
+    private var outgoingRequests: [RemoteSocialProfile] {
+        store.socialProfiles.filter { store.outgoingSocialFollowState(with: $0.id) == "requested" }
+    }
+
+    private var followingProfiles: [RemoteSocialProfile] {
+        store.socialProfiles.filter { store.outgoingSocialFollowState(with: $0.id) == "accepted" }
+    }
+
+    private var followerProfiles: [RemoteSocialProfile] {
+        store.socialProfiles.filter { store.incomingSocialFollowState(with: $0.id) == "accepted" }
+    }
+
+    @ViewBuilder
+    private func profileRow(_ profile: RemoteSocialProfile, context: ProfileRowContext) -> some View {
+        HStack(spacing: 12) {
+            NavigationLink {
+                MemberProfileView(profileID: profile.id, displayName: profile.displayName)
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(profile.displayName).font(.headline)
+                    Text(relationshipLabel(profile.id))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityIdentifier("connections-profile-\(profile.id.uuidString)")
+            Spacer()
+            profileControl(profile, context: context)
+        }
+    }
+
+    @ViewBuilder
+    private func profileControl(_ profile: RemoteSocialProfile, context: ProfileRowContext) -> some View {
+        if store.socialProfileActionIDs.contains(profile.id) {
+            ProgressView().controlSize(.small)
+        } else {
+            switch context {
+            case .incomingRequest:
+                Menu("Respond") {
+                    Button("Accept") {
+                        Task { await store.respondToSocialFollow(from: profile.id, accept: true) }
+                    }
+                    Button("Decline", role: .destructive) {
+                        Task { await store.respondToSocialFollow(from: profile.id, accept: false) }
+                    }
+                    blockButton(profile.id)
+                }
+                .buttonStyle(.borderedProminent)
+            case .outgoingRequest:
+                Menu("Requested") {
+                    Button("Cancel request", role: .destructive) {
+                        Task { await store.removeSocialFollow(profile.id) }
+                    }
+                    blockButton(profile.id)
+                }
+            case .following:
+                Menu("Following") {
+                    Button("Unfollow", role: .destructive) {
+                        Task { await store.removeSocialFollow(profile.id) }
+                    }
+                    blockButton(profile.id)
+                }
+            case .follower:
+                Menu("Follows you") {
+                    if store.outgoingSocialFollowState(with: profile.id) == nil {
+                        Button("Follow back") { Task { await store.requestSocialFollow(profile.id) } }
+                    }
+                    Button("Remove follower", role: .destructive) {
+                        Task { await store.removeSocialFollower(profile.id) }
+                    }
+                    blockButton(profile.id)
+                }
+            case .discovery:
+                discoveryControl(profile)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func discoveryControl(_ profile: RemoteSocialProfile) -> some View {
+        let incoming = store.incomingSocialFollowState(with: profile.id)
+        let outgoing = store.outgoingSocialFollowState(with: profile.id)
+        if incoming == "requested" {
+            Menu("Respond") {
+                Button("Accept") { Task { await store.respondToSocialFollow(from: profile.id, accept: true) } }
+                Button("Decline", role: .destructive) {
+                    Task { await store.respondToSocialFollow(from: profile.id, accept: false) }
+                }
+                if outgoing == "requested" {
+                    Button("Cancel your request", role: .destructive) {
+                        Task { await store.removeSocialFollow(profile.id) }
+                    }
+                }
+                blockButton(profile.id)
+            }
+            .buttonStyle(.borderedProminent)
+        } else if outgoing == "requested" {
+            Menu("Requested") {
+                Button("Cancel request", role: .destructive) {
+                    Task { await store.removeSocialFollow(profile.id) }
+                }
+                blockButton(profile.id)
+            }
+        } else if outgoing == "accepted" {
+            Menu("Following") {
+                Button("Unfollow", role: .destructive) {
+                    Task { await store.removeSocialFollow(profile.id) }
+                }
+                blockButton(profile.id)
+            }
+        } else {
+            Button(incoming == "accepted" ? "Follow back" : "Follow") {
+                Task { await store.requestSocialFollow(profile.id) }
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    private func blockButton(_ profileID: UUID) -> some View {
+        Button("Block", role: .destructive) {
+            Task { await store.blockSocialProfile(profileID) }
+        }
+    }
+
+    private func relationshipLabel(_ profileID: UUID) -> String {
+        let incoming = store.incomingSocialFollowState(with: profileID)
+        let outgoing = store.outgoingSocialFollowState(with: profileID)
+        if incoming == "requested" && outgoing == "accepted" { return "You follow them · wants to follow you" }
+        if incoming == "requested" && outgoing == "requested" { return "Requests pending both ways" }
+        if incoming == "requested" { return "Wants to follow you" }
+        if outgoing == "requested" && incoming == "accepted" { return "Follows you · your request is pending" }
+        if outgoing == "requested" { return "Your request is pending" }
+        if incoming == "accepted" && outgoing == "accepted" { return "You follow each other" }
+        if outgoing == "accepted" { return "You follow this listener" }
+        if incoming == "accepted" { return "Follows you" }
+        return "Discoverable profile"
     }
 
     private func privacyPicker(

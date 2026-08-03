@@ -8,6 +8,7 @@ publishable_key="$(/usr/libexec/PlistBuddy -c 'Print :SupabasePublishableKey' "$
 smoke_tmp="$(mktemp -d)"
 conductor_token=""
 collaborator_token=""
+directory_token=""
 stage="initialization"
 
 report_failure() {
@@ -29,6 +30,7 @@ cleanup_account() {
 }
 
 cleanup() {
+  cleanup_account "$directory_token" || true
   cleanup_account "$collaborator_token" || true
   cleanup_account "$conductor_token" || true
   if [[ "${HARMONY_KEEP_SMOKE_ARTIFACTS:-0}" != "1" ]]; then
@@ -201,6 +203,115 @@ rest_patch "$conductor_token" \
   '{"live_visibility":"followers","history_visibility":"private","reviews_visibility":"followers","shelf_visibility":"followers","record_harmony_plays":true}' \
   "$smoke_tmp/settings-update.json"
 jq -e 'length == 1 and .[0].live_visibility == "followers" and .[0].history_visibility == "private" and .[0].reviews_visibility == "followers" and .[0].shelf_visibility == "followers" and .[0].record_harmony_plays == true' "$smoke_tmp/settings-update.json" >/dev/null
+
+stage="follower discovery search and keyset pagination"
+directory_token="$(anonymous_token "$smoke_tmp/directory-auth.json")"
+directory_id="$(jq -er '.user.id' "$smoke_tmp/directory-auth.json")"
+directory_marker="H55$(printf '%05d' "$((RANDOM % 100000))")"
+directory_marker_lower="$(printf '%s' "$directory_marker" | tr '[:upper:]' '[:lower:]')"
+rest_patch "$directory_token" \
+  "profiles?id=eq.$directory_id" \
+  "{\"display_name\":\"$directory_marker Alpha Directory\"}" \
+  "$smoke_tmp/directory-profile-update.json"
+rest_patch "$collaborator_token" \
+  "profiles?id=eq.$collaborator_id" \
+  "{\"display_name\":\"$directory_marker Zulu Directory\"}" \
+  "$smoke_tmp/collaborator-directory-profile-update.json"
+
+rpc "$conductor_token" list_social_profiles \
+  "{\"p_search\":\"  $directory_marker_lower  \",\"p_after_display_name\":null,\"p_after_id\":null,\"p_limit\":1}" \
+  "$smoke_tmp/directory-first-page.json"
+jq -e --arg id "$directory_id" --arg name "$directory_marker Alpha Directory" '
+  length == 1 and .[0].id == $id and .[0].display_name == $name
+' "$smoke_tmp/directory-first-page.json" >/dev/null
+directory_cursor_name="$(jq -er '.[0].display_name' "$smoke_tmp/directory-first-page.json")"
+directory_cursor_id="$(jq -er '.[0].id' "$smoke_tmp/directory-first-page.json")"
+rpc "$conductor_token" list_social_profiles \
+  "{\"p_search\":\"$directory_marker_lower\",\"p_after_display_name\":\"$directory_cursor_name\",\"p_after_id\":\"$directory_cursor_id\",\"p_limit\":1}" \
+  "$smoke_tmp/directory-second-page.json"
+jq -e --arg id "$collaborator_id" --arg name "$directory_marker Zulu Directory" '
+  length == 1 and .[0].id == $id and .[0].display_name == $name
+' "$smoke_tmp/directory-second-page.json" >/dev/null
+rpc "$conductor_token" list_social_profiles \
+  "{\"p_search\":\"$directory_marker_lower\",\"p_after_display_name\":\"$(jq -er '.[0].display_name' "$smoke_tmp/directory-second-page.json")\",\"p_after_id\":\"$(jq -er '.[0].id' "$smoke_tmp/directory-second-page.json")\",\"p_limit\":1}" \
+  "$smoke_tmp/directory-third-page.json"
+[[ "$(jq 'length' "$smoke_tmp/directory-third-page.json")" -eq 0 ]]
+
+rpc "$directory_token" list_social_profiles \
+  "{\"p_search\":\"$directory_marker_lower\",\"p_after_display_name\":null,\"p_after_id\":null,\"p_limit\":100}" \
+  "$smoke_tmp/directory-self-excluded.json"
+jq -e --arg self "$directory_id" --arg other "$collaborator_id" '
+  length == 1 and all(.[]; .id != $self) and .[0].id == $other
+' "$smoke_tmp/directory-self-excluded.json" >/dev/null
+rpc "$conductor_token" list_social_profiles \
+  '{"p_search":"   ","p_after_display_name":null,"p_after_id":null,"p_limit":100}' \
+  "$smoke_tmp/directory-blank-search.json"
+jq -e --arg self "$conductor_id" 'all(.[]; .id != $self)' "$smoke_tmp/directory-blank-search.json" >/dev/null
+
+rpc "$conductor_token" block_social_profile \
+  "{\"p_profile_id\":\"$directory_id\"}" \
+  "$smoke_tmp/directory-block.json"
+rpc "$conductor_token" list_my_blocked_profiles '{}' \
+  "$smoke_tmp/directory-owned-blocks.json"
+jq -e --arg blocked "$directory_id" --arg name "$directory_marker Alpha Directory" '
+  any(.[]; .id == $blocked and .display_name == $name)
+' "$smoke_tmp/directory-owned-blocks.json" >/dev/null
+rpc "$conductor_token" list_social_profiles \
+  "{\"p_search\":\"$directory_marker_lower\",\"p_after_display_name\":null,\"p_after_id\":null,\"p_limit\":100}" \
+  "$smoke_tmp/directory-blocked-search.json"
+jq -e --arg blocked "$directory_id" --arg visible "$collaborator_id" '
+  length == 1 and all(.[]; .id != $blocked) and .[0].id == $visible
+' "$smoke_tmp/directory-blocked-search.json" >/dev/null
+rpc "$conductor_token" unblock_social_profile \
+  "{\"p_profile_id\":\"$directory_id\"}" \
+  "$smoke_tmp/directory-unblock.json"
+rpc "$conductor_token" list_my_blocked_profiles '{}' \
+  "$smoke_tmp/directory-owned-blocks-after-unblock.json"
+jq -e --arg unblocked "$directory_id" 'all(.[]; .id != $unblocked)' "$smoke_tmp/directory-owned-blocks-after-unblock.json" >/dev/null
+rpc "$conductor_token" list_social_profiles \
+  "{\"p_search\":\"$directory_marker_lower\",\"p_after_display_name\":null,\"p_after_id\":null,\"p_limit\":100}" \
+  "$smoke_tmp/directory-unblocked-search.json"
+jq -e --arg restored "$directory_id" 'length == 2 and any(.[]; .id == $restored)' "$smoke_tmp/directory-unblocked-search.json" >/dev/null
+rpc "$directory_token" block_social_profile \
+  "{\"p_profile_id\":\"$conductor_id\"}" \
+  "$smoke_tmp/directory-reverse-block.json"
+rpc "$conductor_token" list_my_blocked_profiles '{}' \
+  "$smoke_tmp/directory-blocked-by-other-not-owned.json"
+jq -e --arg blocker "$directory_id" 'all(.[]; .id != $blocker)' "$smoke_tmp/directory-blocked-by-other-not-owned.json" >/dev/null
+rpc "$directory_token" list_my_blocked_profiles '{}' \
+  "$smoke_tmp/directory-reverse-owned-blocks.json"
+jq -e --arg blocked "$conductor_id" --arg name "Harmony Smoke Conductor" '
+  any(.[]; .id == $blocked and .display_name == $name)
+' "$smoke_tmp/directory-reverse-owned-blocks.json" >/dev/null
+rpc "$conductor_token" list_social_profiles \
+  "{\"p_search\":\"$directory_marker_lower\",\"p_after_display_name\":null,\"p_after_id\":null,\"p_limit\":100}" \
+  "$smoke_tmp/directory-reverse-blocked-search.json"
+jq -e --arg blocked "$directory_id" --arg visible "$collaborator_id" '
+  length == 1 and all(.[]; .id != $blocked) and .[0].id == $visible
+' "$smoke_tmp/directory-reverse-blocked-search.json" >/dev/null
+rpc "$directory_token" unblock_social_profile \
+  "{\"p_profile_id\":\"$conductor_id\"}" \
+  "$smoke_tmp/directory-reverse-unblock.json"
+rpc "$directory_token" list_my_blocked_profiles '{}' \
+  "$smoke_tmp/directory-reverse-owned-blocks-after-unblock.json"
+jq -e --arg unblocked "$conductor_id" 'all(.[]; .id != $unblocked)' "$smoke_tmp/directory-reverse-owned-blocks-after-unblock.json" >/dev/null
+
+partial_directory_cursor_status="$(rpc_status "$conductor_token" list_social_profiles \
+  "{\"p_search\":null,\"p_after_display_name\":\"$directory_cursor_name\",\"p_after_id\":null,\"p_limit\":50}" \
+  "$smoke_tmp/directory-partial-cursor.json")"
+[[ "$partial_directory_cursor_status" == "400" ]]
+blank_directory_cursor_status="$(rpc_status "$conductor_token" list_social_profiles \
+  "{\"p_search\":null,\"p_after_display_name\":\"   \",\"p_after_id\":\"$directory_cursor_id\",\"p_limit\":50}" \
+  "$smoke_tmp/directory-blank-cursor.json")"
+[[ "$blank_directory_cursor_status" == "400" ]]
+zero_directory_limit_status="$(rpc_status "$conductor_token" list_social_profiles \
+  '{"p_search":null,"p_after_display_name":null,"p_after_id":null,"p_limit":0}' \
+  "$smoke_tmp/directory-zero-limit.json")"
+[[ "$zero_directory_limit_status" == "400" ]]
+oversized_directory_limit_status="$(rpc_status "$conductor_token" list_social_profiles \
+  '{"p_search":null,"p_after_display_name":null,"p_after_id":null,"p_limit":101}' \
+  "$smoke_tmp/directory-oversized-limit.json")"
+[[ "$oversized_directory_limit_status" == "400" ]]
 
 stage="social follow enforcement"
 rpc "$conductor_token" request_social_follow \
@@ -995,6 +1106,148 @@ jq -e 'length == 1 and .[0].review_count == 2 and .[0].song_count == 1 and .[0].
 rpc "$conductor_token" get_my_music_review_stats '{}' "$smoke_tmp/empty-owner-review-stats.json"
 jq -e 'length == 1 and .[0].review_count == 0 and .[0].song_count == 0 and .[0].album_count == 0 and .[0].loved_count == 0 and .[0].average_rating == null' "$smoke_tmp/empty-owner-review-stats.json" >/dev/null
 
+stage="exhaustive owner rating distribution"
+rpc "$collaborator_token" get_my_rating_distribution \
+  '{"p_subject_kind":"all"}' \
+  "$smoke_tmp/all-rating-distribution.json"
+rpc "$collaborator_token" get_my_rating_distribution \
+  '{"p_subject_kind":"track"}' \
+  "$smoke_tmp/track-rating-distribution.json"
+rpc "$collaborator_token" get_my_rating_distribution \
+  '{"p_subject_kind":"album"}' \
+  "$smoke_tmp/album-owner-rating-distribution.json"
+jq -e '. as $rows |
+  length == 10
+  and map(.rating) == [0.5,1,1.5,2,2.5,3,3.5,4,4.5,5]
+  and all($rows[]; .scope == "all" and .total_ratings == $rows[0].total_ratings and .average_rating == $rows[0].average_rating)
+  and (map(.rating_count) | add) == $rows[0].total_ratings
+' "$smoke_tmp/all-rating-distribution.json" >/dev/null
+jq -e '. as $rows |
+  length == 10
+  and all($rows[]; .scope == "track" and .total_ratings == $rows[0].total_ratings)
+  and (map(.rating_count) | add) == $rows[0].total_ratings
+' "$smoke_tmp/track-rating-distribution.json" >/dev/null
+jq -e '. as $rows |
+  length == 10
+  and all($rows[]; .scope == "album" and .total_ratings == $rows[0].total_ratings)
+  and (map(.rating_count) | add) == $rows[0].total_ratings
+' "$smoke_tmp/album-owner-rating-distribution.json" >/dev/null
+jq -e --slurpfile tracks "$smoke_tmp/track-rating-distribution.json" \
+  --slurpfile albums "$smoke_tmp/album-owner-rating-distribution.json" '
+  .[0].total_ratings == ($tracks[0][0].total_ratings + $albums[0][0].total_ratings)
+' "$smoke_tmp/all-rating-distribution.json" >/dev/null
+# Compare every combined bucket with its two independently scoped buckets.
+jq -e -n --slurpfile all "$smoke_tmp/all-rating-distribution.json" \
+  --slurpfile tracks "$smoke_tmp/track-rating-distribution.json" \
+  --slurpfile albums "$smoke_tmp/album-owner-rating-distribution.json" '
+  [range(0; 10) as $index |
+    $all[0][$index].rating_count
+      == ($tracks[0][$index].rating_count + $albums[0][$index].rating_count)]
+  | all
+' >/dev/null
+rpc "$conductor_token" get_my_rating_distribution '{}' \
+  "$smoke_tmp/empty-owner-rating-distribution.json"
+jq -e '
+  length == 10
+  and all(.[]; .scope == "all" and .rating_count == 0 and .total_ratings == 0 and .average_rating == null)
+' "$smoke_tmp/empty-owner-rating-distribution.json" >/dev/null
+invalid_owner_rating_scope_status="$(rpc_status "$collaborator_token" get_my_rating_distribution \
+  '{"p_subject_kind":"playlist"}' \
+  "$smoke_tmp/invalid-owner-rating-scope.json")"
+[[ "$invalid_owner_rating_scope_status" == "400" ]]
+
+stage="following written reviews keyset, scope, and privacy"
+rpc "$conductor_token" list_following_reviews \
+  '{"p_subject_kind":"all","p_before_created_at":null,"p_before_id":null,"p_limit":1}' \
+  "$smoke_tmp/following-review-first-page.json"
+following_review_first_id="$(jq -er '.[0].id' "$smoke_tmp/following-review-first-page.json")"
+following_review_first_created_at="$(jq -er '.[0].created_at' "$smoke_tmp/following-review-first-page.json")"
+[[ "$following_review_first_id" == "$album_review_id" ]]
+rpc "$conductor_token" list_following_reviews \
+  "{\"p_subject_kind\":\"all\",\"p_before_created_at\":\"$following_review_first_created_at\",\"p_before_id\":\"$following_review_first_id\",\"p_limit\":1}" \
+  "$smoke_tmp/following-review-second-page.json"
+jq -e --arg first "$following_review_first_id" --arg review "$review_id" \
+  'length == 1 and .[0].id == $review and .[0].id != $first' \
+  "$smoke_tmp/following-review-second-page.json" >/dev/null
+# The subject predicate is applied before LIMIT: the older track remains the
+# first track page even though the newer album is the first combined page.
+rpc "$conductor_token" list_following_reviews \
+  '{"p_subject_kind":"TRACK","p_before_created_at":null,"p_before_id":null,"p_limit":1}' \
+  "$smoke_tmp/following-track-review-page.json"
+jq -e --arg review "$review_id" \
+  'length == 1 and .[0].id == $review and .[0].subject_kind == "track"' \
+  "$smoke_tmp/following-track-review-page.json" >/dev/null
+rest_get "$conductor_token" \
+  'rpc/list_following_reviews?p_subject_kind=album&p_limit=1&select=id,subject_kind,subject_title,profiles(display_name),canonical_albums(title,artist,artwork_url)' \
+  "$smoke_tmp/following-review-client-shape.json"
+jq -e --arg review "$album_review_id" '
+  length == 1 and .[0].id == $review and .[0].subject_kind == "album"
+  and .[0].profiles.display_name != null and .[0].canonical_albums.title == "Harmony Smoke Album"
+' "$smoke_tmp/following-review-client-shape.json" >/dev/null
+
+# A requested edge is not an accepted outgoing follow.
+rpc "$directory_token" request_social_follow \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/requested-review-follow.json"
+rpc "$directory_token" list_following_reviews \
+  '{"p_subject_kind":"all","p_before_created_at":null,"p_before_id":null,"p_limit":100}' \
+  "$smoke_tmp/requested-following-review-page.json"
+[[ "$(jq 'length' "$smoke_tmp/requested-following-review-page.json")" -eq 0 ]]
+
+# Rating-only rows remain legitimate owner data but are not blank social posts.
+rpc "$collaborator_token" create_music_review \
+  "{\"p_subject_kind\":\"track\",\"p_canonical_track_id\":\"$spotify_url_track_id\",\"p_rating\":3.0,\"p_body\":\"\",\"p_visibility\":\"followers\"}" \
+  "$smoke_tmp/rating-only-following-review.json"
+rating_only_following_review_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/rating-only-following-review.json")"
+rpc "$conductor_token" list_following_reviews \
+  '{"p_subject_kind":"track","p_before_created_at":null,"p_before_id":null,"p_limit":100}' \
+  "$smoke_tmp/following-review-rating-only-excluded.json"
+jq -e --arg rating_only "$rating_only_following_review_id" --arg written "$review_id" '
+  all(.[]; .id != $rating_only) and any(.[]; .id == $written)
+' "$smoke_tmp/following-review-rating-only-excluded.json" >/dev/null
+rpc "$collaborator_token" delete_music_review \
+  "{\"p_review_id\":\"$rating_only_following_review_id\"}" \
+  "$smoke_tmp/rating-only-following-review-delete.json"
+rpc "$collaborator_token" set_my_track_subject_state \
+  "{\"p_canonical_track_id\":\"$spotify_url_track_id\",\"p_has_listened\":false,\"p_default_rating\":null,\"p_is_loved\":true,\"p_want_to_listen\":true}" \
+  "$smoke_tmp/rating-only-following-state-restore.json"
+
+# Current visibility is authoritative; a private review never leaks through
+# the accepted follow edge or the subject-specific page.
+rpc "$collaborator_token" create_music_review \
+  "{\"p_subject_kind\":\"track\",\"p_canonical_track_id\":\"$spotify_url_track_id\",\"p_rating\":3.0,\"p_body\":\"A private written review.\",\"p_visibility\":\"private\"}" \
+  "$smoke_tmp/private-following-review.json"
+private_following_review_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/private-following-review.json")"
+rpc "$conductor_token" list_following_reviews \
+  '{"p_subject_kind":"track","p_before_created_at":null,"p_before_id":null,"p_limit":100}' \
+  "$smoke_tmp/private-following-review-page.json"
+jq -e --arg private_review "$private_following_review_id" --arg written "$review_id" '
+  all(.[]; .id != $private_review) and any(.[]; .id == $written)
+' "$smoke_tmp/private-following-review-page.json" >/dev/null
+rpc "$collaborator_token" delete_music_review \
+  "{\"p_review_id\":\"$private_following_review_id\"}" \
+  "$smoke_tmp/private-following-review-delete.json"
+rpc "$collaborator_token" set_my_track_subject_state \
+  "{\"p_canonical_track_id\":\"$spotify_url_track_id\",\"p_has_listened\":false,\"p_default_rating\":null,\"p_is_loved\":true,\"p_want_to_listen\":true}" \
+  "$smoke_tmp/private-following-state-restore.json"
+
+partial_following_review_cursor_status="$(rpc_status "$conductor_token" list_following_reviews \
+  "{\"p_subject_kind\":\"all\",\"p_before_created_at\":\"$following_review_first_created_at\",\"p_before_id\":null,\"p_limit\":50}" \
+  "$smoke_tmp/partial-following-review-cursor.json")"
+[[ "$partial_following_review_cursor_status" == "400" ]]
+invalid_following_review_scope_status="$(rpc_status "$conductor_token" list_following_reviews \
+  '{"p_subject_kind":"playlist","p_before_created_at":null,"p_before_id":null,"p_limit":50}' \
+  "$smoke_tmp/invalid-following-review-scope.json")"
+[[ "$invalid_following_review_scope_status" == "400" ]]
+zero_following_review_limit_status="$(rpc_status "$conductor_token" list_following_reviews \
+  '{"p_subject_kind":"all","p_before_created_at":null,"p_before_id":null,"p_limit":0}' \
+  "$smoke_tmp/zero-following-review-limit.json")"
+[[ "$zero_following_review_limit_status" == "400" ]]
+oversized_following_review_limit_status="$(rpc_status "$conductor_token" list_following_reviews \
+  '{"p_subject_kind":"all","p_before_created_at":null,"p_before_id":null,"p_limit":101}' \
+  "$smoke_tmp/oversized-following-review-limit.json")"
+[[ "$oversized_following_review_limit_status" == "400" ]]
+
 rest_get "$collaborator_token" \
   "music_reviews?select=updated_at,heart_count,comment_count&id=eq.$review_id" \
   "$smoke_tmp/review-engagement-counters-before.json"
@@ -1600,6 +1853,10 @@ rest_get "$conductor_token" \
   "music_reviews?select=id&id=eq.$album_review_id" \
   "$smoke_tmp/blocked-album-review.json"
 [[ "$(jq 'length' "$smoke_tmp/blocked-album-review.json")" -eq 0 ]]
+rpc "$conductor_token" list_following_reviews \
+  '{"p_subject_kind":"all","p_before_created_at":null,"p_before_id":null,"p_limit":100}' \
+  "$smoke_tmp/blocked-following-review-page.json"
+[[ "$(jq 'length' "$smoke_tmp/blocked-following-review-page.json")" -eq 0 ]]
 rest_get "$conductor_token" \
   "music_lists?select=id&id=eq.$music_list_id" \
   "$smoke_tmp/blocked-music-list.json"
@@ -2116,6 +2373,8 @@ rpc "$conductor_token" get_listening_broadcast_snapshot \
   "{\"p_broadcast_id\":\"$listening_broadcast_id\",\"p_viewer_provider\":\"spotify\",\"p_storefront\":\"global\"}" \
   "$smoke_tmp/deleted-account-eavesdrop-snapshot.json"
 [[ "$(jq 'length' "$smoke_tmp/deleted-account-eavesdrop-snapshot.json")" -eq 0 ]]
+cleanup_account "$directory_token"
+directory_token=""
 cleanup_account "$conductor_token"
 conductor_token=""
 

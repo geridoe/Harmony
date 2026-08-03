@@ -66,6 +66,27 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Music shelf"].exists || app.buttons["Music shelf"].exists)
     }
 
+    func testConnectionsSearchesPeopleAndKeepsIncomingRequestAction() throws {
+        let app = XCUIApplication()
+        app.launchArguments.append("--ui-test-social-activity")
+        app.launch()
+
+        app.tabBars.buttons["Connections"].tap()
+        XCTAssertTrue(app.navigationBars["Connections"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Follow requests"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Pending Listener"].exists)
+        XCTAssertTrue(app.buttons["Respond"].exists)
+
+        let search = app.textFields["connections-people-search"]
+        for _ in 0..<4 where !search.exists { app.swipeUp() }
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.tap()
+        search.typeText("Searchable")
+
+        XCTAssertTrue(app.staticTexts["Searchable Listener"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Follow"].exists)
+    }
+
     func testListenTabLoadsSocialSections() throws {
         let app = XCUIApplication()
         app.launch()
@@ -76,7 +97,6 @@ class HarmonyUITests: XCTestCase {
 
         XCTAssertTrue(app.navigationBars["Listen"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Notifications"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["People"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Eavesdrop"].waitForExistence(timeout: 5))
         let listeningHistory = app.staticTexts["Listening history"]
         for _ in 0..<4 where !listeningHistory.exists { app.swipeUp() }

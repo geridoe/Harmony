@@ -523,6 +523,14 @@ struct EavesdropBroadcastDetailState {
     var errorMessage: String?
 }
 
+func mergedSocialProfileDiscovery(
+    existing: [RemoteSocialProfile],
+    incoming: [RemoteSocialProfile]
+) -> [RemoteSocialProfile] {
+    var seen = Set(existing.map(\.id))
+    return existing + incoming.filter { seen.insert($0.id).inserted }
+}
+
 struct TrackReviewDiaryRequest: Equatable {
     let listenedAt: Date
     let isRelisten: Bool
@@ -680,6 +688,12 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var commentingMusicListIDs: Set<UUID> = []
     @Published private(set) var deletingMusicListCommentIDs: Set<UUID> = []
     @Published private(set) var socialProfiles: [RemoteSocialProfile] = []
+    @Published private(set) var blockedSocialProfiles: [RemoteSocialProfile] = []
+    @Published private(set) var discoveredSocialProfiles: [RemoteSocialProfile] = []
+    @Published private(set) var socialDiscoveryQuery = ""
+    @Published private(set) var isRefreshingSocialDiscovery = false
+    @Published private(set) var isLoadingMoreSocialDiscovery = false
+    @Published private(set) var hasMoreSocialDiscovery = false
     @Published private(set) var socialNotifications: [RemoteSocialNotification] = []
     @Published private(set) var unreadSocialNotificationCount = 0
     @Published private(set) var isRefreshingSocialNotifications = false
@@ -712,12 +726,16 @@ final class HarmonySessionStore: ObservableObject {
     private let albumSubjectShelfPageSize = 50
     private let socialShelfPageSize = 50
     private let socialNotificationPageSize = 50
+    private let socialDiscoveryPageSize = 50
     private let musicListPageSize = 50
     private let musicListEntryPageSize = 100
     private var followingActivityCursor: RemoteFollowingActivityCursor?
     private var socialNotificationCursor: RemoteSocialNotificationCursor?
+    private var socialDiscoveryCursor: RemoteSocialProfileCursor?
+    private var socialDiscoveryRequestID: UUID?
 #if DEBUG
     private var isDiaryEditorUITestFixtureActive = false
+    private var socialDiscoveryFixtureProfiles: [RemoteSocialProfile] = []
 #endif
     @Published private(set) var currentMember: SessionMember
     @Published private(set) var members: [SessionMember]
@@ -3088,6 +3106,23 @@ final class HarmonySessionStore: ObservableObject {
             canonicalTrack: track
         )]
         publicProfileShelves[entry.profileID] = shelves
+        let requestProfileID = UUID(uuidString: "81000000-0000-0000-0000-000000000008")!
+        let discoveryProfileID = UUID(uuidString: "82000000-0000-0000-0000-000000000008")!
+        socialProfiles = [
+            RemoteSocialProfile(id: requestProfileID, displayName: "Pending Listener")
+        ]
+        socialFollows = [
+            RemoteSocialFollow(
+                followerID: requestProfileID,
+                followedID: entry.profileID,
+                state: "requested"
+            )
+        ]
+        let discoveryProfiles = [
+            RemoteSocialProfile(id: discoveryProfileID, displayName: "Searchable Listener")
+        ]
+        socialDiscoveryFixtureProfiles = discoveryProfiles
+        discoveredSocialProfiles = discoveryProfiles
         let endedBroadcastID = UUID(uuidString: "72000000-0000-0000-0000-000000000007")!
         let endedBroadcast = EavesdropBroadcast(
             id: endedBroadcastID,
@@ -3198,21 +3233,101 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     func refreshSocialProfiles() async {
+#if DEBUG
+        if isDiaryEditorUITestFixtureActive { return }
+#endif
         guard !isRefreshingSocialProfiles else { return }
         isRefreshingSocialProfiles = true
         defer { isRefreshingSocialProfiles = false }
         do {
-            async let profiles = collaborationRepository.socialProfiles()
             async let follows = collaborationRepository.socialFollows()
-            async let blocks = collaborationRepository.socialBlocks()
+            async let blockedProfiles = collaborationRepository.myBlockedSocialProfiles()
             async let userID = collaborationRepository.currentUserID()
-            let result = try await (profiles, follows, blocks, userID)
-            socialProfiles = result.0
-            socialFollows = result.1
-            blockedSocialProfileIDs = Set(result.2.map(\.blockedID))
-            authenticatedProfileID = result.3
+            let relationshipResult = try await (follows, blockedProfiles, userID)
+            let fetchedFollows = relationshipResult.0
+            let fetchedBlockedProfiles = relationshipResult.1
+            let currentUserID = relationshipResult.2
+            let relatedIDs = Set(fetchedFollows.flatMap { [$0.followerID, $0.followedID] })
+                .subtracting([currentUserID])
+            let profiles = try await collaborationRepository.socialProfiles(ids: Array(relatedIDs))
+
+            socialProfiles = profiles
+            socialFollows = fetchedFollows
+            blockedSocialProfiles = fetchedBlockedProfiles
+            blockedSocialProfileIDs = Set(fetchedBlockedProfiles.map(\.id))
+            authenticatedProfileID = currentUserID
         } catch {
             collaborationMessage = "Could not refresh people: \(error.localizedDescription)"
+        }
+    }
+
+    func refreshSocialDiscovery(search: String) async {
+        let normalized = search.trimmingCharacters(in: .whitespacesAndNewlines)
+#if DEBUG
+        if isDiaryEditorUITestFixtureActive {
+            socialDiscoveryQuery = normalized
+            discoveredSocialProfiles = normalized.isEmpty
+                ? socialDiscoveryFixtureProfiles
+                : socialDiscoveryFixtureProfiles.filter {
+                    $0.displayName.localizedCaseInsensitiveContains(normalized)
+                }
+            hasMoreSocialDiscovery = false
+            return
+        }
+#endif
+        let requestID = UUID()
+        socialDiscoveryRequestID = requestID
+        socialDiscoveryQuery = normalized
+        isRefreshingSocialDiscovery = true
+        defer {
+            if socialDiscoveryRequestID == requestID {
+                isRefreshingSocialDiscovery = false
+            }
+        }
+
+        do {
+            let page = try await collaborationRepository.discoverSocialProfiles(
+                search: normalized.isEmpty ? nil : normalized,
+                limit: socialDiscoveryPageSize + 1
+            )
+            guard socialDiscoveryRequestID == requestID else { return }
+            let window = Array(page.prefix(socialDiscoveryPageSize))
+            discoveredSocialProfiles = window
+            socialDiscoveryCursor = window.last.map {
+                RemoteSocialProfileCursor(displayName: $0.displayName, id: $0.id)
+            }
+            hasMoreSocialDiscovery = page.count > socialDiscoveryPageSize
+        } catch {
+            guard socialDiscoveryRequestID == requestID else { return }
+            collaborationMessage = "Could not search for people."
+        }
+    }
+
+    func loadMoreSocialDiscovery() async {
+        guard hasMoreSocialDiscovery,
+              !isRefreshingSocialDiscovery,
+              !isLoadingMoreSocialDiscovery,
+              let cursor = socialDiscoveryCursor else { return }
+        isLoadingMoreSocialDiscovery = true
+        defer { isLoadingMoreSocialDiscovery = false }
+
+        do {
+            let page = try await collaborationRepository.discoverSocialProfiles(
+                search: socialDiscoveryQuery.isEmpty ? nil : socialDiscoveryQuery,
+                after: cursor,
+                limit: socialDiscoveryPageSize + 1
+            )
+            let window = Array(page.prefix(socialDiscoveryPageSize))
+            discoveredSocialProfiles = mergedSocialProfileDiscovery(
+                existing: discoveredSocialProfiles,
+                incoming: window
+            )
+            socialDiscoveryCursor = window.last.map {
+                RemoteSocialProfileCursor(displayName: $0.displayName, id: $0.id)
+            } ?? socialDiscoveryCursor
+            hasMoreSocialDiscovery = page.count > socialDiscoveryPageSize
+        } catch {
+            collaborationMessage = "Could not load more people."
         }
     }
 
@@ -3415,6 +3530,20 @@ final class HarmonySessionStore: ObservableObject {
         return .none
     }
 
+    func outgoingSocialFollowState(with profileID: UUID) -> String? {
+        guard let authenticatedProfileID else { return nil }
+        return socialFollows.first {
+            $0.followerID == authenticatedProfileID && $0.followedID == profileID
+        }?.state
+    }
+
+    func incomingSocialFollowState(with profileID: UUID) -> String? {
+        guard let authenticatedProfileID else { return nil }
+        return socialFollows.first {
+            $0.followerID == profileID && $0.followedID == authenticatedProfileID
+        }?.state
+    }
+
     func requestSocialFollow(_ profileID: UUID) async {
         await performSocialAction(profileID, successMessage: "Follow request sent") {
             try await self.collaborationRepository.requestSocialFollow(profileID)
@@ -3463,6 +3592,7 @@ final class HarmonySessionStore: ObservableObject {
             try await operation()
             collaborationMessage = successMessage
             await refreshSocialProfiles()
+            await refreshSocialDiscovery(search: socialDiscoveryQuery)
         } catch {
             collaborationMessage = "Follower action failed: \(error.localizedDescription)"
         }

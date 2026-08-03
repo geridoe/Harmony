@@ -1,7 +1,7 @@
 # Reviews and listening journal design
 
 **Decision date:** 2 August 2026  
-**Status:** first-class Reviews, canonical album pages, and album rating state deployed
+**Status:** first-class Reviews, canonical album pages, and album rating state deployed; follower-review home planned
 
 ## Why this is a separate product surface
 
@@ -60,7 +60,9 @@ The product pattern Harmony transfers is therefore:
 | Review pages filter and sort authored opinions | Loaded owner reviews can be searched and scoped by Songs, Albums, or Loved, then sorted by date or rating |
 
 The current public Letterboxd product also confirms several navigation and
-interaction details that guide the next slices:
+interaction details that guide the next slices. The official iOS App Store
+listing was checked on 3 August 2026 (version 4.12.3) in addition to the web
+product and first-party help pages:
 
 - Diary, Reviews, Ratings, Lists, Likes, Activity, and profile overview are
   distinct destinations, even though they refer to the same canonical film.
@@ -99,9 +101,10 @@ are product-design inferences, not claims about Letterboxd internals.
 The information hierarchy matters as much as the fields. Harmony's Reviews
 experience remains the fifth root tab, with its own composer, owner library,
 Ratings shelf, and review-detail navigation. It must not regress into a small
-Diary section inside Listen. Listen owns the distinct listening jobs: people,
-notifications, eavesdropping, Diary, following Activity, Music shelf, and
-Lists. Reviews is where authored music opinions and their conversation live.
+Diary section inside Listen. The next navigation slice adds follower-review
+activity as a peer shelf in that root. Listen continues to own ephemeral live
+listening and dated listening history; Reviews owns authored music opinions,
+their discovery, and their conversation.
 
 ### Staged adaptation roadmap
 
@@ -136,9 +139,11 @@ Only the first stage should be described as implemented:
 8. **Current:** a track review can optionally create a separately visible,
    linked Diary entry in the same transaction. The Diary may copy the review
    rating, use a different historical rating, or remain unrated.
-9. **Next:** year/month Diary grouping, a richer member profile overview, and
+9. **Next:** make follower review activity the opening shelf of the dedicated
+   Reviews root, beside My Reviews and Ratings, backed by a bounded keyset RPC.
+10. **Next:** year/month Diary grouping, a richer member profile overview, and
    server-side filtered search if exhaustive results are required.
-10. **After moderation and ranking policy:** popular/community discovery,
+11. **After moderation and ranking policy:** popular/community discovery,
    shareable lists/collections, and listening statistics/year summaries.
 
 This order emulates Letterboxd's durable separation of diary, opinion,
@@ -179,6 +184,55 @@ Loved remains independent of the score. Unrated reviews stay in Reviews but do
 not appear as a score in Ratings or rating distributions. Diary, Activity, Music shelf, and
 Lists are separate full-page destinations under Listen rather than sections in
 the Reviews page.
+
+### Next dedicated-page information architecture
+
+The Reviews root will have three peer destinations rather than embedding the
+feature in the listening-history screen:
+
+1. **Following** is the default social review stream. Each card shows the
+   reviewer, canonical song/album identity, authored rating, Loved state,
+   review excerpt or spoiler gate, relative publication time, and reaction /
+   comment affordances. It contains review publications only; Diary and list
+   events remain in the broader following Activity destination.
+2. **My Reviews** is the author's paginated library, with search, Songs /
+   Albums / Loved scopes, sorting, editing, deletion, and exact review-detail
+   navigation.
+3. **Ratings** is the private current-opinion library for songs and albums,
+   including the half-star distribution. A rating does not require prose and
+   does not become a social review by itself.
+
+That last boundary corrects a current prototype behavior: the existing review
+composer can persist a rating-only `music_reviews` row. The production flow
+must instead write rating-only input to the track/album subject state and show
+it only in Ratings. **My Reviews** and **Following** require nonblank authored
+text, so every row there is a real, commentable review rather than an empty
+social post.
+
+The compose action remains available from every destination. Selecting music
+comes first, then the author may independently add a half-star rating, Loved
+state, prose, spoiler metadata, and audience. For tracks, **Also add to Diary**
+may create a dated historical listen in the same transaction, but the result
+is still two domain records with independent ratings and audiences.
+
+This copies Letterboxd's interaction grammar without copying its visual brand.
+Harmony uses square music artwork, provider-neutral song/album identity, its
+own typography and colors, and music-specific language such as Listened and
+Relisten. Community-wide popular reviews remain deferred until public audience,
+reporting/moderation, rate limits, and an explainable ranking policy exist.
+
+For the first production model, Harmony should expose one active authored
+review per member and canonical song/album. The author edits that opinion in
+place while Diary listens remain repeatable. This prevents ordinary song
+replays from encouraging dozens of indistinguishable reviews. Explicit review
+editions or revision history can be added later without coupling them to every
+listen. Existing duplicate prototype rows must be audited before a uniqueness
+constraint is introduced; no destructive cleanup is implied by this decision.
+
+Letterboxd's current composer also exposes Draft and more granular audience
+choices. Harmony will not overload Only me as a draft. A later draft slice must
+add an explicit lifecycle (`draft` / `published`), keep drafts owner-only and
+out of activity/statistics, and set a stable first-publication timestamp.
 
 For a track review, **Also add to Diary** expands the same composer with date,
 Relisten, tags, Diary rating, and a separate Diary audience. This is one user
