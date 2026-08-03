@@ -595,6 +595,14 @@ mutations and Realtime child events refresh the first page and engagement state;
 notification navigation still targets the exact durable review UUID. Spoiler
 reveal is per-page `@State` and defaults to concealed on every new navigation.
 
+The maintained heart/comment counters are global review aggregates rather than
+viewer-relative totals. Blocking removes that profile's child comments and
+reactions from the reader's RLS-filtered pages, but does not rewrite the shared
+parent counters. The visible thread can therefore contain fewer rows than its
+aggregate metadata without exposing the blocked author's identity or text.
+Required nested author profiles remain nonoptional in Swift because blocked
+child rows are eliminated before PostgREST performs the profile embed.
+
 Review mutation helpers return `Bool`. Create/edit forms and the comment
 composer clear or dismiss only after success, preserving authored text when a
 network, validation, or RLS error occurs. Deletion navigates back only after

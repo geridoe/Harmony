@@ -250,6 +250,16 @@ the parent review, the first 50 newest comments through
 detail pages and totals as well as refreshing the review shelves, including
 reviews opened from durable notification IDs.
 
+Review counters are deliberately global, exhaustive aggregates on the review,
+not viewer-relative counts. Child-row RLS omits comments and reactions authored
+across a block before their required profile relationship is decoded, while
+the parent `heart_count` / `comment_count` remains unchanged. A reader may
+therefore see fewer accessible comments than the aggregate count; the count
+does not disclose the blocked authors' identities or content. Live-listening
+child rows follow the same block filter. The debounced social Realtime refresh
+reloads already-open review and Eavesdrop detail caches so newly hidden child
+content is removed without requiring the screen to be reopened.
+
 Spoiler handling is deliberately local presentation state. A typed
 `containsSpoilers` field flows from `music_reviews.contains_spoilers` into
 `RemoteMusicReview`, the create/update repository parameter structs, and the

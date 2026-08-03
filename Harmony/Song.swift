@@ -1426,9 +1426,31 @@ final class HarmonySessionStore: ObservableObject {
             async let journal: Void = self.refreshJournalEntries()
             async let reviews: Void = self.refreshMusicReviews()
             async let reviewDetails: Void = self.refreshCachedReviewDetails()
+            async let eavesdropDetails: Void = self.refreshCachedEavesdropDetails()
             async let notifications: Void = self.refreshSocialNotifications()
             async let followingActivity: Void = self.refreshFollowingActivity()
-            _ = await (profiles, feed, history, journal, reviews, reviewDetails, notifications, followingActivity)
+            _ = await (
+                profiles,
+                feed,
+                history,
+                journal,
+                reviews,
+                reviewDetails,
+                eavesdropDetails,
+                notifications,
+                followingActivity
+            )
+        }
+    }
+
+    /// Realtime observes live-listening child rows and profile blocks. Refresh
+    /// already-open details through their RLS-filtered queries so remote
+    /// comments/reactions appear and newly blocked child authors disappear
+    /// without requiring the listener to leave and reopen the screen.
+    private func refreshCachedEavesdropDetails() async {
+        let broadcasts = eavesdropDetails.values.compactMap(\.broadcast)
+        for broadcast in broadcasts {
+            await refreshEavesdropDetail(broadcast)
         }
     }
 

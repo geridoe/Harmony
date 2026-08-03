@@ -1454,6 +1454,14 @@ rest_get "$collaborator_token" \
 [[ "$(jq 'length' "$smoke_tmp/atomic-rollback-state.json")" -eq 0 ]]
 
 stage="social block enforcement"
+rpc "$conductor_token" add_review_comment \
+  "{\"p_review_id\":\"$review_id\",\"p_body\":\"Block privacy fixture.\"}" \
+  "$smoke_tmp/block-privacy-review-comment.json"
+blocked_author_comment_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/block-privacy-review-comment.json")"
+rpc "$conductor_token" toggle_review_reaction \
+  "{\"p_review_id\":\"$review_id\",\"p_kind\":\"heart\"}" \
+  "$smoke_tmp/block-privacy-review-reaction.json"
+[[ "$(jq -er '.' "$smoke_tmp/block-privacy-review-reaction.json")" == "true" ]]
 rpc "$collaborator_token" block_social_profile \
   "{\"p_profile_id\":\"$conductor_id\"}" \
   "$smoke_tmp/block.json"
@@ -1505,6 +1513,48 @@ rpc "$conductor_token" list_profile_loved_tracks \
   "{\"p_profile_id\":\"$collaborator_id\",\"p_before_updated_at\":null,\"p_before_canonical_track_id\":null,\"p_limit\":50}" \
   "$smoke_tmp/blocked-profile-loved.json"
 [[ "$(jq 'length' "$smoke_tmp/blocked-profile-loved.json")" -eq 0 ]]
+
+stage="blocked child social content and exhaustive engagement"
+rest_get "$collaborator_token" \
+  "review_comments?select=id,author_id&review_id=eq.$review_id&order=created_at.asc" \
+  "$smoke_tmp/owner-blocked-review-comments.json"
+jq -e --arg owner "$collaborator_id" --arg comment "$owner_comment_id" 'length == 1 and .[0].id == $comment and .[0].author_id == $owner' "$smoke_tmp/owner-blocked-review-comments.json" >/dev/null
+rest_get "$collaborator_token" \
+  "review_reactions?select=profile_id,kind&review_id=eq.$review_id" \
+  "$smoke_tmp/owner-blocked-review-reactions.json"
+[[ "$(jq 'length' "$smoke_tmp/owner-blocked-review-reactions.json")" -eq 0 ]]
+rpc "$collaborator_token" list_review_comments \
+  "{\"p_review_id\":\"$review_id\",\"p_before_created_at\":null,\"p_before_id\":null,\"p_limit\":50}" \
+  "$smoke_tmp/owner-blocked-review-comment-page.json"
+jq -e --arg comment "$owner_comment_id" 'length == 1 and .[0].id == $comment' "$smoke_tmp/owner-blocked-review-comment-page.json" >/dev/null
+rpc "$collaborator_token" get_review_engagement \
+  "{\"p_review_id\":\"$review_id\"}" \
+  "$smoke_tmp/owner-blocked-review-engagement.json"
+jq -e '.heart_count == 1 and .comment_count == 2 and .viewer_has_hearted == false' "$smoke_tmp/owner-blocked-review-engagement.json" >/dev/null
+rest_get "$collaborator_token" \
+  "listening_broadcast_comments?select=id,author_id&broadcast_id=eq.$listening_broadcast_id" \
+  "$smoke_tmp/owner-blocked-broadcast-comments.json"
+[[ "$(jq 'length' "$smoke_tmp/owner-blocked-broadcast-comments.json")" -eq 0 ]]
+rest_get "$collaborator_token" \
+  "listening_broadcast_reactions?select=profile_id,kind&broadcast_id=eq.$listening_broadcast_id" \
+  "$smoke_tmp/owner-blocked-broadcast-reactions.json"
+[[ "$(jq 'length' "$smoke_tmp/owner-blocked-broadcast-reactions.json")" -eq 0 ]]
+blocked_review_comment_status="$(rpc_status "$conductor_token" add_review_comment \
+  "{\"p_review_id\":\"$review_id\",\"p_body\":\"Blocked comment must fail.\"}" \
+  "$smoke_tmp/blocked-review-comment-write.json")"
+[[ "$blocked_review_comment_status" == "400" || "$blocked_review_comment_status" == "403" || "$blocked_review_comment_status" == "404" ]]
+blocked_review_reaction_status="$(rpc_status "$conductor_token" toggle_review_reaction \
+  "{\"p_review_id\":\"$review_id\",\"p_kind\":\"fire\"}" \
+  "$smoke_tmp/blocked-review-reaction-write.json")"
+[[ "$blocked_review_reaction_status" == "400" || "$blocked_review_reaction_status" == "403" || "$blocked_review_reaction_status" == "404" ]]
+blocked_broadcast_comment_status="$(rpc_status "$conductor_token" add_listening_broadcast_comment \
+  "{\"p_broadcast_id\":\"$listening_broadcast_id\",\"p_body\":\"Blocked broadcast comment must fail.\"}" \
+  "$smoke_tmp/blocked-broadcast-comment-write.json")"
+[[ "$blocked_broadcast_comment_status" == "400" || "$blocked_broadcast_comment_status" == "403" || "$blocked_broadcast_comment_status" == "404" ]]
+blocked_broadcast_reaction_status="$(rpc_status "$conductor_token" toggle_listening_broadcast_reaction \
+  "{\"p_broadcast_id\":\"$listening_broadcast_id\",\"p_kind\":\"fire\"}" \
+  "$smoke_tmp/blocked-broadcast-reaction-write.json")"
+[[ "$blocked_broadcast_reaction_status" == "400" || "$blocked_broadcast_reaction_status" == "403" || "$blocked_broadcast_reaction_status" == "404" ]]
 rest_get "$collaborator_token" \
   "social_notifications?select=id&actor_id=eq.$conductor_id" \
   "$smoke_tmp/blocked-notifications.json"
@@ -1517,6 +1567,64 @@ rpc "$collaborator_token" unblock_social_profile \
   "{\"p_profile_id\":\"$conductor_id\"}" \
   "$smoke_tmp/unblock.json"
 [[ "$(jq -er '.' "$smoke_tmp/unblock.json")" == "true" ]]
+
+stage="child social content unblock and reverse-direction block"
+rest_get "$collaborator_token" \
+  "review_comments?select=id,author_id&review_id=eq.$review_id" \
+  "$smoke_tmp/unblocked-review-comments.json"
+jq -e --arg actor "$conductor_id" --arg owner "$collaborator_id" --arg blocked_comment "$blocked_author_comment_id" 'length == 2 and any(.[]; .id == $blocked_comment and .author_id == $actor) and any(.[]; .author_id == $owner)' "$smoke_tmp/unblocked-review-comments.json" >/dev/null
+rest_get "$collaborator_token" \
+  "review_reactions?select=profile_id,kind&review_id=eq.$review_id" \
+  "$smoke_tmp/unblocked-review-reactions.json"
+jq -e --arg actor "$conductor_id" 'length == 1 and .[0].profile_id == $actor and .[0].kind == "heart"' "$smoke_tmp/unblocked-review-reactions.json" >/dev/null
+rest_get "$collaborator_token" \
+  "listening_broadcast_comments?select=id,author_id&broadcast_id=eq.$listening_broadcast_id" \
+  "$smoke_tmp/unblocked-broadcast-comments.json"
+jq -e --arg actor "$conductor_id" 'length == 1 and .[0].author_id == $actor' "$smoke_tmp/unblocked-broadcast-comments.json" >/dev/null
+rest_get "$collaborator_token" \
+  "listening_broadcast_reactions?select=profile_id,kind&broadcast_id=eq.$listening_broadcast_id" \
+  "$smoke_tmp/unblocked-broadcast-reactions.json"
+jq -e --arg actor "$conductor_id" 'length == 1 and .[0].profile_id == $actor and .[0].kind == "headphones"' "$smoke_tmp/unblocked-broadcast-reactions.json" >/dev/null
+rest_get "$collaborator_token" \
+  "social_notifications?select=id,kind&actor_id=eq.$conductor_id&review_id=eq.$review_id" \
+  "$smoke_tmp/unblocked-child-notifications.json"
+[[ "$(jq 'length' "$smoke_tmp/unblocked-child-notifications.json")" -ge 2 ]]
+
+rpc "$conductor_token" block_social_profile \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/reverse-block.json"
+rest_get "$collaborator_token" \
+  "review_comments?select=id,author_id&review_id=eq.$review_id" \
+  "$smoke_tmp/reverse-blocked-review-comments.json"
+jq -e --arg owner "$collaborator_id" 'length == 1 and .[0].author_id == $owner' "$smoke_tmp/reverse-blocked-review-comments.json" >/dev/null
+rest_get "$collaborator_token" \
+  "review_reactions?select=profile_id&review_id=eq.$review_id" \
+  "$smoke_tmp/reverse-blocked-review-reactions.json"
+[[ "$(jq 'length' "$smoke_tmp/reverse-blocked-review-reactions.json")" -eq 0 ]]
+rpc "$collaborator_token" list_review_comments \
+  "{\"p_review_id\":\"$review_id\",\"p_before_created_at\":null,\"p_before_id\":null,\"p_limit\":50}" \
+  "$smoke_tmp/reverse-blocked-review-comment-page.json"
+jq -e --arg comment "$owner_comment_id" 'length == 1 and .[0].id == $comment' "$smoke_tmp/reverse-blocked-review-comment-page.json" >/dev/null
+rpc "$collaborator_token" get_review_engagement \
+  "{\"p_review_id\":\"$review_id\"}" \
+  "$smoke_tmp/reverse-blocked-review-engagement.json"
+jq -e '.heart_count == 1 and .comment_count == 2 and .viewer_has_hearted == false' "$smoke_tmp/reverse-blocked-review-engagement.json" >/dev/null
+rest_get "$collaborator_token" \
+  "listening_broadcast_comments?select=id&broadcast_id=eq.$listening_broadcast_id" \
+  "$smoke_tmp/reverse-blocked-broadcast-comments.json"
+[[ "$(jq 'length' "$smoke_tmp/reverse-blocked-broadcast-comments.json")" -eq 0 ]]
+rest_get "$collaborator_token" \
+  "listening_broadcast_reactions?select=profile_id&broadcast_id=eq.$listening_broadcast_id" \
+  "$smoke_tmp/reverse-blocked-broadcast-reactions.json"
+[[ "$(jq 'length' "$smoke_tmp/reverse-blocked-broadcast-reactions.json")" -eq 0 ]]
+rest_get "$collaborator_token" \
+  "social_notifications?select=id&actor_id=eq.$conductor_id" \
+  "$smoke_tmp/reverse-blocked-child-notifications.json"
+[[ "$(jq 'length' "$smoke_tmp/reverse-blocked-child-notifications.json")" -eq 0 ]]
+rpc "$conductor_token" unblock_social_profile \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/reverse-unblock.json"
+[[ "$(jq -er '.' "$smoke_tmp/reverse-unblock.json")" == "true" ]]
 
 stage="public profile records without a follow edge"
 rpc "$collaborator_token" update_listening_diary_entry_with_rating \

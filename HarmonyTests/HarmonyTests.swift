@@ -532,6 +532,31 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(comment.createdAt, ISO8601DateFormatter().date(from: "2026-08-03T12:00:00Z"))
     }
 
+    func testEavesdropCommentDecodesVisibleAuthorRelationship() throws {
+        let commentID = UUID()
+        let broadcastID = UUID()
+        let authorID = UUID()
+        let json = """
+        {
+          "id": "\(commentID.uuidString)",
+          "broadcast_id": "\(broadcastID.uuidString)",
+          "author_id": "\(authorID.uuidString)",
+          "body": "This bridge is perfect.",
+          "created_at": "2026-08-03T12:00:00Z",
+          "author": {"display_name": "Visible listener"}
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let comment = try decoder.decode(RemoteEavesdropComment.self, from: Data(json.utf8))
+
+        XCTAssertEqual(comment.id, commentID)
+        XCTAssertEqual(comment.broadcastID, broadcastID)
+        XCTAssertEqual(comment.authorID, authorID)
+        XCTAssertEqual(comment.author.displayName, "Visible listener")
+    }
+
     func testReviewNotificationDecodesDurableReviewIdentity() throws {
         let reviewID = UUID(uuidString: "30000000-0000-0000-0000-000000000003")!
         let json = """
