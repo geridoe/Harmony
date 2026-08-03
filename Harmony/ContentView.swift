@@ -467,6 +467,75 @@ struct JournalBrowseFilter: Equatable {
     var sort = JournalBrowseSort.newest
 }
 
+enum ReviewBrowseScope: String, CaseIterable, Identifiable {
+    case all = "All"
+    case songs = "Songs"
+    case albums = "Albums"
+    case loved = "Loved"
+
+    var id: String { rawValue }
+}
+
+enum ReviewBrowseSort: String, CaseIterable, Identifiable {
+    case newest = "Newest"
+    case highestRated = "Highest rated"
+    case lowestRated = "Lowest rated"
+
+    var id: String { rawValue }
+}
+
+struct ReviewBrowseFilter: Equatable {
+    var query = ""
+    var scope = ReviewBrowseScope.all
+    var sort = ReviewBrowseSort.newest
+}
+
+func browseMusicReviews(
+    _ reviews: [RemoteMusicReview],
+    using filter: ReviewBrowseFilter
+) -> [RemoteMusicReview] {
+    let query = journalSearchKey(filter.query.trimmingCharacters(in: .whitespacesAndNewlines))
+    return reviews.filter { review in
+        switch filter.scope {
+        case .all: true
+        case .songs: review.subjectKind == "track"
+        case .albums: review.subjectKind == "album"
+        case .loved: review.isLoved
+        }
+    }
+    .filter { review in
+        guard !query.isEmpty else { return true }
+        let values = [
+            review.subjectTitle,
+            review.subjectArtist,
+            review.canonicalTrack?.title,
+            review.canonicalTrack?.artist,
+            review.canonicalTrack?.album,
+            review.body
+        ].compactMap { $0 }
+        return values.contains { journalSearchKey($0).contains(query) }
+    }
+    .sorted { left, right in
+        switch filter.sort {
+        case .newest:
+            if left.createdAt == right.createdAt { return left.id.uuidString > right.id.uuidString }
+            return left.createdAt > right.createdAt
+        case .highestRated:
+            if left.rating == right.rating {
+                if left.createdAt == right.createdAt { return left.id.uuidString > right.id.uuidString }
+                return left.createdAt > right.createdAt
+            }
+            return left.rating > right.rating
+        case .lowestRated:
+            if left.rating == right.rating {
+                if left.createdAt == right.createdAt { return left.id.uuidString > right.id.uuidString }
+                return left.createdAt > right.createdAt
+            }
+            return left.rating < right.rating
+        }
+    }
+}
+
 enum MusicShelfScope: String, CaseIterable, Identifiable {
     case all = "All"
     case loved = "Loved"
@@ -562,6 +631,7 @@ struct ReviewsView: View {
     @State private var isCreatingDiaryEntry = false
     @State private var editingDiaryEntry: RemoteListeningHistoryEntry?
     @State private var journalBrowseFilter = JournalBrowseFilter()
+    @State private var reviewBrowseFilter = ReviewBrowseFilter()
     @State private var editingReview: RemoteMusicReview?
     @State private var editingRating = 4.0
     @State private var editingBody = ""
@@ -575,6 +645,10 @@ struct ReviewsView: View {
 
     private var ownHistory: [RemoteListeningHistoryEntry] {
         store.journalEntries
+    }
+
+    private var browsedOwnReviews: [RemoteMusicReview] {
+        browseMusicReviews(ownReviews, using: reviewBrowseFilter)
     }
 
     private var browsedOwnHistory: [RemoteListeningHistoryEntry] {
@@ -1039,9 +1113,76 @@ struct ReviewsView: View {
                     .font(.footnote)
                     .foregroundColor(.secondary)
             } else {
-                ForEach(ownReviews) { review in reviewCard(review) }
+                ratingsSummary
+                reviewBrowseControls
+                if browsedOwnReviews.isEmpty {
+                    VStack(spacing: 6) {
+                        Label("No matching reviews", systemImage: "magnifyingglass")
+                            .font(.headline)
+                        Text("Try another search, scope, or sort option. Your reviews have not been removed.")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .accessibilityIdentifier("reviews-filtered-empty-state")
+                } else {
+                    ForEach(browsedOwnReviews) { review in reviewCard(review) }
+                }
             }
         }
+    }
+
+    private var ratingsSummary: some View {
+        let average = ownReviews.map(\.rating).reduce(0, +) / Double(ownReviews.count)
+        let lovedCount = ownReviews.filter(\.isLoved).count
+        return HStack(spacing: 18) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(String(format: "%.1f", average)).font(.title2.weight(.bold))
+                Text("Average rating").font(.caption).foregroundColor(.secondary)
+            }
+            Divider()
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(ownReviews.count)").font(.title2.weight(.bold))
+                Text(ownReviews.count == 1 ? "Review" : "Reviews").font(.caption).foregroundColor(.secondary)
+            }
+            Divider()
+            VStack(alignment: .leading, spacing: 2) {
+                Label("\(lovedCount)", systemImage: "heart.fill")
+                    .font(.title2.weight(.bold))
+                    .foregroundColor(.pink)
+                Text("Loved").font(.caption).foregroundColor(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(ownReviews.count) reviews, average rating \(String(format: "%.1f", average)) out of 5, \(lovedCount) loved")
+        .accessibilityIdentifier("reviews-ratings-summary")
+    }
+
+    private var reviewBrowseControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Search title, artist, album, or review", text: $reviewBrowseFilter.query)
+                .textInputAutocapitalization(.never)
+                .accessibilityLabel("Search reviews")
+                .accessibilityIdentifier("reviews-search")
+            Picker("Review scope", selection: $reviewBrowseFilter.scope) {
+                ForEach(ReviewBrowseScope.allCases) { scope in
+                    Text(scope.rawValue).tag(scope)
+                }
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("reviews-scope")
+            Picker("Sort reviews", selection: $reviewBrowseFilter.sort) {
+                ForEach(ReviewBrowseSort.allCases) { sort in
+                    Text(sort.rawValue).tag(sort)
+                }
+            }
+            .pickerStyle(.menu)
+            .accessibilityIdentifier("reviews-sort")
+        }
+        .accessibilityIdentifier("reviews-browse-controls")
     }
 
     private func reviewCard(_ review: RemoteMusicReview) -> some View {

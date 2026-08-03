@@ -1,7 +1,7 @@
 # Reviews and listening journal design
 
 **Decision date:** 2 August 2026  
-**Status:** first-class Reviews experience, owner and member profile shelves, typed following activity, historical ratings, and independent track-state foundation deployed
+**Status:** first-class Reviews experience, Letterboxd-inspired review browsing, owner and member profile shelves, typed following activity, historical ratings, and independent track-state foundation deployed
 
 ## Why this is a separate product surface
 
@@ -57,6 +57,7 @@ The product pattern Harmony transfers is therefore:
 | Dedicated review detail with likes/comments | Review detail with reaction and comment thread |
 | Member Reviews, Diary, and Likes surfaces | Member profile shelves for Reviews, Diary, and opt-in Loved music |
 | Following activity feed | Durable, typed manual Diary and first-publication Review events |
+| Review pages filter and sort authored opinions | Loaded owner reviews can be searched and scoped by Songs, Albums, or Loved, then sorted by date or rating |
 
 The information hierarchy matters as much as the fields. Harmony's Reviews
 experience remains the fifth root tab, with its own feed, composer, and review
@@ -85,10 +86,13 @@ Only the first stage should be described as implemented:
 5. **Current:** a durable typed following feed and follower member profiles
    with independent Reviews, Diary, and opt-in Loved shelves. Imported provider
    history and Harmony-room playback never generate feed events.
-6. **Next:** a deliberate create-time opinion-linking interaction if the
+6. **Current:** My Reviews includes an average/count/Loved summary, local
+   title/artist/album/body search, Songs / Albums / Loved scopes, and Newest /
+   Highest rated / Lowest rated ordering.
+7. **Next:** a deliberate create-time opinion-linking interaction if the
    edit-first workflow proves too hidden, plus server-side filtered search if
    exhaustive results are required.
-7. **After moderation and ranking policy:** popular/community discovery,
+8. **After moderation and ranking policy:** popular/community discovery,
    shareable lists/collections, and listening statistics/year summaries.
 
 This order emulates Letterboxd's durable separation of diary, opinion,
@@ -124,6 +128,22 @@ The top-right **Create** menu offers **Write a review** and **Log a listen**
 from every shelf. Review composition is modal so the selected shelf and scroll
 position survive dismissal. The rating control supports half-star steps, and
 Loved remains independent of the score.
+
+### Review browsing and ratings summary
+
+**Reviews → Reviews** now treats a member's opinions as a browsable catalog,
+not a chronological text dump. Its summary reports the average of the loaded
+owner reviews, total review count, and Loved count. Search folds case and
+diacritics and matches subject title, artist, album, or review body. Scope is
+**All**, **Songs**, **Albums**, or **Loved**; sort is **Newest**, **Highest
+rated**, or **Lowest rated**, with creation time breaking rating ties.
+
+`ReviewBrowseFilter` owns the three controls and `browseMusicReviews` remains a
+pure client transformation, covered by unit tests. The current review query is
+limited to 50 records, so these values and filters describe the loaded review
+page rather than claiming all-time statistics. Server-keyset pagination and
+exhaustive statistics remain a later slice. This limitation is stated here so
+future UI copy does not misrepresent partial data.
 
 ## Implemented manual music-diary slice
 

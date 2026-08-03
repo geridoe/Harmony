@@ -106,6 +106,12 @@ Listen        SocialView                        follows, live activity, history,
 Reviews       ReviewsView                       community reviews, composer, journal
 ```
 
+The Reviews destination is a root tab, never a child of Listen. Its My Reviews
+shelf provides a loaded-page rating summary plus search, Songs/Albums/Loved
+scope, and newest/highest/lowest sorting. `ReviewBrowseFilter` is value-typed
+and `browseMusicReviews` is a pure transformation, which keeps browsing from
+mutating review, Diary, playback, queue, or catalog-search state.
+
 `HarmonySessionStore` is the `@MainActor` observable application state. It
 contains screen-facing state, transforms remote DTOs into domain types, makes
 optimistic local changes, displays recoverable errors, and owns the
@@ -817,9 +823,10 @@ MusicKit library/playback authorization.
 7. Add production operational work: error reporting, scheduled cleanup of
    expired presence, rate limiting/abuse reporting, privacy-policy copy,
    TestFlight build settings, and device-pair collaboration tests.
-8. Add member Collections/favorites and richer Activity filters only after the
-   current typed feed and profile shelves have been exercised with multiple
-   real accounts; do not turn provider imports into follower posts.
+8. Implement the track-first Collections architecture in
+   `Docs/COLLECTIONS_DESIGN.md`: revision-safe ordered lists, follower privacy,
+   dedicated index/editor/detail, and zero queue/history/status side effects.
+   Album membership follows canonical album identity.
 9. If public discovery is desired, design moderation/reporting, profile
    discovery queries, rate limits, and explicit migration from follower-only
    UI before exposing the existing `public` data value.

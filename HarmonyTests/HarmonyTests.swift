@@ -521,6 +521,51 @@ final class HarmonyTests: XCTestCase {
         )
     }
 
+    func testReviewBrowseSearchesSubjectMetadataAndBody() {
+        let review = musicReview(
+            title: "Halo",
+            artist: "Beyoncé",
+            album: "Café Bleu",
+            body: "An après-party classic"
+        )
+
+        for query in ["HALO", "beyonce", "cafe bleu", "apres-party"] {
+            XCTAssertEqual(
+                browseMusicReviews([review], using: ReviewBrowseFilter(query: query)).map(\.id),
+                [review.id]
+            )
+        }
+        XCTAssertTrue(browseMusicReviews([review], using: ReviewBrowseFilter(query: "midnight")).isEmpty)
+    }
+
+    func testReviewBrowseScopesSongsAlbumsAndLoved() {
+        let song = musicReview(title: "Song", subjectKind: "track")
+        let album = musicReview(title: "Album", subjectKind: "album")
+        let loved = musicReview(title: "Loved", isLoved: true)
+        let reviews = [song, album, loved]
+
+        XCTAssertEqual(Set(browseMusicReviews(reviews, using: ReviewBrowseFilter(scope: .all)).map(\.id)), Set(reviews.map(\.id)))
+        XCTAssertEqual(Set(browseMusicReviews(reviews, using: ReviewBrowseFilter(scope: .songs)).map(\.id)), Set([song.id, loved.id]))
+        XCTAssertEqual(browseMusicReviews(reviews, using: ReviewBrowseFilter(scope: .albums)).map(\.id), [album.id])
+        XCTAssertEqual(browseMusicReviews(reviews, using: ReviewBrowseFilter(scope: .loved)).map(\.id), [loved.id])
+    }
+
+    func testReviewBrowseSortsByRatingWithNewestTieBreak() {
+        let oldestHigh = musicReview(title: "Older five", rating: 5, createdAt: Date(timeIntervalSince1970: 100))
+        let newestHigh = musicReview(title: "Newer five", rating: 5, createdAt: Date(timeIntervalSince1970: 200))
+        let low = musicReview(title: "Low", rating: 1, createdAt: Date(timeIntervalSince1970: 300))
+        let reviews = [oldestHigh, newestHigh, low]
+
+        XCTAssertEqual(
+            browseMusicReviews(reviews, using: ReviewBrowseFilter(sort: .highestRated)).map(\.id),
+            [newestHigh.id, oldestHigh.id, low.id]
+        )
+        XCTAssertEqual(
+            browseMusicReviews(reviews, using: ReviewBrowseFilter(sort: .lowestRated)).map(\.id),
+            [low.id, newestHigh.id, oldestHigh.id]
+        )
+    }
+
     func testMusicShelfSearchesMetadataAndAppliesEveryScope() {
         let ordinary = trackSubjectState(title: "Ordinary")
         let loved = trackSubjectState(title: "Halo", artist: "Beyoncé", album: "Café Bleu", isLoved: true)
@@ -802,26 +847,35 @@ final class HarmonyTests: XCTestCase {
         )
     }
 
-    private func musicReview(title: String) -> RemoteMusicReview {
+    private func musicReview(
+        title: String,
+        artist: String = "Test artist",
+        album: String = "Test album",
+        body: String = "Fixture review",
+        rating: Double = 4,
+        createdAt: Date = Date(timeIntervalSince1970: 1_700_000_000),
+        subjectKind: String = "track",
+        isLoved: Bool = false
+    ) -> RemoteMusicReview {
         RemoteMusicReview(
             id: UUID(),
             profileID: UUID(),
-            rating: 4.0,
-            body: "Fixture review",
-            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            rating: rating,
+            body: body,
+            createdAt: createdAt,
             visibility: .followers,
             containsSpoilers: false,
-            isLoved: true,
-            subjectKind: "track",
+            isLoved: isLoved,
+            subjectKind: subjectKind,
             subjectTitle: title,
-            subjectArtist: "Test artist",
+            subjectArtist: artist,
             subjectArtworkURL: nil,
             subjectDeepLink: nil,
             canonicalTrack: RemoteCatalogTrack(
                 id: UUID(),
                 title: title,
-                artist: "Test artist",
-                album: "Test album",
+                artist: artist,
+                album: album,
                 durationMilliseconds: 180_000,
                 artworkURL: nil,
                 isExplicit: false,
