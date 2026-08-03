@@ -1,7 +1,7 @@
 # Reviews and listening journal design
 
 **Decision date:** 2 August 2026  
-**Status:** first-class Reviews experience, Letterboxd-inspired review browsing, owner and member profile shelves, typed following activity, historical ratings, and independent track-state foundation deployed
+**Status:** first-class Reviews experience, Letterboxd-inspired review and ratings browsing, owner and member profile shelves, typed following activity, historical ratings, and independent track-state foundation deployed
 
 ## Why this is a separate product surface
 
@@ -59,6 +59,31 @@ The product pattern Harmony transfers is therefore:
 | Following activity feed | Durable, typed manual Diary and first-publication Review events |
 | Review pages filter and sort authored opinions | Loaded owner reviews can be searched and scoped by Songs, Albums, or Loved, then sorted by date or rating |
 
+The current public Letterboxd product also confirms several navigation and
+interaction details that guide the next slices:
+
+- Diary, Reviews, Ratings, Lists, Likes, Activity, and profile overview are
+  distinct destinations, even though they refer to the same canonical film.
+- Its composer is subject-first and permits a rating, Like, review, dated log,
+  rewatch, tags, spoiler metadata, and audience to coexist without requiring
+  every field.
+- A review is independently addressable social content with reactions,
+  comments, moderation, and later editing; it is not merely a Diary cell.
+- Profile overview acts as an index into the deeper shelves and includes a
+  rating distribution, recent reviews/activity, lists, favorites, tags, and
+  network links.
+- Search spans subjects, reviews, lists, and people. Discovery is reinforced by
+  understandable popular/highly-rated/friend activity paths rather than one
+  opaque recommendation feed.
+
+These points were verified against Letterboxd's current official
+[FAQ](https://letterboxd.com/about/faq/),
+[Welcome guide](https://letterboxd.com/welcome/),
+[apps overview](https://letterboxd.com/apps/), and
+[App Store listing](https://apps.apple.com/us/app/letterboxd/id1054271011).
+The conclusions about Harmony's event-noise policy and music-specific layouts
+are product-design inferences, not claims about Letterboxd internals.
+
 The information hierarchy matters as much as the fields. Harmony's Reviews
 experience remains the fifth root tab, with its own feed, composer, and review
 detail navigation. It must not regress into a small Diary section inside the
@@ -89,10 +114,13 @@ Only the first stage should be described as implemented:
 6. **Current:** My Reviews includes an average/count/Loved summary, local
    title/artist/album/body search, Songs / Albums / Loved scopes, and Newest /
    Highest rated / Lowest rated ordering.
-7. **Next:** a deliberate create-time opinion-linking interaction if the
+7. **Current:** Ratings is a full shelf in the root Reviews page, backed by
+   independent current song state rather than inferred from review rows. It
+   presents a half-star distribution, average, count, and canonical song links.
+8. **Next:** a deliberate create-time opinion-linking interaction if the
    edit-first workflow proves too hidden, plus server-side filtered search if
    exhaustive results are required.
-8. **After moderation and ranking policy:** popular/community discovery,
+9. **After moderation and ranking policy:** popular/community discovery,
    shareable lists/collections, and listening statistics/year summaries.
 
 This order emulates Letterboxd's durable separation of diary, opinion,
@@ -117,17 +145,37 @@ reader's response to that review.
 
 ## First implementation
 
-The fifth iOS tab has three shelves:
+The fifth iOS tab has four full shelves and opens on Reviews:
 
+- **Reviews** contains the owner's published song and album opinions.
+- **Ratings** contains the owner's current song ratings independently of review
+  authorship, with a ten-bucket half-star distribution.
+- **Diary** contains the owner's dated listening entries.
 - **Activity** contains shortcuts into the owner's journal plus
   follower-visible review activity.
-- **Diary** contains the owner's dated listening entries.
-- **Reviews** contains the owner's published song and album opinions.
 
 The top-right **Create** menu offers **Write a review** and **Log a listen**
 from every shelf. Review composition is modal so the selected shelf and scroll
 position survive dismissal. The rating control supports half-star steps, and
 Loved remains independent of the score.
+
+Album ratings remain review-backed until Harmony has canonical album identity.
+The Ratings shelf says so explicitly instead of merging provider snapshots by
+title. This avoids presenting two provider editions as one album or one album
+as two subjects. Canonical albums require an album table, provider mappings,
+edition policy, track membership, and an owner album-state row analogous to
+`profile_track_subject_states`.
+
+### Activity-volume policy for music
+
+Letterboxd's manually logged films are low-frequency enough to appear as
+individual feed events. Automatic music listening can produce hundreds of
+tracks per day, so Harmony does not copy that emission rule literally. Durable
+activity is reserved for first-publication reviews and lists, intentional
+manual Diary logs, live/eavesdrop starts, and later session summaries. Provider
+history imports, automatic track transitions, rating corrections, reorders,
+and audience edits stay silent. Rapid live/reaction updates will be grouped
+before broader discovery ships.
 
 ### Review browsing and ratings summary
 

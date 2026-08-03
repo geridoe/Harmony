@@ -182,6 +182,78 @@ private struct ProfileLovedPageParameters: Encodable {
     let p_before_canonical_track_id: UUID?
     let p_limit: Int
 }
+private struct ProfileMusicListsPageParameters: Encodable {
+    let p_profile_id: UUID
+    let p_before_updated_at: Date?
+    let p_before_id: UUID?
+    let p_limit: Int
+}
+private struct MusicListEntriesPageParameters: Encodable {
+    let p_list_id: UUID
+    let p_after_position: Int?
+    let p_limit: Int
+}
+private struct CreateMusicListParameters: Encodable {
+    let p_title: String
+    let p_description: String
+    let p_tags: [String]
+    let p_is_ranked: Bool
+    let p_visibility: String
+}
+private struct UpdateMusicListParameters: Encodable {
+    let p_list_id: UUID
+    let p_title: String
+    let p_description: String
+    let p_tags: [String]
+    let p_is_ranked: Bool
+    let p_visibility: String
+}
+private struct SaveMusicListParameters: Encodable {
+    let p_list_id: UUID?
+    let p_title: String
+    let p_description: String
+    let p_tags: [String]
+    let p_is_ranked: Bool
+    let p_visibility: String
+    let p_entries: [MusicListDraftEntryPayload]
+    let p_expected_revision: Int?
+}
+private struct MusicListIDParameters: Encodable { let p_list_id: UUID }
+private struct AddMusicListEntryParameters: Encodable {
+    let p_list_id: UUID
+    let p_canonical_track_id: UUID
+    let p_note: String
+    let p_expected_revision: Int
+}
+private struct MusicListEntryRevisionParameters: Encodable {
+    let p_entry_id: UUID
+    let p_expected_revision: Int
+}
+private struct UpdateMusicListEntryNoteParameters: Encodable {
+    let p_entry_id: UUID
+    let p_note: String
+    let p_expected_revision: Int
+}
+private struct ReorderMusicListEntriesParameters: Encodable {
+    let p_list_id: UUID
+    let p_ordered_entry_ids: [UUID]
+    let p_expected_revision: Int
+}
+private struct SetMusicListLikedParameters: Encodable {
+    let p_list_id: UUID
+    let p_is_liked: Bool
+}
+private struct MusicListCommentsPageParameters: Encodable {
+    let p_list_id: UUID
+    let p_before_created_at: Date?
+    let p_before_id: UUID?
+    let p_limit: Int
+}
+private struct AddMusicListCommentParameters: Encodable {
+    let p_list_id: UUID
+    let p_body: String
+}
+private struct MusicListCommentIDParameters: Encodable { let p_comment_id: UUID }
 private struct HistoryEntryIDParameters: Encodable { let p_entry_id: UUID }
 private struct RemovePayload: Encodable { let queue_item_id: UUID }
 private struct MovePayload: Encodable { let queue_item_id: UUID; let position: Double }
@@ -216,7 +288,7 @@ struct RemoteSessionMember: Decodable {
     enum CodingKeys: String, CodingKey { case profileID = "profile_id"; case role; case profile = "profiles" }
 }
 
-struct RemoteProfile: Decodable { let displayName: String; enum CodingKeys: String, CodingKey { case displayName = "display_name" } }
+struct RemoteProfile: Codable { let displayName: String; enum CodingKeys: String, CodingKey { case displayName = "display_name" } }
 
 enum SocialVisibilityOption: String, CaseIterable, Codable, Identifiable {
     case privateOnly = "private"
@@ -255,6 +327,7 @@ private struct RemoteSocialActivityEvent: Decodable, Identifiable {
     let kind: String
     let diaryEntryID: UUID?
     let reviewID: UUID?
+    let listID: UUID?
     let publishedAt: Date
     let actor: RemoteProfile
 
@@ -263,6 +336,7 @@ private struct RemoteSocialActivityEvent: Decodable, Identifiable {
         case actorID = "actor_id"
         case diaryEntryID = "diary_entry_id"
         case reviewID = "review_id"
+        case listID = "list_id"
         case publishedAt = "published_at"
     }
 }
@@ -270,6 +344,7 @@ private struct RemoteSocialActivityEvent: Decodable, Identifiable {
 enum RemoteFollowingActivityPayload {
     case diary(RemoteListeningHistoryEntry)
     case review(RemoteMusicReview)
+    case musicList(RemoteMusicList)
 }
 
 struct RemoteFollowingActivityItem: Identifiable {
@@ -323,6 +398,10 @@ struct RemoteNotificationReview: Decodable {
     }
 }
 
+struct RemoteNotificationMusicList: Decodable {
+    let title: String
+}
+
 struct RemoteSocialNotification: Decodable, Identifiable {
     let id: UUID
     let kind: String
@@ -330,14 +409,16 @@ struct RemoteSocialNotification: Decodable, Identifiable {
     let readAt: Date?
     let actor: RemoteProfile
     let review: RemoteNotificationReview?
+    let musicList: RemoteNotificationMusicList?
     enum CodingKeys: String, CodingKey {
         case id, kind, actor, review
+        case musicList = "music_list"
         case createdAt = "created_at"
         case readAt = "read_at"
     }
 }
 
-struct RemoteCatalogTrack: Decodable {
+struct RemoteCatalogTrack: Codable {
     let id: UUID?
     let title: String
     let artist: String
@@ -379,7 +460,7 @@ struct RemoteCatalogTrack: Decodable {
     }
 }
 
-struct RemoteProviderTrack: Decodable {
+struct RemoteProviderTrack: Codable {
     let provider: String
     let providerID: String
     let storefront: String?
@@ -585,6 +666,113 @@ struct RemoteReviewReaction: Decodable {
     enum CodingKeys: String, CodingKey { case profileID = "profile_id"; case kind }
 }
 
+/// An owner-authored, ordered collection of canonical tracks. Entry rows are
+/// loaded independently so list indexes stay compact and can paginate without
+/// exposing private child counts through an unrelated query.
+struct RemoteMusicList: Codable, Identifiable {
+    let id: UUID
+    let ownerID: UUID
+    let title: String
+    let description: String
+    let tags: [String]
+    let isRanked: Bool
+    let visibility: SocialVisibilityOption
+    let entriesRevision: Int
+    let createdAt: Date
+    let updatedAt: Date
+    let deletedAt: Date?
+    let owner: RemoteProfile
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, description, tags, visibility, owner
+        case ownerID = "owner_id"
+        case isRanked = "is_ranked"
+        case entriesRevision = "entries_revision"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+        case deletedAt = "deleted_at"
+    }
+}
+
+struct RemoteMusicListEntry: Codable, Identifiable {
+    let id: UUID
+    let listID: UUID
+    let canonicalTrackID: UUID
+    let position: Int
+    let note: String
+    let createdAt: Date
+    let updatedAt: Date
+    /// Present on paginated reads that request the canonical relationship.
+    /// Mutation RPCs return the newly written base row in their JSON envelope,
+    /// so that response legitimately omits the embedded track.
+    let canonicalTrack: RemoteCatalogTrack?
+
+    enum CodingKeys: String, CodingKey {
+        case id, position, note
+        case listID = "list_id"
+        case canonicalTrackID = "canonical_track_id"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+        case canonicalTrack = "canonical_tracks"
+    }
+}
+
+struct RemoteMusicListEntryMutation: Codable {
+    let entry: RemoteMusicListEntry
+    let entriesRevision: Int
+
+    enum CodingKeys: String, CodingKey {
+        case entry
+        case entriesRevision = "entries_revision"
+    }
+}
+
+struct RemoteMusicListEngagement: Codable, Equatable {
+    let entryCount: Int
+    let likeCount: Int
+    let commentCount: Int
+    let viewerHasLiked: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case entryCount = "entry_count"
+        case likeCount = "like_count"
+        case commentCount = "comment_count"
+        case viewerHasLiked = "viewer_has_liked"
+    }
+}
+
+/// The exact ordered-entry JSON accepted by `save_music_list`. Array order is
+/// authoritative; positions are assigned and validated transactionally.
+private struct MusicListDraftEntryPayload: Encodable {
+    let canonicalTrackID: UUID
+    let note: String
+
+    enum CodingKeys: String, CodingKey {
+        case canonicalTrackID = "canonical_track_id"
+        case note
+    }
+}
+
+struct RemoteMusicListComment: Codable, Identifiable {
+    let id: UUID
+    let listID: UUID
+    let authorID: UUID
+    let body: String
+    let createdAt: Date
+    let updatedAt: Date
+    let deletedAt: Date?
+    let author: RemoteProfile
+
+    enum CodingKeys: String, CodingKey {
+        case id, body, author
+        case listID = "list_id"
+        case authorID = "author_id"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+        case deletedAt = "deleted_at"
+    }
+}
+
 struct SpotifyAccessCredential: Decodable {
     let accessToken: String
     let expiresAt: String
@@ -651,6 +839,10 @@ struct SpotifySearchTrack: Decodable {
 
 @MainActor
 final class HarmonyCollaborationRepository {
+    private static let musicListSelection = "id,owner_id,title,description,tags,is_ranked,visibility,entries_revision,created_at,updated_at,deleted_at,owner:profiles!music_lists_owner_id_fkey(display_name)"
+    private static let musicListEntrySelection = "id,list_id,canonical_track_id,position,note,created_at,updated_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit,isrc,provider_tracks(provider,provider_id,storefront,availability,deep_link))"
+    private static let musicListCommentSelection = "id,list_id,author_id,body,created_at,updated_at,deleted_at,author:profiles!music_list_comments_author_id_fkey(display_name)"
+
     // Defer plist-dependent client creation until a live backend operation is
     // requested. This keeps local queue behavior and unit tests independent of
     // a test-host Info.plist while production still fails fast on misconfiguration.
@@ -810,7 +1002,7 @@ final class HarmonyCollaborationRepository {
     func socialNotifications() async throws -> [RemoteSocialNotification] {
         try await authenticate()
         return try await client.from("social_notifications")
-            .select("id,kind,created_at,read_at,actor:profiles!social_notifications_actor_id_fkey(display_name),review:music_reviews!social_notifications_review_id_fkey(subject_title,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit))")
+            .select("id,kind,created_at,read_at,actor:profiles!social_notifications_actor_id_fkey(display_name),review:music_reviews!social_notifications_review_id_fkey(subject_title,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit)),music_list:music_lists!social_notifications_music_list_id_fkey(title)")
             .order("created_at", ascending: false)
             .limit(50).execute().value
     }
@@ -936,16 +1128,19 @@ final class HarmonyCollaborationRepository {
                 p_limit: pageSize + 1
             )
         )
-        .select("id,actor_id,kind,diary_entry_id,review_id,published_at,actor:profiles!social_activity_events_actor_id_fkey(display_name)")
+        .select("id,actor_id,kind,diary_entry_id,review_id,list_id,published_at,actor:profiles!social_activity_events_actor_id_fkey(display_name)")
         .execute().value
 
         let cursorEvents = Array(rawEvents.prefix(pageSize))
         let reviewIDs = cursorEvents.compactMap(\.reviewID)
         let diaryIDs = cursorEvents.compactMap(\.diaryEntryID)
+        let listIDs = cursorEvents.compactMap(\.listID)
         let reviews = try await activityReviews(ids: reviewIDs)
         let diaryEntries = try await activityDiaryEntries(ids: diaryIDs)
+        let musicLists = try await activityMusicLists(ids: listIDs)
         let reviewsByID = Dictionary(uniqueKeysWithValues: reviews.map { ($0.id, $0) })
         let diaryByID = Dictionary(uniqueKeysWithValues: diaryEntries.map { ($0.id, $0) })
+        let listsByID = Dictionary(uniqueKeysWithValues: musicLists.map { ($0.id, $0) })
         let items = cursorEvents.compactMap { event -> RemoteFollowingActivityItem? in
             let payload: RemoteFollowingActivityPayload
             switch event.kind {
@@ -955,6 +1150,9 @@ final class HarmonyCollaborationRepository {
             case "diary_logged":
                 guard let id = event.diaryEntryID, let entry = diaryByID[id] else { return nil }
                 payload = .diary(entry)
+            case "list_published":
+                guard let id = event.listID, let list = listsByID[id] else { return nil }
+                payload = .musicList(list)
             default:
                 return nil
             }
@@ -1036,6 +1234,98 @@ final class HarmonyCollaborationRepository {
         .execute().value
     }
 
+    func ownerMusicListsPage(
+        beforeUpdatedAt: Date? = nil,
+        beforeID: UUID? = nil,
+        limit: Int = 51
+    ) async throws -> [RemoteMusicList] {
+        let profileID = try await currentUserID()
+        return try await publicProfileMusicListsPage(
+            profileID: profileID,
+            beforeUpdatedAt: beforeUpdatedAt,
+            beforeID: beforeID,
+            limit: limit
+        )
+    }
+
+    func publicProfileMusicListsPage(
+        profileID: UUID,
+        beforeUpdatedAt: Date? = nil,
+        beforeID: UUID? = nil,
+        limit: Int = 51
+    ) async throws -> [RemoteMusicList] {
+        try await authenticate()
+        return try await client.rpc(
+            "list_profile_music_lists",
+            params: ProfileMusicListsPageParameters(
+                p_profile_id: profileID,
+                p_before_updated_at: beforeUpdatedAt,
+                p_before_id: beforeID,
+                p_limit: limit
+            )
+        )
+        .select(Self.musicListSelection)
+        .execute().value
+    }
+
+    func musicList(id: UUID) async throws -> RemoteMusicList? {
+        try await authenticate()
+        return try await client.rpc(
+            "get_music_list",
+            params: MusicListIDParameters(p_list_id: id)
+        )
+            .select(Self.musicListSelection)
+            .single()
+            .execute().value
+    }
+
+    func musicListEntriesPage(
+        listID: UUID,
+        afterPosition: Int? = nil,
+        limit: Int = 100
+    ) async throws -> [RemoteMusicListEntry] {
+        try await authenticate()
+        return try await client.rpc(
+            "list_music_list_entries",
+            params: MusicListEntriesPageParameters(
+                p_list_id: listID,
+                p_after_position: afterPosition,
+                p_limit: limit
+            )
+        )
+        .select(Self.musicListEntrySelection)
+        .execute().value
+    }
+
+    func musicListCommentsPage(
+        listID: UUID,
+        beforeCreatedAt: Date? = nil,
+        beforeID: UUID? = nil,
+        limit: Int = 51
+    ) async throws -> [RemoteMusicListComment] {
+        try await authenticate()
+        return try await client.rpc(
+            "list_music_list_comments",
+            params: MusicListCommentsPageParameters(
+                p_list_id: listID,
+                p_before_created_at: beforeCreatedAt,
+                p_before_id: beforeID,
+                p_limit: limit
+            )
+        )
+        .select(Self.musicListCommentSelection)
+        .execute().value
+    }
+
+    func musicListEngagement(_ listID: UUID) async throws -> RemoteMusicListEngagement {
+        try await authenticate()
+        return try await client.rpc(
+            "get_music_list_engagement",
+            params: MusicListIDParameters(p_list_id: listID)
+        )
+        .execute().value
+    }
+
     private func activityReviews(ids: [UUID]) async throws -> [RemoteMusicReview] {
         guard !ids.isEmpty else { return [] }
         return try await client.from("music_reviews")
@@ -1048,6 +1338,14 @@ final class HarmonyCollaborationRepository {
         guard !ids.isEmpty else { return [] }
         return try await client.from("listening_history_entries")
             .select("id,profile_id,played_at,source,visibility,is_relisten,tags,review_id,rating,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)")
+            .in("id", values: ids.map(\.uuidString))
+            .execute().value
+    }
+
+    private func activityMusicLists(ids: [UUID]) async throws -> [RemoteMusicList] {
+        guard !ids.isEmpty else { return [] }
+        return try await client.from("music_lists")
+            .select(Self.musicListSelection)
             .in("id", values: ids.map(\.uuidString))
             .execute().value
     }
@@ -1397,6 +1695,208 @@ final class HarmonyCollaborationRepository {
     func deleteReview(_ reviewID: UUID) async throws {
         try await authenticate()
         _ = try await client.rpc("delete_music_review", params: ReviewIDParameters(p_review_id: reviewID)).execute()
+    }
+
+    func createMusicList(
+        title: String,
+        description: String,
+        tags: [String],
+        isRanked: Bool,
+        visibility: SocialVisibilityOption
+    ) async throws -> RemoteMusicList {
+        try await authenticate()
+        return try await client.rpc(
+            "create_music_list",
+            params: CreateMusicListParameters(
+                p_title: title,
+                p_description: description,
+                p_tags: tags,
+                p_is_ranked: isRanked,
+                p_visibility: visibility.rawValue
+            )
+        )
+        .select(Self.musicListSelection)
+        .single()
+        .execute().value
+    }
+
+    func updateMusicList(
+        _ listID: UUID,
+        title: String,
+        description: String,
+        tags: [String],
+        isRanked: Bool,
+        visibility: SocialVisibilityOption
+    ) async throws -> RemoteMusicList {
+        try await authenticate()
+        return try await client.rpc(
+            "update_music_list",
+            params: UpdateMusicListParameters(
+                p_list_id: listID,
+                p_title: title,
+                p_description: description,
+                p_tags: tags,
+                p_is_ranked: isRanked,
+                p_visibility: visibility.rawValue
+            )
+        )
+        .select(Self.musicListSelection)
+        .single()
+        .execute().value
+    }
+
+    func saveMusicList(
+        listID: UUID?,
+        title: String,
+        description: String,
+        tags: [String],
+        isRanked: Bool,
+        visibility: SocialVisibilityOption,
+        entries: [MusicListDraftEntry],
+        expectedRevision: Int?
+    ) async throws -> RemoteMusicList {
+        try await authenticate()
+        var resolvedEntries: [MusicListDraftEntryPayload] = []
+        resolvedEntries.reserveCapacity(entries.count)
+        for entry in entries {
+            resolvedEntries.append(MusicListDraftEntryPayload(
+                canonicalTrackID: try await canonicalTrackID(for: entry.track),
+                note: entry.note
+            ))
+        }
+        return try await client.rpc(
+            "save_music_list",
+            params: SaveMusicListParameters(
+                p_list_id: listID,
+                p_title: title,
+                p_description: description,
+                p_tags: tags,
+                p_is_ranked: isRanked,
+                p_visibility: visibility.rawValue,
+                p_entries: resolvedEntries,
+                p_expected_revision: expectedRevision
+            )
+        )
+        .select(Self.musicListSelection)
+        .single()
+        .execute().value
+    }
+
+    func deleteMusicList(_ listID: UUID) async throws {
+        try await authenticate()
+        _ = try await client.rpc(
+            "delete_music_list",
+            params: MusicListIDParameters(p_list_id: listID)
+        ).execute()
+    }
+
+    func addMusicListEntry(
+        listID: UUID,
+        track: HarmonyTrack,
+        note: String = "",
+        expectedRevision: Int
+    ) async throws -> RemoteMusicListEntryMutation {
+        let canonicalTrackID = try await canonicalTrackID(for: track)
+        return try await addMusicListEntry(
+            listID: listID,
+            canonicalTrackID: canonicalTrackID,
+            note: note,
+            expectedRevision: expectedRevision
+        )
+    }
+
+    func addMusicListEntry(
+        listID: UUID,
+        canonicalTrackID: UUID,
+        note: String = "",
+        expectedRevision: Int
+    ) async throws -> RemoteMusicListEntryMutation {
+        try await authenticate()
+        return try await client.rpc(
+            "add_music_list_entry",
+            params: AddMusicListEntryParameters(
+                p_list_id: listID,
+                p_canonical_track_id: canonicalTrackID,
+                p_note: note,
+                p_expected_revision: expectedRevision
+            )
+        ).execute().value
+    }
+
+    func updateMusicListEntryNote(
+        entryID: UUID,
+        note: String,
+        expectedRevision: Int
+    ) async throws -> RemoteMusicListEntryMutation {
+        try await authenticate()
+        return try await client.rpc(
+            "update_music_list_entry_note",
+            params: UpdateMusicListEntryNoteParameters(
+                p_entry_id: entryID,
+                p_note: note,
+                p_expected_revision: expectedRevision
+            )
+        ).execute().value
+    }
+
+    func removeMusicListEntry(
+        entryID: UUID,
+        expectedRevision: Int
+    ) async throws -> Int {
+        try await authenticate()
+        return try await client.rpc(
+            "remove_music_list_entry",
+            params: MusicListEntryRevisionParameters(
+                p_entry_id: entryID,
+                p_expected_revision: expectedRevision
+            )
+        ).execute().value
+    }
+
+    func reorderMusicListEntries(
+        listID: UUID,
+        orderedEntryIDs: [UUID],
+        expectedRevision: Int
+    ) async throws -> Int {
+        try await authenticate()
+        return try await client.rpc(
+            "reorder_music_list_entries",
+            params: ReorderMusicListEntriesParameters(
+                p_list_id: listID,
+                p_ordered_entry_ids: orderedEntryIDs,
+                p_expected_revision: expectedRevision
+            )
+        ).execute().value
+    }
+
+    func setMusicListLiked(_ listID: UUID, isLiked: Bool) async throws -> Bool {
+        try await authenticate()
+        return try await client.rpc(
+            "set_music_list_liked",
+            params: SetMusicListLikedParameters(
+                p_list_id: listID,
+                p_is_liked: isLiked
+            )
+        ).execute().value
+    }
+
+    func addMusicListComment(listID: UUID, body: String) async throws -> RemoteMusicListComment {
+        try await authenticate()
+        return try await client.rpc(
+            "add_music_list_comment",
+            params: AddMusicListCommentParameters(p_list_id: listID, p_body: body)
+        )
+        .select(Self.musicListCommentSelection)
+        .single()
+        .execute().value
+    }
+
+    func deleteMusicListComment(_ commentID: UUID) async throws {
+        try await authenticate()
+        _ = try await client.rpc(
+            "delete_music_list_comment",
+            params: MusicListCommentIDParameters(p_comment_id: commentID)
+        ).execute()
     }
 
     private func canonicalTrackID(for track: HarmonyTrack) async throws -> UUID {

@@ -99,12 +99,15 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Activity"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Diary"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Reviews"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Ratings"].waitForExistence(timeout: 5))
+        app.buttons["Activity"].tap()
         XCTAssertTrue(app.staticTexts["Your music journal"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Following activity"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Create"].waitForExistence(timeout: 5))
         app.buttons["Create"].tap()
         XCTAssertTrue(app.buttons["Write a review"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Log a listen"].exists)
+        XCTAssertTrue(app.buttons["Create a list"].exists)
         app.buttons["Write a review"].tap()
         XCTAssertTrue(app.navigationBars["Write a review"].waitForExistence(timeout: 5))
         let chooseMusic = app.buttons["Choose a song or album"]
@@ -154,6 +157,7 @@ class HarmonyUITests: XCTestCase {
         let reviewsNavigation = app.navigationBars["Reviews"]
         if !reviewsNavigation.waitForExistence(timeout: 3) { reviewsTab.tap() }
         XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
+        app.buttons["Activity"].tap()
 
         let musicShelf = app.buttons["Music shelf"]
         XCTAssertTrue(musicShelf.waitForExistence(timeout: 5))
@@ -180,6 +184,7 @@ class HarmonyUITests: XCTestCase {
         let reviewsNavigation = app.navigationBars["Reviews"]
         if !reviewsNavigation.waitForExistence(timeout: 3) { reviewsTab.tap() }
         XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
+        app.buttons["Activity"].tap()
 
         let musicShelf = app.buttons["Music shelf"]
         XCTAssertTrue(musicShelf.waitForExistence(timeout: 5))
@@ -261,6 +266,7 @@ class HarmonyUITests: XCTestCase {
         let reviewsNavigation = app.navigationBars["Reviews"]
         if !reviewsNavigation.waitForExistence(timeout: 3) { reviewsTab.tap() }
         XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
+        app.buttons["Activity"].tap()
 
         XCTAssertTrue(app.descendants(matching: .any)["following-activity-card-review-50000000-0000-0000-0000-000000000005"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.descendants(matching: .any)["following-activity-card-diary-60000000-0000-0000-0000-000000000006"].exists)

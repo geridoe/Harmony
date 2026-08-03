@@ -83,12 +83,12 @@ playback/catalog interaction.
   A dated journal listen remains separate from the listener's current opinion,
   so repeat listens do not overwrite a rating or review.
 - Durable in-app notifications cover follow requests/acceptance, review
-  comments, and reactions. Their data is the future source for APNs delivery;
+  comments/reactions, and list likes/comments. Their data is the future source for APNs delivery;
   APNs is not yet enabled.
 - Reviews is also the home of the durable following Activity feed and member
   profiles. Intentional manual Diary logs and first-published Reviews appear as
   typed events; each member profile has independently paginated Reviews,
-  Diary, and opt-in Loved shelves.
+  Diary, opt-in Loved, and Lists shelves.
 
 ## 3. iOS implementation
 
@@ -103,14 +103,20 @@ Session       PlayerView / SessionView        rooms, queue, playback intent
 Add music     SearchView                       catalog search and album review
 Connections   ConnectionsView                  providers, profile, privacy
 Listen        SocialView                        follows, live activity, history, inbox
-Reviews       ReviewsView                       community reviews, composer, journal
+Reviews       ReviewsView                       reviews, ratings, diary, activity, lists
 ```
 
-The Reviews destination is a root tab, never a child of Listen. Its My Reviews
-shelf provides a loaded-page rating summary plus search, Songs/Albums/Loved
+The Reviews destination is a root tab, never a child of Listen. It opens on a
+full Reviews shelf and provides sibling Ratings, Diary, and Activity shelves.
+My Reviews provides a loaded-page review summary plus search, Songs/Albums/Loved
 scope, and newest/highest/lowest sorting. `ReviewBrowseFilter` is value-typed
 and `browseMusicReviews` is a pure transformation, which keeps browsing from
 mutating review, Diary, playback, queue, or catalog-search state.
+
+Ratings reads independent current song state and presents a ten-bucket
+half-star distribution. It does not infer a current rating from review text or
+rewrite historical Diary ratings. Album ratings remain review-backed until a
+canonical album table and owner album-state model exist.
 
 `HarmonySessionStore` is the `@MainActor` observable application state. It
 contains screen-facing state, transforms remote DTOs into domain types, makes
@@ -460,20 +466,20 @@ still fails while any Diary/history entry or active review exists.
 
 Reviews → Activity is now a durable following feed rather than a snapshot of
 the current review query. `social_activity_events` records only the first
-follower-visible publication of a Review or an intentional manual Diary log.
+follower-visible publication of a Review or List, or an intentional manual Diary log.
 Provider imports, Harmony-room history, historical rows, edits, ratings, and
 Loved/Want-to-listen state changes do not emit. The referenced Review or Diary
 row remains authoritative, so its current visibility, soft deletion, accepted
 follow relationship, and either-direction blocks are enforced at read time.
 
 The repository pages raw event cursors, then batch-hydrates typed payloads in
-at most one Review and one Diary query. It advances with the raw cursor even
+at most one Review, Diary, and List query. It advances with the raw cursor even
 if an object becomes invisible between those reads, preventing a raced delete
 from trapping pagination. Swift presents distinct cards and routes actor
 identity into `MemberProfileView`.
 
-Member profiles expose independently paginated **Reviews**, **Diary**, and
-**Loved** shelves. Their state is keyed by member ID and does not reuse the
+Member profiles expose independently paginated **Reviews**, **Diary**,
+**Loved**, and **Lists** shelves. Their state is keyed by member ID and does not reuse the
 owner's editable review, diary, or subject-state caches. Review and Diary
 audiences remain per object. Loved is an aggregate shelf with a separate
 Only me/Followers setting in Connections; it defaults to private.
@@ -520,6 +526,10 @@ too close; that is not a current correctness concern.
 | `review_comments` | comments with author-owned soft deletion |
 | `review_reactions` | one reaction per viewer/review/kind |
 | `social_notifications` | recipient-owned in-app inbox and read state |
+| `music_lists` | owner-authored track collections with visibility and an entry revision |
+| `music_list_entries` | exact ordered canonical tracks with optional per-list notes |
+| `music_list_likes` | idempotent viewer/list affinity |
+| `music_list_comments` | visible-list discussion with author/owner moderation |
 
 The social schema distinguishes *identity* (canonical tracks) from an album
 review’s first-release provider identifier. This allows album reviews before a
@@ -775,7 +785,7 @@ MusicKit library/playback authorization.
 - Supabase schema, RLS, RPC authority, Realtime publication, profile creation,
   account deletion, collaborative rooms, queue revisions/idempotency, invites,
   lifecycle, social graph, privacy, blocks, eavesdrop, history, reviews,
-  comments/reactions, and in-app notifications.
+  comments/reactions, ordered music lists, and in-app notifications.
 - iOS SwiftUI screens for Session, Add music, Connections, Listen, and Reviews; live
   data/store/repository integration; Spotify OAuth/App Remote integration;
   Spotify search, now-playing share, and user-triggered history import.
@@ -823,10 +833,9 @@ MusicKit library/playback authorization.
 7. Add production operational work: error reporting, scheduled cleanup of
    expired presence, rate limiting/abuse reporting, privacy-policy copy,
    TestFlight build settings, and device-pair collaboration tests.
-8. Implement the track-first Collections architecture in
-   `Docs/COLLECTIONS_DESIGN.md`: revision-safe ordered lists, follower privacy,
-   dedicated index/editor/detail, and zero queue/history/status side effects.
-   Album membership follows canonical album identity.
+8. Add **Add to list** actions on canonical song detail and catalog search. The
+   track-first Collections backend and dedicated index/editor/detail are now
+   implemented and deployed; album membership follows canonical album identity.
 9. If public discovery is desired, design moderation/reporting, profile
    discovery queries, rate limits, and explicit migration from follower-only
    UI before exposing the existing `public` data value.

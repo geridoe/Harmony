@@ -328,6 +328,8 @@ struct SocialView: View {
         case "follow_accepted": "person.crop.circle.badge.checkmark"
         case "review_comment": "bubble.left.fill"
         case "review_reaction": "heart.fill"
+        case "music_list_like": "heart.fill"
+        case "music_list_comment": "bubble.left.fill"
         default: "bell.fill"
         }
     }
@@ -337,26 +339,51 @@ struct SocialView: View {
         let reviewTitle = notification.review?.subjectTitle
             ?? notification.review?.canonicalTrack?.title
             ?? "your review"
+        let listTitle = notification.musicList?.title ?? "your list"
         switch notification.kind {
         case "follow_request": return "\(actor) wants to follow you"
         case "follow_accepted": return "\(actor) accepted your follow request"
         case "review_comment": return "\(actor) commented on \(reviewTitle)"
         case "review_reaction": return "\(actor) reacted to \(reviewTitle)"
+        case "music_list_like": return "\(actor) liked \(listTitle)"
+        case "music_list_comment": return "\(actor) commented on \(listTitle)"
         default: return "New activity from \(actor)"
         }
     }
 }
 
 private enum ReviewsShelf: String, CaseIterable, Identifiable {
-    case activity = "Activity"
-    case diary = "Diary"
     case reviews = "Reviews"
+    case ratings = "Ratings"
+    case diary = "Diary"
+    case activity = "Activity"
     var id: String { rawValue }
+}
+
+struct MusicRatingDistributionBucket: Equatable, Identifiable {
+    let rating: Double
+    let count: Int
+    var id: Double { rating }
+}
+
+func musicRatingDistribution(
+    _ states: [RemoteTrackSubjectState]
+) -> [MusicRatingDistributionBucket] {
+    let counts = Dictionary(grouping: states.compactMap(\.defaultRating)) { rating in
+        min(10, max(1, Int((rating * 2).rounded())))
+    }
+    return (1...10).map { halfStars in
+        MusicRatingDistributionBucket(
+            rating: Double(halfStars) / 2,
+            count: counts[halfStars]?.count ?? 0
+        )
+    }
 }
 
 enum FollowingActivityPresentationKind: String, Equatable {
     case diary
     case review
+    case musicList
 }
 
 func followingActivityPresentationKind(
@@ -365,6 +392,7 @@ func followingActivityPresentationKind(
     switch payload {
     case .diary: .diary
     case .review: .review
+    case .musicList: .musicList
     }
 }
 
@@ -623,12 +651,13 @@ private func journalSearchKey(_ value: String) -> String {
 
 struct ReviewsView: View {
     @EnvironmentObject private var store: HarmonySessionStore
-    @State private var shelf = ReviewsShelf.activity
+    @State private var shelf = ReviewsShelf.reviews
     @State private var draft = ReviewDraft()
     @State private var hasSeededDraftVisibility = false
     @State private var isComposingReview = false
     @State private var isChoosingReviewSubject = false
     @State private var isCreatingDiaryEntry = false
+    @State private var isCreatingMusicList = false
     @State private var editingDiaryEntry: RemoteListeningHistoryEntry?
     @State private var journalBrowseFilter = JournalBrowseFilter()
     @State private var reviewBrowseFilter = ReviewBrowseFilter()
@@ -671,13 +700,15 @@ struct ReviewsView: View {
                 }
 
                 switch shelf {
+                case .reviews:
+                    personalReviews
+                case .ratings:
+                    personalRatings
+                case .diary:
+                    listeningJournal
                 case .activity:
                     personalSummary
                     followingActivity
-                case .diary:
-                    listeningJournal
-                case .reviews:
-                    personalReviews
                 }
             }
             .navigationTitle("Reviews")
@@ -694,6 +725,11 @@ struct ReviewsView: View {
                         } label: {
                             Label("Log a listen", systemImage: "calendar.badge.plus")
                         }
+                        Button {
+                            isCreatingMusicList = true
+                        } label: {
+                            Label("Create a list", systemImage: "list.bullet.rectangle")
+                        }
                     } label: {
                         Label("Create", systemImage: "plus")
                     }
@@ -709,6 +745,7 @@ struct ReviewsView: View {
                 await store.refreshListeningHistory()
                 await store.refreshJournalEntries()
                 await store.refreshMusicReviews()
+                await store.refreshTrackSubjectShelf()
                 await store.refreshFollowingActivity()
                 await store.activateSocialRealtime()
             }
@@ -716,6 +753,7 @@ struct ReviewsView: View {
                 await store.refreshListeningHistory()
                 await store.refreshJournalEntries()
                 await store.refreshMusicReviews()
+                await store.refreshTrackSubjectShelf()
                 await store.refreshFollowingActivity()
             }
         }
@@ -767,6 +805,10 @@ struct ReviewsView: View {
         }
         .sheet(isPresented: $isCreatingDiaryEntry) {
             DiaryEntryComposer(defaultVisibility: store.historySocialVisibility)
+                .environmentObject(store)
+        }
+        .sheet(isPresented: $isCreatingMusicList) {
+            NavigationStack { MusicListEditorView(list: nil) }
                 .environmentObject(store)
         }
         .sheet(item: $editingDiaryEntry) { entry in
@@ -957,6 +999,13 @@ struct ReviewsView: View {
                 Label("Music shelf", systemImage: "books.vertical")
             }
             .accessibilityIdentifier("open-music-shelf")
+
+            NavigationLink {
+                MusicListsView()
+            } label: {
+                Label("Lists", systemImage: "list.bullet.rectangle")
+            }
+            .accessibilityIdentifier("open-music-lists")
         }
     }
 
@@ -1134,6 +1183,77 @@ struct ReviewsView: View {
         }
     }
 
+    private var personalRatings: some View {
+        let ratedStates = store.trackSubjectShelf.filter { $0.defaultRating != nil }
+        return Group {
+            Section("Your song ratings") {
+                if store.isRefreshingTrackSubjectShelf && ratedStates.isEmpty {
+                    ProgressView("Loading ratings…")
+                } else if ratedStates.isEmpty {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("No song ratings yet").font(.headline)
+                        Text("Rate a song without writing a review, or add a rating while reviewing it. Ratings and Loved are independent.")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    }
+                    .accessibilityIdentifier("ratings-empty-state")
+                } else {
+                    RatingDistributionView(states: ratedStates)
+                    ForEach(ratedStates) { state in
+                        NavigationLink {
+                            OwnerTrackDetailView(initialState: state)
+                        } label: {
+                            HStack(spacing: 12) {
+                                if let track = state.canonicalTrack {
+                                    TrackArtwork(track: track.harmonyTrack, size: 44, cornerRadius: 8)
+                                }
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(state.canonicalTrack?.title ?? "Unavailable song")
+                                        .font(.headline)
+                                    Text(state.canonicalTrack?.artist ?? "Unknown artist")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                if let rating = state.defaultRating {
+                                    Text("\(rating, specifier: "%.1f") ★")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundColor(.orange)
+                                }
+                                if state.isLoved {
+                                    Image(systemName: "heart.fill")
+                                        .foregroundColor(.pink)
+                                        .accessibilityLabel("Loved")
+                                }
+                            }
+                        }
+                        .accessibilityIdentifier("rating-open-\(state.canonicalTrackID.uuidString)")
+                    }
+                }
+
+                if store.hasMoreTrackSubjectShelf {
+                    Button {
+                        Task { await store.loadMoreTrackSubjectShelf() }
+                    } label: {
+                        if store.isLoadingMoreTrackSubjectShelf {
+                            ProgressView().frame(maxWidth: .infinity)
+                        } else {
+                            Text("Load more ratings").frame(maxWidth: .infinity)
+                        }
+                    }
+                    .disabled(store.isLoadingMoreTrackSubjectShelf)
+                    .accessibilityIdentifier("ratings-load-more")
+                }
+            }
+
+            Section {
+                Text("Album ratings currently live with album reviews. A canonical album shelf will join this page when Harmony can identify the same album across providers.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+
     private var ratingsSummary: some View {
         let average = ownReviews.map(\.rating).reduce(0, +) / Double(ownReviews.count)
         let lovedCount = ownReviews.filter(\.isLoved).count
@@ -1248,6 +1368,26 @@ private struct FollowingActivityCard: View {
                 .buttonStyle(.plain)
             case .diary(let entry):
                 ActivityDiarySummary(entry: entry)
+            case .musicList(let list):
+                NavigationLink {
+                    MusicListDetailView(listID: list.id)
+                } label: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(list.isRanked ? "Published a ranked list" : "Published a list", systemImage: "list.number")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.indigo)
+                        Text(list.title).font(.headline)
+                        if !list.description.isEmpty {
+                            Text(list.description).font(.footnote).lineLimit(3)
+                        }
+                        if !list.tags.isEmpty {
+                            Text(list.tags.prefix(4).map { "#\($0)" }.joined(separator: "  "))
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
             }
 
             Label("Shared with followers", systemImage: "person.2.fill")
@@ -1295,6 +1435,7 @@ private enum MemberProfileShelf: String, CaseIterable, Identifiable {
     case reviews = "Reviews"
     case diary = "Diary"
     case loved = "Loved"
+    case lists = "Lists"
     var id: String { rawValue }
 }
 
@@ -1338,6 +1479,7 @@ struct MemberProfileView: View {
             case .reviews: reviewsShelf
             case .diary: diaryShelf
             case .loved: lovedShelf
+            case .lists: listsShelf
             }
         }
         .navigationTitle(displayName)
@@ -1433,6 +1575,50 @@ struct MemberProfileView: View {
     }
 
     @ViewBuilder
+    private var listsShelf: some View {
+        let state = shelfState?.lists
+        Section("Lists") {
+            if state?.isRefreshing == true && state?.items.isEmpty != false {
+                ProgressView("Loading lists…")
+            } else if state?.items.isEmpty != false {
+                Text("No follower-visible lists.").foregroundColor(.secondary)
+            } else {
+                ForEach(state?.items ?? []) { list in
+                    NavigationLink {
+                        MusicListDetailView(listID: list.id)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 5) {
+                            HStack {
+                                Text(list.title).font(.headline)
+                                Spacer()
+                                if list.isRanked {
+                                    Label("Ranked", systemImage: "list.number")
+                                        .font(.caption2)
+                                        .foregroundColor(.indigo)
+                                }
+                            }
+                            if !list.description.isEmpty {
+                                Text(list.description).font(.footnote).lineLimit(2)
+                            }
+                            if !list.tags.isEmpty {
+                                Text(list.tags.prefix(4).map { "#\($0)" }.joined(separator: "  "))
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                    .accessibilityIdentifier("member-profile-list-\(list.id.uuidString)")
+                }
+                profileLoadMore(
+                    title: "Load more lists",
+                    isLoading: state?.isLoadingMore == true,
+                    hasMore: state?.hasMore == true
+                ) { await store.loadMorePublicProfileLists(for: profileID) }
+            }
+        }
+    }
+
+    @ViewBuilder
     private func profileLoadMore(
         title: String,
         isLoading: Bool,
@@ -1454,6 +1640,7 @@ struct MemberProfileView: View {
         case .reviews: await store.refreshPublicProfileReviews(for: profileID)
         case .diary: await store.refreshPublicProfileDiary(for: profileID)
         case .loved: await store.refreshPublicProfileLoved(for: profileID)
+        case .lists: await store.refreshPublicProfileLists(for: profileID)
         }
     }
 
@@ -2307,6 +2494,67 @@ private struct ReviewCard: View {
             Button("Delete review", role: .destructive) { Task { await store.deleteReview(review.id) } }
             Button("Cancel", role: .cancel) {}
         }
+    }
+}
+
+private struct RatingDistributionView: View {
+    let states: [RemoteTrackSubjectState]
+
+    private var buckets: [MusicRatingDistributionBucket] {
+        musicRatingDistribution(states)
+    }
+
+    private var maximumCount: Int {
+        max(1, buckets.map(\.count).max() ?? 1)
+    }
+
+    private var average: Double {
+        let ratings = states.compactMap(\.defaultRating)
+        return ratings.reduce(0, +) / Double(max(1, ratings.count))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(String(format: "%.2f", average))
+                        .font(.title2.weight(.bold))
+                    Text("Average of loaded song ratings")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Text("\(states.count) rated")
+                    .font(.subheadline.weight(.semibold))
+            }
+
+            HStack(alignment: .bottom, spacing: 4) {
+                ForEach(buckets) { bucket in
+                    VStack(spacing: 3) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Color.orange)
+                            .frame(
+                                height: bucket.count == 0
+                                    ? 2
+                                    : max(5, 56 * CGFloat(bucket.count) / CGFloat(maximumCount))
+                            )
+                        if bucket.rating == 0.5 || bucket.rating == 2.5 || bucket.rating == 5.0 {
+                            Text(bucket.rating.formatted(.number.precision(.fractionLength(1))))
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        } else {
+                            Text(" ").font(.caption2)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(bucket.rating, specifier: "%.1f") stars")
+                    .accessibilityValue("\(bucket.count) ratings")
+                }
+            }
+            .frame(height: 78, alignment: .bottom)
+        }
+        .accessibilityIdentifier("ratings-distribution")
     }
 }
 

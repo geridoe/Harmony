@@ -290,6 +290,23 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(store.catalogSearchState(for: .addMusic).results?.map(\.title), ["Afterglow"])
     }
 
+    func testListCatalogSearchDoesNotReplaceAddMusicOrReviewSearchState() async {
+        let store = HarmonySessionStore(seedSampleData: true)
+
+        await store.searchCatalog(query: "Neon Coast", purpose: .addMusic)
+        await store.searchCatalog(query: "Midnight", purpose: .reviews)
+        await store.searchCatalog(query: "Golden", purpose: .lists)
+
+        XCTAssertEqual(store.catalogSearchState(for: .addMusic).query, "Neon Coast")
+        XCTAssertEqual(store.catalogSearchState(for: .reviews).query, "Midnight")
+        XCTAssertEqual(store.catalogSearchState(for: .lists).query, "Golden")
+
+        store.resetCatalogSearch(.lists)
+        XCTAssertEqual(store.catalogSearchState(for: .lists), .idle)
+        XCTAssertEqual(store.catalogSearchState(for: .addMusic).query, "Neon Coast")
+        XCTAssertEqual(store.catalogSearchState(for: .reviews).query, "Midnight")
+    }
+
     func testReviewAlbumDeduplicationUsesProviderAndProviderID() {
         let spotifyAlbum = ReviewableAlbum(
             provider: .spotify,
@@ -346,6 +363,59 @@ final class HarmonyTests: XCTestCase {
         XCTAssertTrue(draft.containsSpoilers)
         XCTAssertEqual(draft.body, "Keep this if publication fails")
         XCTAssertEqual(draft.visibility, .followers, "An open draft must not follow later profile-default changes")
+    }
+
+    func testMusicListDraftNormalizesAndValidatesAuthoredMetadata() {
+        var draft = MusicListDraft(
+            title: "  After-hours favorites  ",
+            description: "  Sequenced for the ride home.  ",
+            tagsText: "Night, party, NIGHT",
+            isRanked: true,
+            visibility: .followers
+        )
+        draft.entries = [MusicListDraftEntry(track: reviewTrack(title: "Neon"), note: "  Perfect opener.  ")]
+
+        XCTAssertEqual(draft.normalizedTitle, "After-hours favorites")
+        XCTAssertEqual(draft.normalizedDescription, "Sequenced for the ride home.")
+        XCTAssertEqual(draft.normalizedTags, ["night", "party"])
+        XCTAssertNil(draft.validationMessage)
+
+        draft.title = "   "
+        XCTAssertEqual(draft.validationMessage, "List titles must contain 1 to 120 characters.")
+    }
+
+    func testMusicListDraftRejectsDuplicateRecordingAndPreservesOrder() {
+        let mapping = ProviderTrackMapping(
+            provider: .spotify,
+            providerID: "spotify:track:list-fixture",
+            availability: .playable
+        )
+        let first = HarmonyTrack(
+            title: "Original metadata",
+            artist: "Test Artist",
+            album: "Test Album",
+            duration: 180,
+            symbol: "music.note",
+            mappings: [mapping]
+        )
+        let duplicate = HarmonyTrack(
+            title: "Changed metadata",
+            artist: "Test Artist",
+            album: "Deluxe",
+            duration: 181,
+            symbol: "music.note",
+            mappings: [mapping]
+        )
+        let second = reviewTrack(title: "Second")
+        var draft = MusicListDraft(title: "Ordered")
+
+        XCTAssertTrue(draft.addTrack(first))
+        XCTAssertFalse(draft.addTrack(duplicate))
+        XCTAssertTrue(draft.addTrack(second))
+        draft.moveEntries(fromOffsets: IndexSet(integer: 1), toOffset: 0)
+
+        XCTAssertEqual(draft.entries.map(\.track.title), ["Second", "Original metadata"])
+        XCTAssertEqual(draft.entries.count, 2)
     }
 
     func testChoosingReviewSubjectHasNoQueueOrHistorySideEffects() {
@@ -719,9 +789,29 @@ final class HarmonyTests: XCTestCase {
     func testFollowingActivityPayloadsKeepTheirTypedPresentation() {
         let diary = journalEntry(title: "Diary track")
         let review = musicReview(title: "Reviewed track")
+        let list = musicList(title: "Favorite bridges")
 
         XCTAssertEqual(followingActivityPresentationKind(for: .diary(diary)), .diary)
         XCTAssertEqual(followingActivityPresentationKind(for: .review(review)), .review)
+        XCTAssertEqual(followingActivityPresentationKind(for: .musicList(list)), .musicList)
+    }
+
+    func testMusicRatingDistributionUsesHalfStarBucketsAndExcludesUnratedTracks() {
+        let states = [
+            trackSubjectState(title: "Half", defaultRating: 0.5),
+            trackSubjectState(title: "Four", defaultRating: 4.0),
+            trackSubjectState(title: "Another four", defaultRating: 4.0),
+            trackSubjectState(title: "Five", defaultRating: 5.0),
+            trackSubjectState(title: "Unrated")
+        ]
+
+        let buckets = musicRatingDistribution(states)
+
+        XCTAssertEqual(buckets.count, 10)
+        XCTAssertEqual(buckets.first, MusicRatingDistributionBucket(rating: 0.5, count: 1))
+        XCTAssertEqual(buckets.first(where: { $0.rating == 4.0 })?.count, 2)
+        XCTAssertEqual(buckets.last, MusicRatingDistributionBucket(rating: 5.0, count: 1))
+        XCTAssertEqual(buckets.map(\.count).reduce(0, +), 4)
     }
 
     func testClearingSessionRemovesRoomStateAndRestoresLocalOwnership() {
@@ -884,6 +974,24 @@ final class HarmonyTests: XCTestCase {
             profile: RemoteProfile(displayName: "Test listener"),
             comments: [],
             reactions: []
+        )
+    }
+
+    private func musicList(title: String) -> RemoteMusicList {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        return RemoteMusicList(
+            id: UUID(),
+            ownerID: UUID(),
+            title: title,
+            description: "A test list",
+            tags: ["test"],
+            isRanked: true,
+            visibility: .followers,
+            entriesRevision: 2,
+            createdAt: now.addingTimeInterval(-60),
+            updatedAt: now,
+            deletedAt: nil,
+            owner: RemoteProfile(displayName: "Test listener")
         )
     }
 }

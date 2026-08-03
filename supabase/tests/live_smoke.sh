@@ -12,6 +12,9 @@ stage="initialization"
 
 report_failure() {
   printf 'Harmony live smoke failed during: %s\n' "$stage" >&2
+  if [[ "${HARMONY_KEEP_SMOKE_ARTIFACTS:-0}" == "1" ]]; then
+    printf 'Smoke artifacts retained at: %s\n' "$smoke_tmp" >&2
+  fi
 }
 
 cleanup_account() {
@@ -28,7 +31,9 @@ cleanup_account() {
 cleanup() {
   cleanup_account "$collaborator_token" || true
   cleanup_account "$conductor_token" || true
-  rm -rf "$smoke_tmp"
+  if [[ "${HARMONY_KEEP_SMOKE_ARTIFACTS:-0}" != "1" ]]; then
+    rm -rf "$smoke_tmp"
+  fi
 }
 trap cleanup EXIT
 trap report_failure ERR
@@ -662,6 +667,191 @@ rest_get "$conductor_token" \
   "$smoke_tmp/deleted-comment.json"
 [[ "$(jq 'length' "$smoke_tmp/deleted-comment.json")" -eq 0 ]]
 
+stage="atomic private music lists"
+rest_get "$collaborator_token" \
+  "queue_items?select=id&session_id=eq.$session_id" \
+  "$smoke_tmp/list-queue-before.json"
+list_queue_before="$(jq 'length' "$smoke_tmp/list-queue-before.json")"
+rest_get "$collaborator_token" \
+  "listening_history_entries?select=id&canonical_track_id=eq.$spotify_url_track_id" \
+  "$smoke_tmp/list-history-before.json"
+list_history_before="$(jq 'length' "$smoke_tmp/list-history-before.json")"
+rest_get "$collaborator_token" \
+  "profile_track_subject_states?select=canonical_track_id&canonical_track_id=eq.$spotify_url_track_id" \
+  "$smoke_tmp/list-state-before.json"
+list_state_before="$(jq 'length' "$smoke_tmp/list-state-before.json")"
+
+direct_list_insert_status="$(curl --silent --show-error \
+  -X POST "$supabase_url/rest/v1/music_lists" \
+  -H "apikey: $publishable_key" \
+  -H "Authorization: Bearer $collaborator_token" \
+  -H "Content-Type: application/json" \
+  --data "{\"owner_id\":\"$collaborator_id\",\"title\":\"Bypass\"}" \
+  -o "$smoke_tmp/direct-list-insert.json" \
+  -w '%{http_code}')"
+[[ "$direct_list_insert_status" == "401" || "$direct_list_insert_status" == "403" ]]
+
+list_entries_json="$(jq -nc \
+  --arg first "$spotify_url_track_id" \
+  --arg second "$canonical_track_id" \
+  '[
+    {canonical_track_id:$first,note:"Opener"},
+    {canonical_track_id:$second,note:"Closer"}
+  ]')"
+save_list_body="$(jq -nc \
+  --arg title 'Harmony smoke sequence' \
+  --arg description 'An atomic ordered list.' \
+  --argjson tags '["party","night"]' \
+  --argjson entries "$list_entries_json" \
+  '{p_list_id:null,p_title:$title,p_description:$description,p_tags:$tags,p_is_ranked:true,p_visibility:"private",p_entries:$entries,p_expected_revision:null}')"
+rpc "$collaborator_token" save_music_list "$save_list_body" "$smoke_tmp/music-list-create.json"
+music_list_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/music-list-create.json")"
+music_list_revision="$(jq -er 'if type == "array" then .[0].entries_revision else .entries_revision end' "$smoke_tmp/music-list-create.json")"
+
+rest_get "$conductor_token" \
+  "music_lists?select=id&id=eq.$music_list_id" \
+  "$smoke_tmp/private-list-follower.json"
+[[ "$(jq 'length' "$smoke_tmp/private-list-follower.json")" -eq 0 ]]
+private_entries_status="$(rpc_status "$conductor_token" list_music_list_entries \
+  "{\"p_list_id\":\"$music_list_id\",\"p_after_position\":null,\"p_limit\":100}" \
+  "$smoke_tmp/private-list-entries-follower.json")"
+[[ "$private_entries_status" == "400" || "$private_entries_status" == "403" || "$private_entries_status" == "404" ]]
+rpc "$collaborator_token" list_music_list_entries \
+  "{\"p_list_id\":\"$music_list_id\",\"p_after_position\":null,\"p_limit\":100}" \
+  "$smoke_tmp/private-list-entries-owner.json"
+jq -e --arg first "$spotify_url_track_id" --arg second "$canonical_track_id" \
+  'length == 2 and .[0].position == 1 and .[0].canonical_track_id == $first and .[1].position == 2 and .[1].canonical_track_id == $second' \
+  "$smoke_tmp/private-list-entries-owner.json" >/dev/null
+
+duplicate_draft_status="$(rpc_status "$collaborator_token" save_music_list \
+  "$(jq -nc --arg track "$spotify_url_track_id" '{p_list_id:null,p_title:"Duplicate draft",p_description:"",p_tags:[],p_is_ranked:false,p_visibility:"private",p_entries:[{canonical_track_id:$track,note:""},{canonical_track_id:$track,note:"again"}],p_expected_revision:null}')" \
+  "$smoke_tmp/duplicate-list-draft.json")"
+[[ "$duplicate_draft_status" == "400" || "$duplicate_draft_status" == "404" ]]
+rest_get "$collaborator_token" \
+  "music_lists?select=id&owner_id=eq.$collaborator_id&deleted_at=is.null" \
+  "$smoke_tmp/owner-lists-after-rejected-draft.json"
+[[ "$(jq 'length' "$smoke_tmp/owner-lists-after-rejected-draft.json")" -eq 1 ]]
+
+rest_get "$collaborator_token" \
+  "queue_items?select=id&session_id=eq.$session_id" \
+  "$smoke_tmp/list-queue-after.json"
+[[ "$(jq 'length' "$smoke_tmp/list-queue-after.json")" -eq "$list_queue_before" ]]
+rest_get "$collaborator_token" \
+  "listening_history_entries?select=id&canonical_track_id=eq.$spotify_url_track_id" \
+  "$smoke_tmp/list-history-after.json"
+[[ "$(jq 'length' "$smoke_tmp/list-history-after.json")" -eq "$list_history_before" ]]
+rest_get "$collaborator_token" \
+  "profile_track_subject_states?select=canonical_track_id&canonical_track_id=eq.$spotify_url_track_id" \
+  "$smoke_tmp/list-state-after.json"
+[[ "$(jq 'length' "$smoke_tmp/list-state-after.json")" -eq "$list_state_before" ]]
+
+stage="music list publication ordering and revision conflicts"
+reversed_entries_json="$(jq -nc \
+  --arg first "$canonical_track_id" \
+  --arg second "$spotify_url_track_id" \
+  '[
+    {canonical_track_id:$first,note:"Now first"},
+    {canonical_track_id:$second,note:"Now second"}
+  ]')"
+publish_list_body="$(jq -nc \
+  --arg list "$music_list_id" \
+  --argjson revision "$music_list_revision" \
+  --argjson entries "$reversed_entries_json" \
+  '{p_list_id:$list,p_title:"Harmony smoke sequence",p_description:"Published atomically.",p_tags:["night","party"],p_is_ranked:true,p_visibility:"followers",p_entries:$entries,p_expected_revision:$revision}')"
+rpc "$collaborator_token" save_music_list "$publish_list_body" "$smoke_tmp/music-list-publish.json"
+published_list_revision="$(jq -er 'if type == "array" then .[0].entries_revision else .entries_revision end' "$smoke_tmp/music-list-publish.json")"
+[[ "$published_list_revision" -gt "$music_list_revision" ]]
+rpc "$conductor_token" list_profile_music_lists \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_before_updated_at\":null,\"p_before_id\":null,\"p_limit\":50}" \
+  "$smoke_tmp/follower-music-lists.json"
+jq -e --arg list "$music_list_id" 'length == 1 and .[0].id == $list and .[0].visibility == "followers"' \
+  "$smoke_tmp/follower-music-lists.json" >/dev/null
+rest_get "$conductor_token" \
+  "music_lists?select=id,owner:profiles!music_lists_owner_id_fkey(display_name)&id=eq.$music_list_id" \
+  "$smoke_tmp/follower-music-list-client-shape.json"
+jq -e --arg list "$music_list_id" 'length == 1 and .[0].id == $list and (.[] | .owner.display_name | length) > 0' \
+  "$smoke_tmp/follower-music-list-client-shape.json" >/dev/null
+rpc "$conductor_token" list_music_list_entries \
+  "{\"p_list_id\":\"$music_list_id\",\"p_after_position\":null,\"p_limit\":100}" \
+  "$smoke_tmp/follower-list-entries.json"
+jq -e --arg first "$canonical_track_id" --arg second "$spotify_url_track_id" \
+  'length == 2 and .[0].canonical_track_id == $first and .[1].canonical_track_id == $second' \
+  "$smoke_tmp/follower-list-entries.json" >/dev/null
+
+stale_list_save_status="$(rpc_status "$collaborator_token" save_music_list \
+  "$publish_list_body" "$smoke_tmp/stale-list-save.json")"
+[[ "$stale_list_save_status" == "400" || "$stale_list_save_status" == "409" ]]
+jq -e '.details == "music_list_revision_conflict" or .detail == "music_list_revision_conflict" or (.message | contains("refresh"))' \
+  "$smoke_tmp/stale-list-save.json" >/dev/null
+
+rpc "$collaborator_token" add_music_list_entry \
+  "{\"p_list_id\":\"$music_list_id\",\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_note\":\"Encore\",\"p_expected_revision\":$published_list_revision}" \
+  "$smoke_tmp/list-entry-add.json"
+added_list_revision="$(jq -er '.entries_revision' "$smoke_tmp/list-entry-add.json")"
+list_third_entry_id="$(jq -er '.entry.id' "$smoke_tmp/list-entry-add.json")"
+duplicate_list_entry_status="$(rpc_status "$collaborator_token" add_music_list_entry \
+  "{\"p_list_id\":\"$music_list_id\",\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_note\":\"Duplicate\",\"p_expected_revision\":$added_list_revision}" \
+  "$smoke_tmp/duplicate-list-entry.json")"
+[[ "$duplicate_list_entry_status" == "400" || "$duplicate_list_entry_status" == "409" ]]
+
+rpc "$collaborator_token" list_music_list_entries \
+  "{\"p_list_id\":\"$music_list_id\",\"p_after_position\":null,\"p_limit\":100}" \
+  "$smoke_tmp/list-before-reorder.json"
+list_first_entry_id="$(jq -er '.[0].id' "$smoke_tmp/list-before-reorder.json")"
+list_second_entry_id="$(jq -er '.[1].id' "$smoke_tmp/list-before-reorder.json")"
+rpc "$collaborator_token" reorder_music_list_entries \
+  "{\"p_list_id\":\"$music_list_id\",\"p_ordered_entry_ids\":[\"$list_third_entry_id\",\"$list_first_entry_id\",\"$list_second_entry_id\"],\"p_expected_revision\":$added_list_revision}" \
+  "$smoke_tmp/list-reorder.json"
+reordered_list_revision="$(jq -er '.' "$smoke_tmp/list-reorder.json")"
+invalid_reorder_status="$(rpc_status "$collaborator_token" reorder_music_list_entries \
+  "{\"p_list_id\":\"$music_list_id\",\"p_ordered_entry_ids\":[\"$list_third_entry_id\",\"$list_third_entry_id\",\"$list_second_entry_id\"],\"p_expected_revision\":$reordered_list_revision}" \
+  "$smoke_tmp/list-invalid-reorder.json")"
+[[ "$invalid_reorder_status" == "400" ]]
+rpc "$collaborator_token" list_music_list_entries \
+  "{\"p_list_id\":\"$music_list_id\",\"p_after_position\":null,\"p_limit\":100}" \
+  "$smoke_tmp/list-after-reorder.json"
+jq -e --arg third "$list_third_entry_id" --arg first "$list_first_entry_id" --arg second "$list_second_entry_id" \
+  'map(.id) == [$third,$first,$second] and map(.position) == [1,2,3]' \
+  "$smoke_tmp/list-after-reorder.json" >/dev/null
+
+stage="music list engagement activity and block privacy"
+rpc "$conductor_token" set_music_list_liked \
+  "{\"p_list_id\":\"$music_list_id\",\"p_is_liked\":true}" \
+  "$smoke_tmp/list-liked.json"
+rpc "$conductor_token" set_music_list_liked \
+  "{\"p_list_id\":\"$music_list_id\",\"p_is_liked\":true}" \
+  "$smoke_tmp/list-liked-repeat.json"
+[[ "$(jq -er '.' "$smoke_tmp/list-liked.json")" == "true" ]]
+rpc "$conductor_token" add_music_list_comment \
+  "{\"p_list_id\":\"$music_list_id\",\"p_body\":\"Great sequence.\"}" \
+  "$smoke_tmp/list-comment.json"
+music_list_comment_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/list-comment.json")"
+rest_get "$collaborator_token" \
+  "social_notifications?select=kind,actor_id,music_list_id,music_list_comment_id&actor_id=eq.$conductor_id&music_list_id=eq.$music_list_id&order=created_at.asc" \
+  "$smoke_tmp/list-notifications.json"
+jq -e 'length == 2 and ([.[].kind] | sort) == ["music_list_comment","music_list_like"]' \
+  "$smoke_tmp/list-notifications.json" >/dev/null
+rest_get "$collaborator_token" \
+  "social_notifications?select=id,kind,actor:profiles!social_notifications_actor_id_fkey(display_name),review:music_reviews!social_notifications_review_id_fkey(subject_title),music_list:music_lists!social_notifications_music_list_id_fkey(title)&actor_id=eq.$conductor_id&music_list_id=eq.$music_list_id" \
+  "$smoke_tmp/list-notifications-client-shape.json"
+jq -e 'length == 2 and all(.[]; .actor.display_name | length > 0) and all(.[]; .music_list.title == "Harmony smoke sequence")' \
+  "$smoke_tmp/list-notifications-client-shape.json" >/dev/null
+rest_get "$collaborator_token" \
+  "social_activity_events?select=id,kind,list_id&list_id=eq.$music_list_id" \
+  "$smoke_tmp/list-activity.json"
+jq -e 'length == 1 and .[0].kind == "list_published"' "$smoke_tmp/list-activity.json" >/dev/null
+rpc "$collaborator_token" update_music_list \
+  "{\"p_list_id\":\"$music_list_id\",\"p_title\":\"Harmony smoke sequence updated\",\"p_description\":\"No duplicate activity.\",\"p_tags\":[\"night\"],\"p_is_ranked\":false,\"p_visibility\":\"followers\"}" \
+  "$smoke_tmp/list-metadata-update.json"
+rest_get "$collaborator_token" \
+  "social_activity_events?select=id&list_id=eq.$music_list_id" \
+  "$smoke_tmp/list-activity-after-edit.json"
+[[ "$(jq 'length' "$smoke_tmp/list-activity-after-edit.json")" -eq 1 ]]
+rpc "$collaborator_token" delete_music_list_comment \
+  "{\"p_comment_id\":\"$music_list_comment_id\"}" \
+  "$smoke_tmp/list-comment-delete.json"
+[[ "$(jq -er '.' "$smoke_tmp/list-comment-delete.json")" == "true" ]]
+
 stage="social block enforcement"
 rpc "$collaborator_token" block_social_profile \
   "{\"p_profile_id\":\"$conductor_id\"}" \
@@ -682,6 +872,14 @@ rest_get "$conductor_token" \
   "music_reviews?select=id&id=eq.$album_review_id" \
   "$smoke_tmp/blocked-album-review.json"
 [[ "$(jq 'length' "$smoke_tmp/blocked-album-review.json")" -eq 0 ]]
+rest_get "$conductor_token" \
+  "music_lists?select=id&id=eq.$music_list_id" \
+  "$smoke_tmp/blocked-music-list.json"
+[[ "$(jq 'length' "$smoke_tmp/blocked-music-list.json")" -eq 0 ]]
+blocked_list_entries_status="$(rpc_status "$conductor_token" list_music_list_entries \
+  "{\"p_list_id\":\"$music_list_id\",\"p_after_position\":null,\"p_limit\":100}" \
+  "$smoke_tmp/blocked-music-list-entries.json")"
+[[ "$blocked_list_entries_status" == "400" || "$blocked_list_entries_status" == "403" || "$blocked_list_entries_status" == "404" ]]
 rpc "$conductor_token" list_following_activity \
   '{"p_before_published_at":null,"p_before_id":null,"p_limit":50}' \
   "$smoke_tmp/blocked-activity-page.json"
@@ -710,6 +908,14 @@ rpc "$collaborator_token" unblock_social_profile \
   "{\"p_profile_id\":\"$conductor_id\"}" \
   "$smoke_tmp/unblock.json"
 [[ "$(jq -er '.' "$smoke_tmp/unblock.json")" == "true" ]]
+rpc "$collaborator_token" delete_music_list \
+  "{\"p_list_id\":\"$music_list_id\"}" \
+  "$smoke_tmp/music-list-delete.json"
+[[ "$(jq -er '.' "$smoke_tmp/music-list-delete.json")" == "true" ]]
+rest_get "$collaborator_token" \
+  "music_lists?select=id&id=eq.$music_list_id" \
+  "$smoke_tmp/deleted-music-list.json"
+[[ "$(jq 'length' "$smoke_tmp/deleted-music-list.json")" -eq 0 ]]
 rpc "$conductor_token" request_social_follow \
   "{\"p_profile_id\":\"$collaborator_id\"}" \
   "$smoke_tmp/refollow.json"

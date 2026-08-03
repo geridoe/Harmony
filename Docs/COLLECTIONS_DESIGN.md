@@ -1,7 +1,7 @@
 # Music lists and collections design
 
 **Decision date:** 3 August 2026  
-**Status:** researched and specified; implementation follows the Reviews browsing slice
+**Status:** migration 036 deployed; Swift repository/store and dedicated iOS index/editor/detail implemented; hosted contract smoke in final verification
 
 ## Product decision
 
@@ -25,9 +25,10 @@ not Letterboxd's branding or film-specific presentation.
 ## Navigation decision
 
 Harmony already has five primary iPhone tabs. Adding a sixth would move a
-destination into iOS's More tab and weaken both Reviews and Lists. Lists will
-therefore be a dedicated `MusicListsView` with its own navigation title, index,
-detail, and editor, reached in one tap from **Reviews → Activity → Lists**.
+destination into iOS's More tab and weaken both Reviews and Lists. Lists are
+therefore implemented as a dedicated `MusicListsView` with its own navigation
+title, index, detail, and editor, reached in one tap from **Reviews → Activity
+→ Lists**.
 
 Additional entry points will be:
 
@@ -98,9 +99,16 @@ visibility.
 Entry mutations lock the list row and compare `entries_revision`. Add, remove,
 note update, and reorder each increment the revision exactly once. Reorder
 accepts an exact, duplicate-free permutation of current entry IDs. A stale
-revision rejects atomically with a stable conflict detail; the client refreshes
+revision rejects atomically as HTTP 409 with stable detail
+`music_list_revision_conflict`; the client refreshes
 and lets the owner reapply their draft. Remove compacts later positions within
 the same transaction. The initial cap is 1,000 entries per list.
+
+Migration 036 initially used SQLSTATE `40001`, which is semantically a
+serialization failure. Hosted verification showed Supabase retrying that
+deliberate rejection until its gateway returned a plain-text timeout. Migration
+037 remaps only these authored revision rejections to PostgREST's non-retryable
+`PT409`; transaction rollback and conflict detection are unchanged.
 
 The editor retains one value-typed draft containing list metadata and ordered
 entries. Nothing is committed to the store cache until one complete backend
@@ -149,13 +157,16 @@ with RLS remaining the visibility authority.
 
 ## Delivery order
 
-1. Schema, constraints, RLS, owner CRUD, revision-safe ordering, and hosted
-   security/concurrency smoke tests.
-2. Swift DTO/repository/store layer and isolated unit tests.
-3. Dedicated owner Lists index, editor, and detail.
-4. Member profile shelf and typed following activity.
-5. Add-to-list entry points, likes/comments, notifications, and Realtime polish.
-6. Canonical album identity followed by mixed song/album lists.
+1. **Implemented:** schema, constraints, RLS, owner CRUD, revision-safe ordering,
+   activity/notifications, engagement summary, and Realtime publication.
+2. **Implemented:** Swift DTO/repository/store layer with isolated draft/search
+   tests and revision-conflict recovery.
+3. **Implemented:** dedicated owner Lists index, complete atomic editor, catalog
+   picker, detail, likes, comments, and moderation.
+4. **Implemented:** member profile shelf and typed following activity.
+5. **Next:** Add-to-list actions on canonical song detail and broader search,
+   plus UI automation and visual polish on a physical iPhone.
+6. **Later:** canonical album identity followed by mixed song/album lists.
 
 ## Required verification
 

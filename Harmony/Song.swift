@@ -133,6 +133,87 @@ struct TrackSubjectStateDraft: Equatable {
     }
 }
 
+struct MusicListDraftEntry: Identifiable, Equatable {
+    let id: UUID
+    var track: HarmonyTrack
+    var note: String
+
+    init(id: UUID = UUID(), track: HarmonyTrack, note: String = "") {
+        self.id = id
+        self.track = track
+        self.note = note
+    }
+}
+
+/// A failure-safe snapshot for the complete list editor. The store never
+/// mutates its persisted list cache from this value until the backend accepts
+/// the corresponding operation.
+struct MusicListDraft: Equatable {
+    var title = ""
+    var description = ""
+    var tagsText = ""
+    var isRanked = false
+    var visibility: SocialVisibilityOption = .privateOnly
+    var entries: [MusicListDraftEntry] = []
+
+    var normalizedTitle: String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var normalizedDescription: String {
+        description.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var normalizedTags: [String] {
+        var seen = Set<String>()
+        return tagsText.split(separator: ",", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    var validationMessage: String? {
+        if !(1...120).contains(normalizedTitle.count) {
+            return "List titles must contain 1 to 120 characters."
+        }
+        if normalizedDescription.count > 5_000 {
+            return "List descriptions must be 5,000 characters or fewer."
+        }
+        if normalizedTags.count > 10 {
+            return "Use no more than 10 list tags."
+        }
+        if normalizedTags.contains(where: { $0.count > 30 }) {
+            return "Each list tag must be 30 characters or fewer."
+        }
+        if entries.count > 1_000 {
+            return "Lists can contain no more than 1,000 songs."
+        }
+        if entries.contains(where: { $0.note.trimmingCharacters(in: .whitespacesAndNewlines).count > 1_000 }) {
+            return "List notes must be 1,000 characters or fewer."
+        }
+        return nil
+    }
+
+    mutating func addTrack(_ track: HarmonyTrack) -> Bool {
+        guard entries.count < 1_000,
+              !entries.contains(where: { Self.sameRecording($0.track, track) }) else { return false }
+        entries.append(MusicListDraftEntry(track: track))
+        return true
+    }
+
+    mutating func moveEntries(fromOffsets: IndexSet, toOffset: Int) {
+        entries.move(fromOffsets: fromOffsets, toOffset: toOffset)
+    }
+
+    private static func sameRecording(_ lhs: HarmonyTrack, _ rhs: HarmonyTrack) -> Bool {
+        if let leftID = lhs.canonicalTrackID, let rightID = rhs.canonicalTrackID {
+            return leftID == rightID
+        }
+        let leftMappings = Set(lhs.mappings.map { "\($0.provider.rawValue):\($0.storefront):\($0.providerID)" })
+        let rightMappings = Set(rhs.mappings.map { "\($0.provider.rawValue):\($0.storefront):\($0.providerID)" })
+        return !leftMappings.isDisjoint(with: rightMappings)
+    }
+}
+
 enum TrackSubjectStateStatus: String, Equatable {
     case listened = "Listened"
     case loved = "Loved"
@@ -249,11 +330,21 @@ struct PublicProfileShelfState {
     var reviews = PaginatedShelfState<RemoteMusicReview>()
     var diary = PaginatedShelfState<RemoteListeningHistoryEntry>()
     var loved = PaginatedShelfState<RemotePublicLovedTrack>()
+    var lists = PaginatedShelfState<RemoteMusicList>()
+}
+
+struct MusicListDetailState {
+    var list: RemoteMusicList?
+    var entries = PaginatedShelfState<RemoteMusicListEntry>()
+    var comments = PaginatedShelfState<RemoteMusicListComment>()
+    var engagement: RemoteMusicListEngagement?
+    var isRefreshing = false
 }
 
 enum CatalogSearchPurpose: Hashable {
     case addMusic
     case reviews
+    case lists
 }
 
 struct CatalogSearchState: Equatable {
@@ -321,6 +412,19 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var isLoadingMoreFollowingActivity = false
     @Published private(set) var hasMoreFollowingActivity = false
     @Published private(set) var publicProfileShelves: [UUID: PublicProfileShelfState] = [:]
+    @Published private(set) var ownerMusicLists: [RemoteMusicList] = []
+    @Published private(set) var isRefreshingOwnerMusicLists = false
+    @Published private(set) var isLoadingMoreOwnerMusicLists = false
+    @Published private(set) var hasMoreOwnerMusicLists = false
+    @Published private(set) var musicListDetails: [UUID: MusicListDetailState] = [:]
+    /// Missing keys are deliberately unknown until detail engagement loads.
+    @Published private(set) var musicListLikeStates: [UUID: Bool] = [:]
+    @Published private(set) var isCreatingMusicList = false
+    @Published private(set) var mutatingMusicListIDs: Set<UUID> = []
+    @Published private(set) var mutatingMusicListEntryIDs: Set<UUID> = []
+    @Published private(set) var likingMusicListIDs: Set<UUID> = []
+    @Published private(set) var commentingMusicListIDs: Set<UUID> = []
+    @Published private(set) var deletingMusicListCommentIDs: Set<UUID> = []
     @Published private(set) var socialProfiles: [RemoteSocialProfile] = []
     @Published private(set) var socialNotifications: [RemoteSocialNotification] = []
     @Published private(set) var isRefreshingSocialProfiles = false
@@ -348,6 +452,8 @@ final class HarmonySessionStore: ObservableObject {
     private let journalPageSize = 50
     private let trackSubjectShelfPageSize = 50
     private let socialShelfPageSize = 50
+    private let musicListPageSize = 50
+    private let musicListEntryPageSize = 100
     private var followingActivityCursor: RemoteFollowingActivityCursor?
 #if DEBUG
     private var isDiaryEditorUITestFixtureActive = false
@@ -652,7 +758,7 @@ final class HarmonySessionStore: ObservableObject {
             catalogSearchRequestIDs[purpose] = UUID()
             catalogSearchStates[purpose] = .idle
         } else {
-            for purpose in [CatalogSearchPurpose.addMusic, .reviews] {
+            for purpose in [CatalogSearchPurpose.addMusic, .reviews, .lists] {
                 catalogSearchRequestIDs[purpose] = UUID()
             }
             catalogSearchStates.removeAll()
@@ -1557,8 +1663,639 @@ final class HarmonySessionStore: ObservableObject {
         }
     }
 
+    func refreshPublicProfileLists(for profileID: UUID) async {
+#if DEBUG
+        guard !isDiaryEditorUITestFixtureActive else { return }
+#endif
+        var shelves = publicProfileShelves[profileID] ?? PublicProfileShelfState()
+        guard !shelves.lists.isRefreshing, !shelves.lists.isLoadingMore else { return }
+        shelves.lists.isRefreshing = true
+        publicProfileShelves[profileID] = shelves
+        defer { publicProfileShelves[profileID]?.lists.isRefreshing = false }
+        do {
+            let page = try await collaborationRepository.publicProfileMusicListsPage(
+                profileID: profileID,
+                limit: musicListPageSize + 1
+            )
+            let visible = Array(page.prefix(musicListPageSize))
+            publicProfileShelves[profileID]?.lists.items = visible
+            publicProfileShelves[profileID]?.lists.hasMore = page.count > musicListPageSize
+            visible.forEach { cacheMusicList($0) }
+        } catch {
+            collaborationMessage = "Could not load this member's lists."
+        }
+    }
+
+    func loadMorePublicProfileLists(for profileID: UUID) async {
+        guard var shelves = publicProfileShelves[profileID],
+              shelves.lists.hasMore,
+              !shelves.lists.isRefreshing,
+              !shelves.lists.isLoadingMore,
+              let cursor = shelves.lists.items.last else { return }
+        shelves.lists.isLoadingMore = true
+        publicProfileShelves[profileID] = shelves
+        defer { publicProfileShelves[profileID]?.lists.isLoadingMore = false }
+        do {
+            let page = try await collaborationRepository.publicProfileMusicListsPage(
+                profileID: profileID,
+                beforeUpdatedAt: cursor.updatedAt,
+                beforeID: cursor.id,
+                limit: musicListPageSize + 1
+            )
+            let existingIDs = Set(shelves.lists.items.map(\.id))
+            let visible = page.prefix(musicListPageSize)
+                .filter { !existingIDs.contains($0.id) }
+            publicProfileShelves[profileID]?.lists.items.append(contentsOf: visible)
+            publicProfileShelves[profileID]?.lists.hasMore = page.count > musicListPageSize
+            visible.forEach { cacheMusicList($0) }
+        } catch {
+            collaborationMessage = "Could not load more lists."
+        }
+    }
+
     func clearPublicProfileShelves(for profileID: UUID) {
         publicProfileShelves.removeValue(forKey: profileID)
+    }
+
+    // MARK: - Music lists and collections
+
+    func musicListDetail(for listID: UUID) -> MusicListDetailState {
+        musicListDetails[listID] ?? MusicListDetailState()
+    }
+
+    func isOwnMusicList(_ list: RemoteMusicList) -> Bool {
+        list.ownerID == authenticatedProfileID
+    }
+
+    func musicListLikeState(for listID: UUID) -> Bool? {
+        musicListLikeStates[listID]
+    }
+
+    func canDeleteMusicListComment(_ comment: RemoteMusicListComment) -> Bool {
+        if comment.authorID == authenticatedProfileID { return true }
+        return musicListDetails[comment.listID]?.list.map(isOwnMusicList) ?? false
+    }
+
+    func refreshOwnerMusicLists() async {
+        guard !isRefreshingOwnerMusicLists, !isLoadingMoreOwnerMusicLists else { return }
+        isRefreshingOwnerMusicLists = true
+        defer { isRefreshingOwnerMusicLists = false }
+        do {
+            let page = try await collaborationRepository.ownerMusicListsPage(
+                limit: musicListPageSize + 1
+            )
+            ownerMusicLists = Array(page.prefix(musicListPageSize))
+            hasMoreOwnerMusicLists = page.count > musicListPageSize
+            ownerMusicLists.forEach { cacheMusicList($0) }
+        } catch {
+            collaborationMessage = "Could not refresh your lists."
+        }
+    }
+
+    func loadMoreOwnerMusicLists() async {
+        guard hasMoreOwnerMusicLists,
+              !isRefreshingOwnerMusicLists,
+              !isLoadingMoreOwnerMusicLists,
+              let cursor = ownerMusicLists.last else { return }
+        isLoadingMoreOwnerMusicLists = true
+        defer { isLoadingMoreOwnerMusicLists = false }
+        do {
+            let page = try await collaborationRepository.ownerMusicListsPage(
+                beforeUpdatedAt: cursor.updatedAt,
+                beforeID: cursor.id,
+                limit: musicListPageSize + 1
+            )
+            let existingIDs = Set(ownerMusicLists.map(\.id))
+            let visible = page.prefix(musicListPageSize)
+                .filter { !existingIDs.contains($0.id) }
+            ownerMusicLists.append(contentsOf: visible)
+            hasMoreOwnerMusicLists = page.count > musicListPageSize
+            visible.forEach { cacheMusicList($0) }
+        } catch {
+            collaborationMessage = "Could not load more of your lists."
+        }
+    }
+
+    /// Loads parent metadata and the first entry/comment pages as one cache
+    /// snapshot. A failed child read leaves the previous detail intact.
+    @discardableResult
+    func refreshMusicListDetail(_ listID: UUID) async -> Bool {
+        var detail = musicListDetails[listID] ?? MusicListDetailState()
+        guard !detail.isRefreshing else { return false }
+        detail.isRefreshing = true
+        musicListDetails[listID] = detail
+        defer { musicListDetails[listID]?.isRefreshing = false }
+        do {
+            async let list = collaborationRepository.musicList(id: listID)
+            async let entries = collaborationRepository.musicListEntriesPage(
+                listID: listID,
+                limit: musicListEntryPageSize
+            )
+            async let comments = collaborationRepository.musicListCommentsPage(
+                listID: listID,
+                limit: musicListPageSize + 1
+            )
+            async let engagement = collaborationRepository.musicListEngagement(listID)
+            guard let loadedList = try await list else {
+                musicListDetails.removeValue(forKey: listID)
+                collaborationMessage = "This list is unavailable."
+                return false
+            }
+            let loadedEntries = try await entries
+            let loadedComments = try await comments
+            let loadedEngagement = try await engagement
+            var loaded = MusicListDetailState(list: loadedList)
+            loaded.entries.items = loadedEntries
+            loaded.entries.hasMore = loadedEntries.count == musicListEntryPageSize
+            loaded.comments.items = Array(loadedComments.prefix(musicListPageSize))
+            loaded.comments.hasMore = loadedComments.count > musicListPageSize
+            loaded.engagement = loadedEngagement
+            musicListDetails[listID] = loaded
+            musicListLikeStates[listID] = loadedEngagement.viewerHasLiked
+            cacheMusicList(loadedList)
+            return true
+        } catch {
+            collaborationMessage = "Could not load this list: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func refreshMusicListEntries(_ listID: UUID) async {
+        var detail = musicListDetails[listID] ?? MusicListDetailState()
+        guard !detail.entries.isRefreshing, !detail.entries.isLoadingMore else { return }
+        detail.entries.isRefreshing = true
+        musicListDetails[listID] = detail
+        defer { musicListDetails[listID]?.entries.isRefreshing = false }
+        do {
+            let page = try await collaborationRepository.musicListEntriesPage(
+                listID: listID,
+                limit: musicListEntryPageSize
+            )
+            musicListDetails[listID]?.entries.items = page
+            musicListDetails[listID]?.entries.hasMore = page.count == musicListEntryPageSize
+            await refreshMusicListEngagement(listID)
+        } catch {
+            collaborationMessage = "Could not refresh list songs."
+        }
+    }
+
+    func loadMoreMusicListEntries(_ listID: UUID) async {
+        guard var detail = musicListDetails[listID],
+              detail.entries.hasMore,
+              !detail.entries.isRefreshing,
+              !detail.entries.isLoadingMore,
+              let cursor = detail.entries.items.last else { return }
+        detail.entries.isLoadingMore = true
+        musicListDetails[listID] = detail
+        defer { musicListDetails[listID]?.entries.isLoadingMore = false }
+        do {
+            let page = try await collaborationRepository.musicListEntriesPage(
+                listID: listID,
+                afterPosition: cursor.position,
+                limit: musicListEntryPageSize
+            )
+            let existingIDs = Set(detail.entries.items.map(\.id))
+            musicListDetails[listID]?.entries.items.append(
+                contentsOf: page.prefix(musicListEntryPageSize)
+                    .filter { !existingIDs.contains($0.id) }
+            )
+            musicListDetails[listID]?.entries.hasMore = page.count == musicListEntryPageSize
+        } catch {
+            collaborationMessage = "Could not load more list songs."
+        }
+    }
+
+    func refreshMusicListComments(_ listID: UUID) async {
+        var detail = musicListDetails[listID] ?? MusicListDetailState()
+        guard !detail.comments.isRefreshing, !detail.comments.isLoadingMore else { return }
+        detail.comments.isRefreshing = true
+        musicListDetails[listID] = detail
+        defer { musicListDetails[listID]?.comments.isRefreshing = false }
+        do {
+            let page = try await collaborationRepository.musicListCommentsPage(
+                listID: listID,
+                limit: musicListPageSize + 1
+            )
+            musicListDetails[listID]?.comments.items = Array(page.prefix(musicListPageSize))
+            musicListDetails[listID]?.comments.hasMore = page.count > musicListPageSize
+            await refreshMusicListEngagement(listID)
+        } catch {
+            collaborationMessage = "Could not refresh list comments."
+        }
+    }
+
+    func loadMoreMusicListComments(_ listID: UUID) async {
+        guard var detail = musicListDetails[listID],
+              detail.comments.hasMore,
+              !detail.comments.isRefreshing,
+              !detail.comments.isLoadingMore,
+              let cursor = detail.comments.items.last else { return }
+        detail.comments.isLoadingMore = true
+        musicListDetails[listID] = detail
+        defer { musicListDetails[listID]?.comments.isLoadingMore = false }
+        do {
+            let page = try await collaborationRepository.musicListCommentsPage(
+                listID: listID,
+                beforeCreatedAt: cursor.createdAt,
+                beforeID: cursor.id,
+                limit: musicListPageSize + 1
+            )
+            let existingIDs = Set(detail.comments.items.map(\.id))
+            musicListDetails[listID]?.comments.items.append(
+                contentsOf: page.prefix(musicListPageSize)
+                    .filter { !existingIDs.contains($0.id) }
+            )
+            musicListDetails[listID]?.comments.hasMore = page.count > musicListPageSize
+        } catch {
+            collaborationMessage = "Could not load more list comments."
+        }
+    }
+
+    func clearMusicListDetail(_ listID: UUID) {
+        musicListDetails.removeValue(forKey: listID)
+    }
+
+    private func refreshMusicListEngagement(_ listID: UUID) async {
+        do {
+            let engagement = try await collaborationRepository.musicListEngagement(listID)
+            musicListDetails[listID]?.engagement = engagement
+            musicListLikeStates[listID] = engagement.viewerHasLiked
+        } catch {
+            // Parent/entry/comment content remains usable if a summary refresh
+            // races a visibility change or transient network failure.
+        }
+    }
+
+    @discardableResult
+    func createMusicList(from draft: MusicListDraft) async -> RemoteMusicList? {
+        guard !isCreatingMusicList else { return nil }
+        guard let validated = validatedMusicListDraft(draft) else { return nil }
+        isCreatingMusicList = true
+        defer { isCreatingMusicList = false }
+        do {
+            let list = try await collaborationRepository.saveMusicList(
+                listID: nil,
+                title: validated.normalizedTitle,
+                description: validated.normalizedDescription,
+                tags: validated.normalizedTags,
+                isRanked: validated.isRanked,
+                visibility: validated.visibility,
+                entries: validated.entries,
+                expectedRevision: nil
+            )
+            cacheMusicList(list, promoteInOwnerShelf: true)
+            ownerMusicLists.removeAll { $0.id == list.id }
+            ownerMusicLists.insert(list, at: 0)
+            musicListDetails[list.id] = MusicListDetailState(list: list)
+            await refreshMusicListEntries(list.id)
+            collaborationMessage = "List created"
+            return list
+        } catch {
+            collaborationMessage = "Could not create list: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    @discardableResult
+    func updateMusicList(_ list: RemoteMusicList, from draft: MusicListDraft) async -> Bool {
+        guard isOwnMusicList(list), !mutatingMusicListIDs.contains(list.id) else { return false }
+        if musicListDetails[list.id]?.entries.hasMore == true {
+            collaborationMessage = "Load every song before editing the complete list."
+            return false
+        }
+        guard let validated = validatedMusicListDraft(draft) else { return false }
+        let expectedRevision = cachedMusicList(id: list.id)?.entriesRevision ?? list.entriesRevision
+        mutatingMusicListIDs.insert(list.id)
+        defer { mutatingMusicListIDs.remove(list.id) }
+        do {
+            let updated = try await collaborationRepository.saveMusicList(
+                listID: list.id,
+                title: validated.normalizedTitle,
+                description: validated.normalizedDescription,
+                tags: validated.normalizedTags,
+                isRanked: validated.isRanked,
+                visibility: validated.visibility,
+                entries: validated.entries,
+                expectedRevision: expectedRevision
+            )
+            cacheMusicList(updated, promoteInOwnerShelf: true)
+            await refreshMusicListEntries(list.id)
+            collaborationMessage = "List updated"
+            return true
+        } catch {
+            await handleMusicListMutationFailure(error, listID: list.id)
+            return false
+        }
+    }
+
+    @discardableResult
+    func deleteMusicList(_ list: RemoteMusicList) async -> Bool {
+        guard isOwnMusicList(list), !mutatingMusicListIDs.contains(list.id) else { return false }
+        mutatingMusicListIDs.insert(list.id)
+        defer { mutatingMusicListIDs.remove(list.id) }
+        do {
+            try await collaborationRepository.deleteMusicList(list.id)
+            removeCachedMusicList(list.id)
+            collaborationMessage = "List deleted"
+            return true
+        } catch {
+            collaborationMessage = "Could not delete list: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    @discardableResult
+    func addTrackToMusicList(
+        _ track: HarmonyTrack,
+        note: String = "",
+        listID: UUID
+    ) async -> Bool {
+        let note = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard note.count <= 1_000 else {
+            collaborationMessage = "List notes must be 1,000 characters or fewer."
+            return false
+        }
+        guard let list = cachedMusicList(id: listID), isOwnMusicList(list),
+              !mutatingMusicListIDs.contains(listID) else { return false }
+        mutatingMusicListIDs.insert(listID)
+        defer { mutatingMusicListIDs.remove(listID) }
+        do {
+            let result = try await collaborationRepository.addMusicListEntry(
+                listID: listID,
+                track: track,
+                note: note,
+                expectedRevision: list.entriesRevision
+            )
+            setCachedMusicListRevision(result.entriesRevision, listID: listID)
+            await refreshMusicListEntries(listID)
+            collaborationMessage = "Song added to list"
+            return true
+        } catch {
+            await handleMusicListMutationFailure(error, listID: listID)
+            return false
+        }
+    }
+
+    @discardableResult
+    func updateMusicListEntryNote(_ entry: RemoteMusicListEntry, note proposedNote: String) async -> Bool {
+        let note = proposedNote.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard note.count <= 1_000 else {
+            collaborationMessage = "List notes must be 1,000 characters or fewer."
+            return false
+        }
+        guard let list = cachedMusicList(id: entry.listID), isOwnMusicList(list),
+              !mutatingMusicListIDs.contains(entry.listID),
+              !mutatingMusicListEntryIDs.contains(entry.id) else { return false }
+        mutatingMusicListIDs.insert(entry.listID)
+        mutatingMusicListEntryIDs.insert(entry.id)
+        defer {
+            mutatingMusicListIDs.remove(entry.listID)
+            mutatingMusicListEntryIDs.remove(entry.id)
+        }
+        do {
+            let result = try await collaborationRepository.updateMusicListEntryNote(
+                entryID: entry.id,
+                note: note,
+                expectedRevision: list.entriesRevision
+            )
+            setCachedMusicListRevision(result.entriesRevision, listID: entry.listID)
+            await refreshMusicListEntries(entry.listID)
+            collaborationMessage = "List note updated"
+            return true
+        } catch {
+            await handleMusicListMutationFailure(error, listID: entry.listID)
+            return false
+        }
+    }
+
+    @discardableResult
+    func removeMusicListEntry(_ entry: RemoteMusicListEntry) async -> Bool {
+        guard let list = cachedMusicList(id: entry.listID), isOwnMusicList(list),
+              !mutatingMusicListIDs.contains(entry.listID),
+              !mutatingMusicListEntryIDs.contains(entry.id) else { return false }
+        mutatingMusicListIDs.insert(entry.listID)
+        mutatingMusicListEntryIDs.insert(entry.id)
+        defer {
+            mutatingMusicListIDs.remove(entry.listID)
+            mutatingMusicListEntryIDs.remove(entry.id)
+        }
+        do {
+            let revision = try await collaborationRepository.removeMusicListEntry(
+                entryID: entry.id,
+                expectedRevision: list.entriesRevision
+            )
+            setCachedMusicListRevision(revision, listID: entry.listID)
+            await refreshMusicListEntries(entry.listID)
+            collaborationMessage = "Song removed from list"
+            return true
+        } catch {
+            await handleMusicListMutationFailure(error, listID: entry.listID)
+            return false
+        }
+    }
+
+    @discardableResult
+    func reorderMusicListEntries(listID: UUID, orderedEntryIDs: [UUID]) async -> Bool {
+        guard let list = cachedMusicList(id: listID), isOwnMusicList(list),
+              let detail = musicListDetails[listID], !detail.entries.hasMore,
+              !mutatingMusicListIDs.contains(listID) else { return false }
+        let currentIDs = detail.entries.items.map(\.id)
+        guard orderedEntryIDs.count == currentIDs.count,
+              Set(orderedEntryIDs) == Set(currentIDs) else {
+            collaborationMessage = "Reload the complete list before reordering."
+            return false
+        }
+        guard orderedEntryIDs != currentIDs else { return true }
+        mutatingMusicListIDs.insert(listID)
+        defer { mutatingMusicListIDs.remove(listID) }
+        do {
+            let revision = try await collaborationRepository.reorderMusicListEntries(
+                listID: listID,
+                orderedEntryIDs: orderedEntryIDs,
+                expectedRevision: list.entriesRevision
+            )
+            setCachedMusicListRevision(revision, listID: listID)
+            await refreshMusicListEntries(listID)
+            collaborationMessage = "List order updated"
+            return true
+        } catch {
+            await handleMusicListMutationFailure(error, listID: listID)
+            return false
+        }
+    }
+
+    @discardableResult
+    func setMusicListLiked(_ listID: UUID, isLiked: Bool) async -> Bool {
+        guard !likingMusicListIDs.contains(listID) else { return false }
+        likingMusicListIDs.insert(listID)
+        defer { likingMusicListIDs.remove(listID) }
+        do {
+            let persistedValue = try await collaborationRepository.setMusicListLiked(
+                listID,
+                isLiked: isLiked
+            )
+            if persistedValue {
+                musicListLikeStates[listID] = true
+            } else {
+                musicListLikeStates[listID] = false
+            }
+            if var engagement = musicListDetails[listID]?.engagement {
+                let delta = persistedValue == engagement.viewerHasLiked ? 0 : (persistedValue ? 1 : -1)
+                engagement = RemoteMusicListEngagement(
+                    entryCount: engagement.entryCount,
+                    likeCount: max(0, engagement.likeCount + delta),
+                    commentCount: engagement.commentCount,
+                    viewerHasLiked: persistedValue
+                )
+                musicListDetails[listID]?.engagement = engagement
+            }
+            collaborationMessage = persistedValue ? "List liked" : "List unliked"
+            return true
+        } catch {
+            collaborationMessage = "Could not update this like: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    @discardableResult
+    func addMusicListComment(listID: UUID, body proposedBody: String) async -> Bool {
+        let body = proposedBody.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (1...2_000).contains(body.count) else {
+            collaborationMessage = "Comments must contain 1 to 2,000 characters."
+            return false
+        }
+        guard !commentingMusicListIDs.contains(listID) else { return false }
+        commentingMusicListIDs.insert(listID)
+        defer { commentingMusicListIDs.remove(listID) }
+        do {
+            let comment = try await collaborationRepository.addMusicListComment(
+                listID: listID,
+                body: body
+            )
+            var detail = musicListDetails[listID] ?? MusicListDetailState()
+            detail.comments.items.removeAll { $0.id == comment.id }
+            detail.comments.items.insert(comment, at: 0)
+            musicListDetails[listID] = detail
+            if let engagement = detail.engagement {
+                musicListDetails[listID]?.engagement = RemoteMusicListEngagement(
+                    entryCount: engagement.entryCount,
+                    likeCount: engagement.likeCount,
+                    commentCount: engagement.commentCount + 1,
+                    viewerHasLiked: engagement.viewerHasLiked
+                )
+            }
+            collaborationMessage = "Comment added"
+            return true
+        } catch {
+            collaborationMessage = "Could not add comment: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    @discardableResult
+    func deleteMusicListComment(_ comment: RemoteMusicListComment) async -> Bool {
+        guard canDeleteMusicListComment(comment),
+              !deletingMusicListCommentIDs.contains(comment.id) else { return false }
+        deletingMusicListCommentIDs.insert(comment.id)
+        defer { deletingMusicListCommentIDs.remove(comment.id) }
+        do {
+            try await collaborationRepository.deleteMusicListComment(comment.id)
+            musicListDetails[comment.listID]?.comments.items.removeAll { $0.id == comment.id }
+            if let engagement = musicListDetails[comment.listID]?.engagement {
+                musicListDetails[comment.listID]?.engagement = RemoteMusicListEngagement(
+                    entryCount: engagement.entryCount,
+                    likeCount: engagement.likeCount,
+                    commentCount: max(0, engagement.commentCount - 1),
+                    viewerHasLiked: engagement.viewerHasLiked
+                )
+            }
+            collaborationMessage = "Comment deleted"
+            return true
+        } catch {
+            collaborationMessage = "Could not delete comment: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    private func validatedMusicListDraft(_ draft: MusicListDraft) -> MusicListDraft? {
+        if let validationMessage = draft.validationMessage {
+            collaborationMessage = validationMessage
+            return nil
+        }
+        return draft
+    }
+
+    private func cachedMusicList(id listID: UUID) -> RemoteMusicList? {
+        if let list = musicListDetails[listID]?.list { return list }
+        if let list = ownerMusicLists.first(where: { $0.id == listID }) { return list }
+        for shelves in publicProfileShelves.values {
+            if let list = shelves.lists.items.first(where: { $0.id == listID }) { return list }
+        }
+        return nil
+    }
+
+    private func cacheMusicList(
+        _ list: RemoteMusicList,
+        promoteInOwnerShelf: Bool = false
+    ) {
+        var detail = musicListDetails[list.id] ?? MusicListDetailState()
+        detail.list = list
+        musicListDetails[list.id] = detail
+
+        let ownerIndex = ownerMusicLists.firstIndex(where: { $0.id == list.id })
+        if isOwnMusicList(list) || ownerIndex != nil {
+            if let index = ownerIndex,
+               !promoteInOwnerShelf {
+                ownerMusicLists[index] = list
+            } else {
+                ownerMusicLists.removeAll { $0.id == list.id }
+                ownerMusicLists.insert(list, at: 0)
+            }
+        }
+
+        for profileID in Array(publicProfileShelves.keys) {
+            guard let index = publicProfileShelves[profileID]?.lists.items.firstIndex(where: {
+                $0.id == list.id
+            }) else { continue }
+            publicProfileShelves[profileID]?.lists.items[index] = list
+        }
+    }
+
+    private func removeCachedMusicList(_ listID: UUID) {
+        ownerMusicLists.removeAll { $0.id == listID }
+        musicListDetails.removeValue(forKey: listID)
+        musicListLikeStates.removeValue(forKey: listID)
+        for profileID in Array(publicProfileShelves.keys) {
+            publicProfileShelves[profileID]?.lists.items.removeAll { $0.id == listID }
+        }
+    }
+
+    private func setCachedMusicListRevision(_ revision: Int, listID: UUID) {
+        guard let list = cachedMusicList(id: listID) else { return }
+        cacheMusicList(RemoteMusicList(
+            id: list.id,
+            ownerID: list.ownerID,
+            title: list.title,
+            description: list.description,
+            tags: list.tags,
+            isRanked: list.isRanked,
+            visibility: list.visibility,
+            entriesRevision: revision,
+            createdAt: list.createdAt,
+            updatedAt: list.updatedAt,
+            deletedAt: list.deletedAt,
+            owner: list.owner
+        ))
+    }
+
+    private func handleMusicListMutationFailure(_ error: Error, listID: UUID) async {
+        let detail = error.localizedDescription.lowercased()
+        if detail.contains("revision") || detail.contains("stale") || detail.contains("conflict") {
+            _ = await refreshMusicListDetail(listID)
+            collaborationMessage = "This list changed elsewhere. It was reloaded; review and apply your edit again."
+        } else {
+            collaborationMessage = "Could not update list: \(error.localizedDescription)"
+        }
     }
 
 #if DEBUG
