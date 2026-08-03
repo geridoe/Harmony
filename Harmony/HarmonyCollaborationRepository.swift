@@ -271,6 +271,9 @@ private struct FollowingActivityPageParameters: Encodable {
     let p_before_id: UUID?
     let p_limit: Int
 }
+private struct VisibleListeningDiaryEntriesParameters: Encodable {
+    let p_entry_ids: [UUID]
+}
 private struct ProfileReviewsPageParameters: Encodable {
     let p_profile_id: UUID
     let p_before_created_at: Date?
@@ -405,9 +408,30 @@ struct RemoteProfile: Codable { let displayName: String; enum CodingKeys: String
 enum SocialVisibilityOption: String, CaseIterable, Codable, Identifiable {
     case privateOnly = "private"
     case followers
+    case `public`
+
+    /// Public is a legacy/dormant server value that must remain decodable so
+    /// visible feeds cannot be poisoned by an older row. Product controls do
+    /// not offer new public sharing until that audience is intentionally
+    /// launched.
+    static let allCases: [SocialVisibilityOption] = [.privateOnly, .followers]
 
     var id: String { rawValue }
-    var title: String { self == .privateOnly ? "Only me" : "Followers" }
+    var title: String {
+        switch self {
+        case .privateOnly: "Only me"
+        case .followers: "Followers"
+        case .public: "Public"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .privateOnly: "lock.fill"
+        case .followers: "person.2.fill"
+        case .public: "globe"
+        }
+    }
 }
 
 struct RemoteAccountProfile: Decodable {
@@ -835,7 +859,7 @@ struct RemotePublicLovedTrack: Decodable, Identifiable {
         case profileID = "profile_id"
         case canonicalTrackID = "canonical_track_id"
         case updatedAt = "updated_at"
-        case canonicalTrack = "canonical_tracks"
+        case canonicalTrack = "canonical_track"
     }
 }
 
@@ -1459,7 +1483,7 @@ final class HarmonyCollaborationRepository {
     func listeningHistory() async throws -> [RemoteListeningHistoryEntry] {
         try await authenticate()
         return try await client.from("listening_history_entries")
-            .select("id,profile_id,played_at,source,visibility,is_relisten,tags,review_id,rating,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)")
+            .select("id,profile_id,played_at,source,visibility,is_relisten,tags,rating,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)")
             .order("played_at", ascending: false)
             .limit(100).execute().value
     }
@@ -1478,7 +1502,7 @@ final class HarmonyCollaborationRepository {
                 p_limit: limit
             )
         )
-        .select("id,profile_id,played_at,source,visibility,is_relisten,tags,review_id,rating,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)")
+        .select("id,profile_id,played_at,source,visibility,is_relisten,tags,review_id,rating,canonical_tracks,profiles")
         .execute().value
     }
 
@@ -1758,7 +1782,7 @@ final class HarmonyCollaborationRepository {
                 p_limit: limit
             )
         )
-        .select("id,profile_id,played_at,source,visibility,is_relisten,tags,review_id,rating,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)")
+        .select("id,profile_id,played_at,source,visibility,is_relisten,tags,review_id,rating,canonical_tracks,profiles")
         .execute().value
     }
 
@@ -1778,7 +1802,7 @@ final class HarmonyCollaborationRepository {
                 p_limit: limit
             )
         )
-        .select("profile_id,canonical_track_id,updated_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit)")
+        .select("profile_id,canonical_track_id,updated_at,canonical_track")
         .execute().value
     }
 
@@ -1891,9 +1915,11 @@ final class HarmonyCollaborationRepository {
 
     private func activityDiaryEntries(ids: [UUID]) async throws -> [RemoteListeningHistoryEntry] {
         guard !ids.isEmpty else { return [] }
-        return try await client.from("listening_history_entries")
-            .select("id,profile_id,played_at,source,visibility,is_relisten,tags,review_id,rating,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)")
-            .in("id", values: ids.map(\.uuidString))
+        return try await client.rpc(
+            "list_visible_listening_diary_entries",
+            params: VisibleListeningDiaryEntriesParameters(p_entry_ids: ids)
+        )
+            .select("id,profile_id,played_at,source,visibility,is_relisten,tags,review_id,rating,canonical_tracks,profiles")
             .execute().value
     }
 

@@ -815,6 +815,23 @@ For iOS, build and test through the selected Xcode toolchain using
 the Simulator cannot establish Spotify App Remote playback or grant a real
 MusicKit library/playback authorization.
 
+### Profile and Diary privacy projection
+
+Migrations 048–050 make social profile reads explicit projections instead of
+granting follower queries access to owner-shaped tables. Authenticated clients
+cannot select `listening_history_entries.review_id` directly, and the Realtime
+publication for that table omits the column. Diary screens and Activity
+hydration use `list_my_listening_diary`, `list_profile_listening_diary`, and
+`list_visible_listening_diary_entries`, whose JSON subject/profile projections
+return a linked review ID only when the same viewer can open that review.
+
+`list_profile_loved_tracks` likewise returns only its pagination fields and a
+public canonical-track projection; it never returns the private subject-state
+row. Profile discovery is block-aware at the `profiles` policy boundary. The
+database may decode legacy/future `public` visibility rows, but iOS authoring
+continues to offer only Only me and Followers until public discovery,
+moderation, and abuse controls are designed.
+
 ## 9. Delivery status and gates
 
 ### Implemented and deployable now

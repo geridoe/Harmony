@@ -222,7 +222,7 @@ struct SocialView: View {
                                         Text("·")
                                         Text(entry.playedAt, style: .relative)
                                         if store.isOwnHistoryEntry(entry) {
-                                            Image(systemName: entry.visibility == .followers ? "person.2.fill" : "lock.fill")
+                                            Image(systemName: entry.visibility.systemImage)
                                                 .accessibilityLabel(entry.visibility.title)
                                         }
                                     }
@@ -367,7 +367,7 @@ struct SocialView: View {
         if let reviewID = notification.reviewID,
            notification.kind == "review_comment" || notification.kind == "review_reaction" {
             NavigationLink {
-                NotificationReviewDestination(
+                ReviewByIDDestination(
                     reviewID: reviewID,
                     notificationID: notification.readAt == nil ? notification.id : nil
                 )
@@ -535,50 +535,55 @@ private struct ListeningDiaryView: View {
     }
 
     private func diaryEntryRow(_ entry: RemoteListeningHistoryEntry) -> some View {
-        HStack(spacing: 12) {
-            if let track = entry.canonicalTrack {
-                TrackArtwork(track: track.harmonyTrack, size: 40, cornerRadius: 8)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(entry.canonicalTrack.map { "\($0.title) · \($0.artist)" } ?? "Unavailable track")
-                    .font(.subheadline.weight(.semibold))
-                Text(entry.playedAt, format: .dateTime.month().day().year())
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 12) {
+                if let track = entry.canonicalTrack {
+                    TrackArtwork(track: track.harmonyTrack, size: 40, cornerRadius: 8)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(entry.canonicalTrack.map { "\($0.title) · \($0.artist)" } ?? "Unavailable track")
+                        .font(.subheadline.weight(.semibold))
+                    Text(entry.playedAt, format: .dateTime.month().day().year())
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    if entry.isRelisten || !entry.tags.isEmpty || entry.rating != nil {
+                        HStack(spacing: 5) {
+                            if entry.isRelisten {
+                                Label("Relisten", systemImage: "arrow.clockwise")
+                            }
+                            ForEach(entry.tags.prefix(3), id: \.self) { tag in
+                                Text("#\(tag)")
+                            }
+                            if let rating = entry.rating {
+                                Label("\(String(format: "%.1f", rating))", systemImage: "star.fill")
+                                    .accessibilityLabel("Rated \(String(format: "%.1f", rating)) out of 5")
+                            }
+                        }
+                        .font(.caption2)
+                        .foregroundColor(.indigo)
+                    }
+                }
+                Spacer()
+                Image(systemName: entry.visibility.systemImage)
                     .font(.caption)
                     .foregroundColor(.secondary)
-                if entry.isRelisten || !entry.tags.isEmpty || entry.rating != nil || entry.reviewID != nil {
-                    HStack(spacing: 5) {
-                        if entry.isRelisten {
-                            Label("Relisten", systemImage: "arrow.clockwise")
-                        }
-                        ForEach(entry.tags.prefix(3), id: \.self) { tag in
-                            Text("#\(tag)")
-                        }
-                        if let rating = entry.rating {
-                            Label("\(String(format: "%.1f", rating))", systemImage: "star.fill")
-                                .accessibilityLabel("Rated \(String(format: "%.1f", rating)) out of 5")
-                        }
-                        if entry.reviewID != nil {
-                            Label("Opinion", systemImage: "link")
-                        }
+                    .accessibilityLabel(entry.visibility.title)
+                if entry.source == "manual" {
+                    Button {
+                        editingEntry = entry
+                    } label: {
+                        Image(systemName: "pencil.circle")
                     }
-                    .font(.caption2)
-                    .foregroundColor(.indigo)
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Edit journal entry for \(entry.canonicalTrack?.title ?? "unavailable track")")
+                    .accessibilityIdentifier("edit-diary-entry-\(entry.id.uuidString)")
                 }
             }
-            Spacer()
-            Image(systemName: entry.visibility == .followers ? "person.2.fill" : "lock.fill")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .accessibilityLabel(entry.visibility.title)
-            if entry.source == "manual" {
-                Button {
-                    editingEntry = entry
-                } label: {
-                    Image(systemName: "pencil.circle")
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Edit journal entry for \(entry.canonicalTrack?.title ?? "unavailable track")")
-                .accessibilityIdentifier("edit-diary-entry-\(entry.id.uuidString)")
+            if let reviewID = entry.reviewID {
+                LinkedDiaryReviewLink(
+                    reviewID: reviewID,
+                    accessibilityPrefix: "diary-linked-review"
+                )
             }
         }
     }
@@ -649,10 +654,13 @@ private struct FollowingActivityView: View {
     }
 }
 
-private struct NotificationReviewDestination: View {
+/// Resolves a review through the same privacy-enforcing repository path used by
+/// notifications. Diary rows intentionally carry only an optional identifier:
+/// Postgres masks it when the viewer cannot see the linked review.
+private struct ReviewByIDDestination: View {
     @EnvironmentObject private var store: HarmonySessionStore
     let reviewID: UUID
-    let notificationID: UUID?
+    var notificationID: UUID? = nil
     @State private var review: RemoteMusicReview?
     @State private var didFinishLoading = false
 
@@ -684,6 +692,21 @@ private struct NotificationReviewDestination: View {
                 await store.markSocialNotificationsRead(notificationID)
             }
         }
+    }
+}
+
+private struct LinkedDiaryReviewLink: View {
+    let reviewID: UUID
+    let accessibilityPrefix: String
+
+    var body: some View {
+        NavigationLink {
+            ReviewByIDDestination(reviewID: reviewID)
+        } label: {
+            Label("View linked review", systemImage: "text.book.closed")
+                .font(.caption.weight(.semibold))
+        }
+        .accessibilityIdentifier("\(accessibilityPrefix)-\(reviewID.uuidString)")
     }
 }
 
@@ -1820,6 +1843,12 @@ private struct FollowingActivityCard: View {
                 .buttonStyle(.plain)
             case .diary(let entry):
                 ActivityDiarySummary(entry: entry)
+                if let reviewID = entry.reviewID {
+                    LinkedDiaryReviewLink(
+                        reviewID: reviewID,
+                        accessibilityPrefix: "activity-diary-linked-review"
+                    )
+                }
             case .musicList(let list):
                 NavigationLink {
                     MusicListDetailView(listID: list.id)
@@ -1911,7 +1940,7 @@ struct MemberProfileView: View {
                             .foregroundColor(.secondary)
                     }
                 }
-                Label("Only content this listener shares with approved followers appears here.", systemImage: "person.2.fill")
+                Label("Only content this listener has shared with you appears here.", systemImage: "person.2.fill")
                     .font(.footnote)
                     .foregroundColor(.secondary)
                     .accessibilityIdentifier("member-profile-privacy")
@@ -1948,7 +1977,7 @@ struct MemberProfileView: View {
             if state?.isRefreshing == true && state?.items.isEmpty != false {
                 ProgressView("Loading reviews…")
             } else if state?.items.isEmpty != false {
-                Text("No follower-visible reviews.").foregroundColor(.secondary)
+                Text("No reviews have been shared with you.").foregroundColor(.secondary)
             } else {
                 ForEach(state?.items ?? []) { review in
                     ReviewCard(review: review) { _ in }
@@ -1970,16 +1999,22 @@ struct MemberProfileView: View {
             if state?.isRefreshing == true && state?.items.isEmpty != false {
                 ProgressView("Loading diary…")
             } else if state?.items.isEmpty != false {
-                Text("No follower-visible diary entries.").foregroundColor(.secondary)
+                Text("No Diary entries have been shared with you.").foregroundColor(.secondary)
             } else {
                 ForEach(state?.items ?? []) { entry in
                     VStack(alignment: .leading, spacing: 6) {
                         ActivityDiarySummary(entry: entry)
+                            .accessibilityIdentifier("member-profile-diary-\(entry.id.uuidString)")
                         Text(entry.playedAt, format: .dateTime.month().day().year())
                             .font(.caption2)
                             .foregroundColor(.secondary)
+                        if let reviewID = entry.reviewID {
+                            LinkedDiaryReviewLink(
+                                reviewID: reviewID,
+                                accessibilityPrefix: "member-profile-diary-review"
+                            )
+                        }
                     }
-                    .accessibilityIdentifier("member-profile-diary-\(entry.id.uuidString)")
                 }
                 profileLoadMore(
                     title: "Load more diary entries",
@@ -1997,7 +2032,7 @@ struct MemberProfileView: View {
             if state?.isRefreshing == true && state?.items.isEmpty != false {
                 ProgressView("Loading loved tracks…")
             } else if state?.items.isEmpty != false {
-                Text("This listener has no follower-visible Loved tracks.").foregroundColor(.secondary)
+                Text("No Loved tracks have been shared with you.").foregroundColor(.secondary)
             } else {
                 ForEach(state?.items ?? []) { loved in
                     HStack(spacing: 12) {
@@ -2033,7 +2068,7 @@ struct MemberProfileView: View {
             if state?.isRefreshing == true && state?.items.isEmpty != false {
                 ProgressView("Loading lists…")
             } else if state?.items.isEmpty != false {
-                Text("No follower-visible lists.").foregroundColor(.secondary)
+                Text("No lists have been shared with you.").foregroundColor(.secondary)
             } else {
                 ForEach(state?.items ?? []) { list in
                     NavigationLink {

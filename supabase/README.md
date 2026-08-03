@@ -79,6 +79,16 @@ Review deletion is a soft delete. `delete_music_review(...)` also clears the
 link from any owner Diary entry in the same transaction, preserving the Diary
 snapshot without leaving a durable pointer to an invisible review.
 
+Diary/profile reads use privacy-safe projection RPCs. Direct authenticated
+selection from `listening_history_entries` excludes `review_id`, and its
+Realtime publication uses the same redacted column list. The owner, profile,
+and batched Activity Diary RPCs return a JSON track/profile projection and mask
+the link unless the caller can currently view the linked review.
+`list_profile_loved_tracks(...)` returns only `profile_id`,
+`canonical_track_id`, `updated_at`, and a public `canonical_track` JSON object;
+it does not expose the underlying private subject-state row. Profile selection
+also denies both directions of a block.
+
 `social_notifications` stores recipient-owned follow, comment, and reaction events with unread state. Database triggers create these events atomically with the social action, RLS hides events across blocks, and `mark_social_notifications_read(...)` is the only client mutation path. Supabase Realtime refreshes the in-app inbox; future APNs delivery should consume these rows rather than duplicate notification business logic.
 
 `resolve_harmony_track(provider, provider_id, title, artist, ...)` resolves a provider catalog item to a canonical Harmony track before queue insertion. It is idempotent by provider and provider ID, so provider-specific search clients can contribute tracks even before a cross-provider matcher has added mappings for the other services.

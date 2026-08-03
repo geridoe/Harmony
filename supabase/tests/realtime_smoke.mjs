@@ -26,15 +26,24 @@ const rpc = async (name, token, body) => {
     body: JSON.stringify(body),
   });
   if (!response.ok) throw new Error(`${name} failed with ${response.status}: ${await response.text()}`);
+  const text = await response.text();
+  return text ? JSON.parse(text) : null;
 };
 
 const socket = new WebSocket(realtimeURL);
 let followCreated = false;
+let historyCreated = false;
+let followDelivered = false;
+let historyDelivered = false;
+let historyEntryID = null;
 let settled = false;
 
 const cleanup = async () => {
   if (followCreated) {
     await rpc("remove_social_follow", actorToken, { p_profile_id: observerID }).catch(() => {});
+  }
+  if (historyEntryID) {
+    await rpc("delete_listening_history_entry", actorToken, { p_entry_id: historyEntryID }).catch(() => {});
   }
   socket.close();
 };
@@ -48,11 +57,11 @@ const finish = async (error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
   } else {
-    console.log("Harmony Realtime smoke passed: follower graph change delivered");
+    console.log("Harmony Realtime smoke passed: follower graph and redacted Diary changes delivered");
   }
 };
 
-const timeout = setTimeout(() => finish(new Error("Timed out waiting for a social_follows Realtime event")), 15_000);
+const timeout = setTimeout(() => finish(new Error("Timed out waiting for social graph and redacted Diary Realtime events")), 15_000);
 
 socket.addEventListener("open", () => {
   socket.send(JSON.stringify({
@@ -62,7 +71,10 @@ socket.addEventListener("open", () => {
       config: {
         broadcast: { ack: false, self: false },
         presence: { key: "" },
-        postgres_changes: [{ event: "*", schema: "public", table: "social_follows" }],
+        postgres_changes: [
+          { event: "*", schema: "public", table: "social_follows" },
+          { event: "INSERT", schema: "public", table: "listening_history_entries" },
+        ],
       },
       access_token: observerToken,
     },
@@ -79,11 +91,34 @@ socket.addEventListener("message", async (event) => {
       if (message.payload?.status !== "ok") throw new Error(`Realtime join rejected: ${JSON.stringify(message.payload)}`);
       await rpc("request_social_follow", actorToken, { p_profile_id: observerID });
       followCreated = true;
+      const history = await rpc("record_listening_history", actorToken, {
+        p_canonical_track_id: null,
+        p_provider: null,
+        p_provider_track_id: null,
+        p_played_at: new Date().toISOString(),
+        p_source: "manual",
+        p_visibility: "public",
+        p_is_relisten: false,
+        p_tags: [],
+        p_rating: null,
+      });
+      historyEntryID = Array.isArray(history) ? history[0]?.id : history?.id;
+      historyCreated = true;
+      if (followDelivered && historyDelivered) await finish();
       return;
     }
     if (message.event !== "postgres_changes") return;
     const record = message.payload?.data?.record ?? message.payload?.record;
-    if (record?.follower_id === actorID && record?.followed_id === observerID) await finish();
+    if (record?.follower_id === actorID && record?.followed_id === observerID) {
+      followDelivered = true;
+    }
+    if (record?.profile_id === actorID && record?.source === "manual") {
+      if (Object.prototype.hasOwnProperty.call(record, "review_id")) {
+        throw new Error("Realtime Diary payload exposed review_id");
+      }
+      historyDelivered = true;
+    }
+    if (followDelivered && historyDelivered && followCreated && historyCreated) await finish();
   } catch (error) {
     await finish(error);
   }

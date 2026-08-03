@@ -318,6 +318,14 @@ class HarmonyUITests: XCTestCase {
         shelves.buttons["Diary"].tap()
         XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'member-profile-diary-'")).firstMatch.waitForExistence(timeout: 5))
 
+        let linkedReview = app.descendants(matching: .any)["member-profile-diary-review-30000000-0000-0000-0000-000000000003"]
+        XCTAssertTrue(linkedReview.waitForExistence(timeout: 5))
+        linkedReview.tap()
+        XCTAssertTrue(app.navigationBars["Afterglow"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["A fixture opinion."].exists)
+        app.navigationBars["Afterglow"].buttons["UI Test Listener"].tap()
+        XCTAssertTrue(app.navigationBars["UI Test Listener"].waitForExistence(timeout: 5))
+
         shelves.buttons["Loved"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["member-profile-loved-20000000-0000-0000-0000-000000000002"].waitForExistence(timeout: 5))
     }

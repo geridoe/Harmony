@@ -670,3 +670,17 @@ Review and Diary visibility continue to belong to each object. Loved is an
 aggregate profile shelf and is separately opt-in through Connections using
 `profile_social_settings.shelf_visibility`; it defaults to Only me and can be
 shared with accepted followers. There is no public profile discovery surface.
+
+Linked review navigation follows the stricter of the two objects' current
+permissions. A visible Diary entry carries `review_id` only when that same
+viewer may read the active linked review; private, deleted, or newly blocked
+reviews appear as ordinary unlinked Diary entries. This rule is enforced in
+the profile and batched Activity RPCs, not inferred by SwiftUI. The base history
+table and its Realtime payload omit `review_id`, preventing UUID disclosure
+through an alternate read path. Owner Diary, member Diary, and Following
+Activity all use the same ID-keyed review destination when the safe link exists.
+
+Loved shelves are deliberately narrow projections of public music metadata and
+cursor fields. Private Listened, Want-to-listen, default-rating, and other
+subject-state values never cross the profile boundary merely because Loved is
+shared.

@@ -904,6 +904,81 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(entry.rating, 4.5)
     }
 
+    func testListeningHistoryDecodesMaskedLinkedReviewAsAbsent() throws {
+        let entryID = UUID()
+        let profileID = UUID()
+        let payload = """
+        {
+          "id": "\(entryID.uuidString)",
+          "profile_id": "\(profileID.uuidString)",
+          "played_at": "2026-08-02T18:30:00Z",
+          "source": "manual",
+          "visibility": "public",
+          "is_relisten": false,
+          "tags": [],
+          "rating": null,
+          "review_id": null,
+          "canonical_tracks": null,
+          "profiles": { "display_name": "Public listener" }
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let entry = try decoder.decode(RemoteListeningHistoryEntry.self, from: Data(payload.utf8))
+
+        XCTAssertEqual(entry.visibility, .public)
+        XCTAssertEqual(entry.visibility.title, "Public")
+        XCTAssertFalse(
+            SocialVisibilityOption.allCases.contains(.public),
+            "Dormant public rows must decode without launching public sharing controls"
+        )
+        XCTAssertNil(entry.reviewID, "A review ID masked by the server must decode as an ordinary unlinked Diary row")
+        XCTAssertTrue(
+            browseJournalEntries([entry], using: JournalBrowseFilter(scope: .linkedOpinions)).isEmpty,
+            "A masked private review must not be advertised as a navigable linked opinion"
+        )
+
+        let directHistoryPayload = payload.replacingOccurrences(of: "          \"review_id\": null,\n", with: "")
+        let directEntry = try decoder.decode(
+            RemoteListeningHistoryEntry.self,
+            from: Data(directHistoryPayload.utf8)
+        )
+        XCTAssertNil(
+            directEntry.reviewID,
+            "The general listening feed omits the protected linkage column and must continue decoding"
+        )
+    }
+
+    func testPublicLovedTrackDecodesNarrowPrivacySafeShape() throws {
+        let profileID = UUID()
+        let trackID = UUID()
+        let payload = """
+        {
+          "profile_id": "\(profileID.uuidString)",
+          "canonical_track_id": "\(trackID.uuidString)",
+          "updated_at": "2026-08-02T18:30:00Z",
+          "canonical_track": {
+            "id": "\(trackID.uuidString)",
+            "title": "Public favorite",
+            "artist": "Test artist",
+            "album": "Test album",
+            "duration_ms": 180000,
+            "artwork_url": null,
+            "is_explicit": false
+          }
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let loved = try decoder.decode(RemotePublicLovedTrack.self, from: Data(payload.utf8))
+
+        XCTAssertEqual(loved.profileID, profileID)
+        XCTAssertEqual(loved.canonicalTrackID, trackID)
+        XCTAssertEqual(loved.canonicalTrack?.title, "Public favorite")
+    }
+
     func testJournalSearchMatchesTitleArtistAlbumAndTagsWithoutCaseOrDiacritics() {
         let entry = journalEntry(
             title: "Halo",
