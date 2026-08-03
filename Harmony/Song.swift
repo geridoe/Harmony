@@ -436,6 +436,20 @@ struct ReviewDetailEngagementState {
     var isRefreshing = false
 }
 
+func mergedRefreshedSocialNotifications(
+    newestWindow: [RemoteSocialNotification],
+    previouslyLoaded: [RemoteSocialNotification]
+) -> [RemoteSocialNotification] {
+    let refreshedIDs = Set(newestWindow.map(\.id))
+    return (newestWindow + previouslyLoaded.filter { !refreshedIDs.contains($0.id) })
+        .sorted { left, right in
+            if left.createdAt == right.createdAt {
+                return left.id.uuidString > right.id.uuidString
+            }
+            return left.createdAt > right.createdAt
+        }
+}
+
 struct CanonicalAlbumDetailState {
     var album: RemoteCanonicalAlbum?
     var ownerState: RemoteAlbumSubjectState?
@@ -659,6 +673,10 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var deletingMusicListCommentIDs: Set<UUID> = []
     @Published private(set) var socialProfiles: [RemoteSocialProfile] = []
     @Published private(set) var socialNotifications: [RemoteSocialNotification] = []
+    @Published private(set) var unreadSocialNotificationCount = 0
+    @Published private(set) var isRefreshingSocialNotifications = false
+    @Published private(set) var isLoadingMoreSocialNotifications = false
+    @Published private(set) var hasMoreSocialNotifications = false
     @Published private(set) var isRefreshingSocialProfiles = false
     @Published private(set) var socialProfileActionIDs: Set<UUID> = []
     @Published private(set) var accountProfile: RemoteAccountProfile?
@@ -685,9 +703,11 @@ final class HarmonySessionStore: ObservableObject {
     private let trackSubjectShelfPageSize = 50
     private let albumSubjectShelfPageSize = 50
     private let socialShelfPageSize = 50
+    private let socialNotificationPageSize = 50
     private let musicListPageSize = 50
     private let musicListEntryPageSize = 100
     private var followingActivityCursor: RemoteFollowingActivityCursor?
+    private var socialNotificationCursor: RemoteSocialNotificationCursor?
 #if DEBUG
     private var isDiaryEditorUITestFixtureActive = false
 #endif
@@ -751,7 +771,6 @@ final class HarmonySessionStore: ObservableObject {
     var reviewsSocialVisibility: SocialVisibilityOption { socialSettings?.reviewsVisibility ?? .privateOnly }
     var shelfSocialVisibility: SocialVisibilityOption { socialSettings?.shelfVisibility ?? .privateOnly }
     var recordsHarmonyPlays: Bool { socialSettings?.recordHarmonyPlays ?? false }
-    var unreadSocialNotificationCount: Int { socialNotifications.lazy.filter { $0.readAt == nil }.count }
     func providerState(for provider: MusicProvider) -> ProviderAccountStatus { providerStates[provider] ?? .notConnected }
     func canRemove(_ item: QueueItem) -> Bool { currentMember.role == .conductor || item.addedBy.id == currentMember.id }
     func contains(_ track: HarmonyTrack) -> Bool { queue.contains { Self.representsSameRecording($0.track, track) } }
@@ -1427,7 +1446,7 @@ final class HarmonySessionStore: ObservableObject {
             async let reviews: Void = self.refreshMusicReviews()
             async let reviewDetails: Void = self.refreshCachedReviewDetails()
             async let eavesdropDetails: Void = self.refreshCachedEavesdropDetails()
-            async let notifications: Void = self.refreshSocialNotifications()
+            async let notifications: Void = self.refreshSocialNotifications(preservingLoadedPages: true)
             async let followingActivity: Void = self.refreshFollowingActivity()
             _ = await (
                 profiles,
@@ -3056,11 +3075,13 @@ final class HarmonySessionStore: ObservableObject {
         publicProfileShelves[entry.profileID] = shelves
         socialNotifications = [RemoteSocialNotification(
             id: UUID(uuidString: "70000000-0000-0000-0000-000000000007")!,
+            actorID: UUID(uuidString: "90000000-0000-0000-0000-000000000009")!,
             kind: "review_comment",
             createdAt: Date(),
             readAt: Date(),
             actor: RemoteProfile(displayName: "UI Test Commenter"),
             reviewID: review.id,
+            musicListID: nil,
             review: RemoteNotificationReview(
                 subjectTitle: review.subjectTitle,
                 canonicalTrack: track
@@ -3128,12 +3149,79 @@ final class HarmonySessionStore: ObservableObject {
         }
     }
 
-    func refreshSocialNotifications() async {
+    func refreshSocialNotifications(preservingLoadedPages: Bool = false) async {
 #if DEBUG
         guard !isDiaryEditorUITestFixtureActive else { return }
 #endif
-        do { socialNotifications = try await collaborationRepository.socialNotifications() }
-        catch { collaborationMessage = "Could not refresh social notifications." }
+        guard !isRefreshingSocialNotifications, !isLoadingMoreSocialNotifications else { return }
+        isRefreshingSocialNotifications = true
+        defer { isRefreshingSocialNotifications = false }
+
+        do {
+            let page = try await collaborationRepository.socialNotificationsPage(
+                limit: socialNotificationPageSize + 1
+            )
+            let firstWindow = Array(page.prefix(socialNotificationPageSize))
+
+            if preservingLoadedPages,
+               !socialNotifications.isEmpty,
+               page.count > socialNotificationPageSize {
+                // Prefer refreshed copies of IDs in the authoritative newest
+                // window, then retain every older page already loaded. New
+                // notifications can displace prior first-page rows, so simply
+                // dropping the old first 50 would create a gap.
+                socialNotifications = mergedRefreshedSocialNotifications(
+                    newestWindow: firstWindow,
+                    previouslyLoaded: socialNotifications
+                )
+                // The loaded depth and its raw cursor remain valid because all
+                // Realtime inserts are newer than that cursor.
+            } else {
+                socialNotifications = firstWindow
+                socialNotificationCursor = firstWindow.last.map {
+                    RemoteSocialNotificationCursor(createdAt: $0.createdAt, id: $0.id)
+                }
+                hasMoreSocialNotifications = page.count > socialNotificationPageSize
+            }
+
+            do {
+                unreadSocialNotificationCount = try await collaborationRepository
+                    .unreadSocialNotificationCount()
+            } catch {
+                // Keep the last exhaustive badge rather than replacing it with
+                // a count derived from only the loaded notification pages.
+            }
+        } catch {
+            collaborationMessage = "Could not refresh social notifications."
+        }
+    }
+
+    func loadMoreSocialNotifications() async {
+        guard hasMoreSocialNotifications,
+              !isRefreshingSocialNotifications,
+              !isLoadingMoreSocialNotifications,
+              let cursor = socialNotificationCursor else { return }
+        isLoadingMoreSocialNotifications = true
+        defer { isLoadingMoreSocialNotifications = false }
+
+        do {
+            let page = try await collaborationRepository.socialNotificationsPage(
+                beforeCreatedAt: cursor.createdAt,
+                beforeID: cursor.id,
+                limit: socialNotificationPageSize + 1
+            )
+            let rawWindow = Array(page.prefix(socialNotificationPageSize))
+            let existingIDs = Set(socialNotifications.map(\.id))
+            socialNotifications.append(contentsOf: rawWindow.filter {
+                !existingIDs.contains($0.id)
+            })
+            socialNotificationCursor = rawWindow.last.map {
+                RemoteSocialNotificationCursor(createdAt: $0.createdAt, id: $0.id)
+            } ?? socialNotificationCursor
+            hasMoreSocialNotifications = page.count > socialNotificationPageSize
+        } catch {
+            collaborationMessage = "Could not load older notifications."
+        }
     }
 
     func markSocialNotificationsRead(_ notificationID: UUID? = nil) async {

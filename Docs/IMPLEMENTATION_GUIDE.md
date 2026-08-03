@@ -88,8 +88,10 @@ playback/catalog interaction.
   editing, soft deletion, comments, and reactions.
   A dated journal listen remains separate from the listener's current opinion,
   so repeat listens do not overwrite a rating or review.
-- Durable in-app notifications cover follow requests/acceptance, review
-  comments/reactions, and list likes/comments. Their data is the future source for APNs delivery;
+- Durable in-app notifications cover follow requests/acceptance, review and
+  Eavesdrop comments/reactions, and list likes/comments. The inbox uses stable
+  keyset pages and a separate exhaustive unread count, so its badge is not
+  limited to the loaded rows. Their data is the future source for APNs delivery;
   APNs is not yet enabled.
 - Listen owns the durable following Activity page and its member-profile
   navigation. Intentional manual Diary logs and first-published Reviews appear as
@@ -679,12 +681,22 @@ The main social RPCs are `request_social_follow`,
 `create_music_review`, `update_music_review`, `delete_music_review`,
 `list_review_comments`, `get_review_engagement`, `add_review_comment`,
 `delete_review_comment`, `toggle_review_reaction`, and
+`list_social_notifications`, `count_unread_social_notifications`, and
 `mark_social_notifications_read`.
 
 Database triggers create a profile/social-settings row at signup and create
 notifications atomically for follow state transitions, comments, and
 reactions. They prevent client-side notification forgery and give APNs a
 single server-owned event stream to consume later.
+
+Notification pages use descending `(created_at, id)` keyset cursors. The app
+loads 50 display rows at a time while requesting one look-ahead row, dedupes by
+durable notification ID, and keeps its deepest raw cursor when a Realtime
+refresh replaces the newest window. `count_unread_social_notifications()` is
+the badge authority across every visible row. Mark-all and mark-one skip rows
+hidden by a current block. Review and Eavesdrop reaction notifications are
+lifetime-deduplicated per actor and object so toggling a reaction cannot spam
+the recipient's inbox.
 
 ### Realtime
 

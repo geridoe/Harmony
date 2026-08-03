@@ -148,6 +148,11 @@ private struct ReviewCommentsPageParameters: Encodable {
 }
 private struct CommentIDParameters: Encodable { let p_comment_id: UUID }
 private struct NotificationIDParameters: Encodable { let p_notification_id: UUID? }
+private struct NotificationPageParameters: Encodable {
+    let p_before_created_at: Date?
+    let p_before_id: UUID?
+    let p_limit: Int
+}
 private struct UpdateReviewParameters: Encodable {
     let p_review_id: UUID
     let p_rating: Double?
@@ -540,22 +545,31 @@ struct RemoteNotificationMusicList: Decodable {
 
 struct RemoteSocialNotification: Decodable, Identifiable {
     let id: UUID
+    let actorID: UUID
     let kind: String
     let createdAt: Date
     let readAt: Date?
     let actor: RemoteProfile
     let reviewID: UUID?
+    let musicListID: UUID?
     let review: RemoteNotificationReview?
     let musicList: RemoteNotificationMusicList?
     let listeningBroadcastID: UUID?
     enum CodingKeys: String, CodingKey {
         case id, kind, actor, review
+        case actorID = "actor_id"
         case reviewID = "review_id"
+        case musicListID = "music_list_id"
         case musicList = "music_list"
         case listeningBroadcastID = "listening_broadcast_id"
         case createdAt = "created_at"
         case readAt = "read_at"
     }
+}
+
+struct RemoteSocialNotificationCursor: Equatable {
+    let createdAt: Date
+    let id: UUID
 }
 
 struct RemoteCatalogTrack: Codable {
@@ -1364,12 +1378,27 @@ final class HarmonyCollaborationRepository {
             .execute().value
     }
 
-    func socialNotifications() async throws -> [RemoteSocialNotification] {
+    func socialNotificationsPage(
+        beforeCreatedAt: Date? = nil,
+        beforeID: UUID? = nil,
+        limit: Int = 51
+    ) async throws -> [RemoteSocialNotification] {
         try await authenticate()
-        return try await client.from("social_notifications")
-            .select("id,kind,created_at,read_at,review_id,listening_broadcast_id,actor:profiles!social_notifications_actor_id_fkey(display_name),review:music_reviews!social_notifications_review_id_fkey(subject_title,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit)),music_list:music_lists!social_notifications_music_list_id_fkey(title)")
-            .order("created_at", ascending: false)
-            .limit(50).execute().value
+        return try await client.rpc(
+            "list_social_notifications",
+            params: NotificationPageParameters(
+                p_before_created_at: beforeCreatedAt,
+                p_before_id: beforeID,
+                p_limit: limit
+            )
+        )
+        .select("id,actor_id,kind,created_at,read_at,review_id,music_list_id,listening_broadcast_id,actor:profiles!social_notifications_actor_id_fkey(display_name),review:music_reviews!social_notifications_review_id_fkey(subject_title,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit)),music_list:music_lists!social_notifications_music_list_id_fkey(title)")
+        .execute().value
+    }
+
+    func unreadSocialNotificationCount() async throws -> Int {
+        try await authenticate()
+        return try await client.rpc("count_unread_social_notifications").execute().value
     }
 
     func markSocialNotificationsRead(_ notificationID: UUID?) async throws {

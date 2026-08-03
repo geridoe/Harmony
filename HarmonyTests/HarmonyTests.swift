@@ -559,13 +559,16 @@ final class HarmonyTests: XCTestCase {
 
     func testReviewNotificationDecodesDurableReviewIdentity() throws {
         let reviewID = UUID(uuidString: "30000000-0000-0000-0000-000000000003")!
+        let actorID = UUID(uuidString: "50000000-0000-0000-0000-000000000005")!
         let json = """
         {
           "id": "70000000-0000-0000-0000-000000000007",
+          "actor_id": "\(actorID.uuidString)",
           "kind": "review_comment",
           "created_at": "2026-08-03T12:00:00Z",
           "read_at": null,
           "review_id": "\(reviewID.uuidString)",
+          "music_list_id": null,
           "listening_broadcast_id": null,
           "actor": {"display_name": "Commenter"},
           "review": {"subject_title": "Afterglow", "canonical_tracks": null},
@@ -578,8 +581,91 @@ final class HarmonyTests: XCTestCase {
         let notification = try decoder.decode(RemoteSocialNotification.self, from: Data(json.utf8))
 
         XCTAssertEqual(notification.reviewID, reviewID)
+        XCTAssertEqual(notification.actorID, actorID)
+        XCTAssertNil(notification.musicListID)
+        XCTAssertNil(notification.listeningBroadcastID)
         XCTAssertEqual(notification.review?.subjectTitle, "Afterglow")
         XCTAssertEqual(notification.actor.displayName, "Commenter")
+    }
+
+    func testNotificationDecodesListAndBroadcastRoutingIdentities() throws {
+        let actorID = UUID()
+        let listID = UUID()
+        let broadcastID = UUID()
+        let json = """
+        [
+          {
+            "id": "\(UUID().uuidString)",
+            "actor_id": "\(actorID.uuidString)",
+            "kind": "music_list_comment",
+            "created_at": "2026-08-03T12:00:00Z",
+            "read_at": null,
+            "review_id": null,
+            "music_list_id": "\(listID.uuidString)",
+            "listening_broadcast_id": null,
+            "actor": {"display_name": "List reader"},
+            "review": null,
+            "music_list": {"title": "Favorite bridges"}
+          },
+          {
+            "id": "\(UUID().uuidString)",
+            "actor_id": "\(actorID.uuidString)",
+            "kind": "listening_broadcast_reaction",
+            "created_at": "2026-08-03T11:00:00Z",
+            "read_at": null,
+            "review_id": null,
+            "music_list_id": null,
+            "listening_broadcast_id": "\(broadcastID.uuidString)",
+            "actor": {"display_name": "Live listener"},
+            "review": null,
+            "music_list": null
+          }
+        ]
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let notifications = try decoder.decode([RemoteSocialNotification].self, from: Data(json.utf8))
+
+        XCTAssertEqual(notifications[0].actorID, actorID)
+        XCTAssertEqual(notifications[0].musicListID, listID)
+        XCTAssertEqual(notifications[0].musicList?.title, "Favorite bridges")
+        XCTAssertEqual(notifications[1].listeningBroadcastID, broadcastID)
+    }
+
+    func testRealtimeNotificationWindowMergePreservesLoadedDepthAndPrefersRefreshedRows() {
+        let sharedID = UUID(uuidString: "30000000-0000-0000-0000-000000000003")!
+        let olderID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+        let newestID = UUID(uuidString: "90000000-0000-0000-0000-000000000009")!
+        let oldShared = socialNotification(
+            id: sharedID,
+            createdAt: Date(timeIntervalSince1970: 200),
+            readAt: nil
+        )
+        let refreshedShared = socialNotification(
+            id: sharedID,
+            createdAt: oldShared.createdAt,
+            readAt: Date(timeIntervalSince1970: 300)
+        )
+        let older = socialNotification(
+            id: olderID,
+            createdAt: Date(timeIntervalSince1970: 100),
+            readAt: nil
+        )
+        let newest = socialNotification(
+            id: newestID,
+            createdAt: Date(timeIntervalSince1970: 300),
+            readAt: nil
+        )
+
+        let merged = mergedRefreshedSocialNotifications(
+            newestWindow: [newest, refreshedShared],
+            previouslyLoaded: [oldShared, older]
+        )
+
+        XCTAssertEqual(merged.map(\.id), [newestID, sharedID, olderID])
+        XCTAssertNotNil(merged[1].readAt, "The authoritative newest-window copy must replace a stale loaded row")
+        XCTAssertEqual(merged.last?.id, olderID, "Realtime refresh must retain the raw loaded-page depth")
     }
 
     func testReviewDraftSnapshotsAudienceAndKeepsAllAuthoredFields() {
@@ -1627,6 +1713,26 @@ final class HarmonyTests: XCTestCase {
             ),
             canonicalAlbum: nil,
             profile: RemoteProfile(displayName: "Test listener")
+        )
+    }
+
+    private func socialNotification(
+        id: UUID,
+        createdAt: Date,
+        readAt: Date?
+    ) -> RemoteSocialNotification {
+        RemoteSocialNotification(
+            id: id,
+            actorID: UUID(),
+            kind: "follow_request",
+            createdAt: createdAt,
+            readAt: readAt,
+            actor: RemoteProfile(displayName: "Test actor"),
+            reviewID: nil,
+            musicListID: nil,
+            review: nil,
+            musicList: nil,
+            listeningBroadcastID: nil
         )
     }
 

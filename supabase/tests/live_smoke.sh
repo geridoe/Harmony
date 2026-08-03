@@ -1462,6 +1462,50 @@ rpc "$conductor_token" toggle_review_reaction \
   "{\"p_review_id\":\"$review_id\",\"p_kind\":\"heart\"}" \
   "$smoke_tmp/block-privacy-review-reaction.json"
 [[ "$(jq -er '.' "$smoke_tmp/block-privacy-review-reaction.json")" == "true" ]]
+
+stage="notification keyset pagination and exhaustive unread count"
+rpc "$collaborator_token" list_social_notifications \
+  '{"p_before_created_at":null,"p_before_id":null,"p_limit":2}' \
+  "$smoke_tmp/notification-first-page.json"
+notification_first_page_count="$(jq 'length' "$smoke_tmp/notification-first-page.json")"
+[[ "$notification_first_page_count" -eq 2 ]]
+jq -e '.[0].created_at > .[1].created_at or (.[0].created_at == .[1].created_at and .[0].id > .[1].id)' "$smoke_tmp/notification-first-page.json" >/dev/null
+notification_cursor_created_at="$(jq -er '.[-1].created_at' "$smoke_tmp/notification-first-page.json")"
+notification_cursor_id="$(jq -er '.[-1].id' "$smoke_tmp/notification-first-page.json")"
+rpc "$collaborator_token" list_social_notifications \
+  "{\"p_before_created_at\":\"$notification_cursor_created_at\",\"p_before_id\":\"$notification_cursor_id\",\"p_limit\":2}" \
+  "$smoke_tmp/notification-second-page.json"
+jq -e --slurpfile first "$smoke_tmp/notification-first-page.json" 'length == 2 and ([.[].id] - [$first[0][0].id, $first[0][1].id] | length) == 2' "$smoke_tmp/notification-second-page.json" >/dev/null
+jq -e --arg created "$notification_cursor_created_at" --arg id "$notification_cursor_id" 'all(.[]; .created_at < $created or (.created_at == $created and .id < $id))' "$smoke_tmp/notification-second-page.json" >/dev/null
+rpc "$collaborator_token" list_social_notifications \
+  '{"p_before_created_at":null,"p_before_id":null,"p_limit":100}' \
+  "$smoke_tmp/all-visible-notifications.json"
+expected_unread_notification_count="$(jq '[.[] | select(.read_at == null)] | length' "$smoke_tmp/all-visible-notifications.json")"
+blocked_notification_id="$(jq -er --arg actor "$conductor_id" '.[] | select(.actor_id == $actor and .read_at == null) | .id' "$smoke_tmp/all-visible-notifications.json" | head -1)"
+rpc "$collaborator_token" count_unread_social_notifications '{}' \
+  "$smoke_tmp/unread-notification-count.json"
+[[ "$(jq -er '.' "$smoke_tmp/unread-notification-count.json")" -eq "$expected_unread_notification_count" ]]
+rpc "$conductor_token" list_social_notifications \
+  '{"p_before_created_at":null,"p_before_id":null,"p_limit":100}' \
+  "$smoke_tmp/stranger-notification-page.json"
+jq -e --arg recipient "$conductor_id" 'length >= 1 and all(.[]; .recipient_id == $recipient)' "$smoke_tmp/stranger-notification-page.json" >/dev/null
+partial_notification_cursor_status="$(rpc_status "$collaborator_token" list_social_notifications \
+  "{\"p_before_created_at\":\"$notification_cursor_created_at\",\"p_before_id\":null,\"p_limit\":50}" \
+  "$smoke_tmp/partial-notification-cursor.json")"
+[[ "$partial_notification_cursor_status" == "400" ]]
+oversized_notification_page_status="$(rpc_status "$collaborator_token" list_social_notifications \
+  '{"p_before_created_at":null,"p_before_id":null,"p_limit":101}' \
+  "$smoke_tmp/oversized-notification-page.json")"
+[[ "$oversized_notification_page_status" == "400" ]]
+zero_notification_page_status="$(rpc_status "$collaborator_token" list_social_notifications \
+  '{"p_before_created_at":null,"p_before_id":null,"p_limit":0}' \
+  "$smoke_tmp/zero-notification-page.json")"
+[[ "$zero_notification_page_status" == "400" ]]
+rest_get "$collaborator_token" \
+  "social_notifications?select=id&kind=eq.review_reaction&actor_id=eq.$conductor_id&review_id=eq.$review_id" \
+  "$smoke_tmp/deduplicated-review-reaction-notification.json"
+[[ "$(jq 'length' "$smoke_tmp/deduplicated-review-reaction-notification.json")" -eq 1 ]]
+
 rpc "$collaborator_token" block_social_profile \
   "{\"p_profile_id\":\"$conductor_id\"}" \
   "$smoke_tmp/block.json"
@@ -1559,6 +1603,17 @@ rest_get "$collaborator_token" \
   "social_notifications?select=id&actor_id=eq.$conductor_id" \
   "$smoke_tmp/blocked-notifications.json"
 [[ "$(jq 'length' "$smoke_tmp/blocked-notifications.json")" -eq 0 ]]
+rpc "$collaborator_token" list_social_notifications \
+  '{"p_before_created_at":null,"p_before_id":null,"p_limit":100}' \
+  "$smoke_tmp/blocked-notification-page.json"
+[[ "$(jq 'length' "$smoke_tmp/blocked-notification-page.json")" -eq 0 ]]
+rpc "$collaborator_token" count_unread_social_notifications '{}' \
+  "$smoke_tmp/blocked-unread-notification-count.json"
+[[ "$(jq -er '.' "$smoke_tmp/blocked-unread-notification-count.json")" -eq 0 ]]
+rpc "$collaborator_token" mark_social_notifications_read \
+  "{\"p_notification_id\":\"$blocked_notification_id\"}" \
+  "$smoke_tmp/blocked-notification-mark-read.json"
+[[ "$(jq -er '.' "$smoke_tmp/blocked-notification-mark-read.json")" -eq 0 ]]
 blocked_follow_status="$(rpc_status "$conductor_token" request_social_follow \
   "{\"p_profile_id\":\"$collaborator_id\"}" \
   "$smoke_tmp/blocked-follow.json")"
@@ -1569,6 +1624,13 @@ rpc "$collaborator_token" unblock_social_profile \
 [[ "$(jq -er '.' "$smoke_tmp/unblock.json")" == "true" ]]
 
 stage="child social content unblock and reverse-direction block"
+rest_get "$collaborator_token" \
+  "social_notifications?select=id,read_at&id=eq.$blocked_notification_id" \
+  "$smoke_tmp/unblocked-preserved-notification.json"
+jq -e --arg notification "$blocked_notification_id" 'length == 1 and .[0].id == $notification and .[0].read_at == null' "$smoke_tmp/unblocked-preserved-notification.json" >/dev/null
+rpc "$collaborator_token" count_unread_social_notifications '{}' \
+  "$smoke_tmp/unblocked-unread-notification-count.json"
+[[ "$(jq -er '.' "$smoke_tmp/unblocked-unread-notification-count.json")" -ge 1 ]]
 rest_get "$collaborator_token" \
   "review_comments?select=id,author_id&review_id=eq.$review_id" \
   "$smoke_tmp/unblocked-review-comments.json"
@@ -1621,6 +1683,9 @@ rest_get "$collaborator_token" \
   "social_notifications?select=id&actor_id=eq.$conductor_id" \
   "$smoke_tmp/reverse-blocked-child-notifications.json"
 [[ "$(jq 'length' "$smoke_tmp/reverse-blocked-child-notifications.json")" -eq 0 ]]
+rpc "$collaborator_token" count_unread_social_notifications '{}' \
+  "$smoke_tmp/reverse-blocked-unread-notification-count.json"
+[[ "$(jq -er '.' "$smoke_tmp/reverse-blocked-unread-notification-count.json")" -eq 0 ]]
 rpc "$conductor_token" unblock_social_profile \
   "{\"p_profile_id\":\"$collaborator_id\"}" \
   "$smoke_tmp/reverse-unblock.json"

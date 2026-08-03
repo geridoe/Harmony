@@ -49,11 +49,26 @@ struct SocialView: View {
         NavigationStack {
             List {
                 Section {
-                    if store.socialNotifications.isEmpty {
+                    if store.isRefreshingSocialNotifications && store.socialNotifications.isEmpty {
+                        ProgressView("Loading notifications…")
+                    } else if store.socialNotifications.isEmpty {
                         Text("No social notifications yet.").foregroundColor(.secondary)
                     } else {
                         ForEach(store.socialNotifications) { notification in
                             notificationRow(notification)
+                        }
+                        if store.hasMoreSocialNotifications {
+                            Button {
+                                Task { await store.loadMoreSocialNotifications() }
+                            } label: {
+                                if store.isLoadingMoreSocialNotifications {
+                                    ProgressView("Loading older notifications…")
+                                } else {
+                                    Label("Load older notifications", systemImage: "arrow.down.circle")
+                                }
+                            }
+                            .disabled(store.isLoadingMoreSocialNotifications)
+                            .accessibilityIdentifier("notifications-load-older")
                         }
                     }
                 } header: {

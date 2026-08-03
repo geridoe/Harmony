@@ -95,7 +95,16 @@ Review wins; its linked Diary event becomes readable again if the Review later
 becomes private or deleted. The narrow definer predicate used for this decision
 returns only a boolean and does not re-expose the protected `review_id` column.
 
-`social_notifications` stores recipient-owned follow, comment, and reaction events with unread state. Database triggers create these events atomically with the social action, RLS hides events across blocks, and `mark_social_notifications_read(...)` is the only client mutation path. Supabase Realtime refreshes the in-app inbox; future APNs delivery should consume these rows rather than duplicate notification business logic.
+`social_notifications` stores recipient-owned follow, comment, and reaction
+events with unread state. Database triggers create them atomically with the
+social action, RLS hides events across blocks, and reaction notifications are
+deduplicated per actor/object. `list_social_notifications(...)` provides stable
+descending `(created_at, id)` keyset pages;
+`count_unread_social_notifications()` supplies the exhaustive visible badge;
+`mark_social_notifications_read(...)` is the only client mutation path and
+does not mark currently block-hidden rows. Supabase Realtime refreshes the
+newest inbox window without discarding already loaded older pages. Future APNs
+delivery should consume these rows rather than duplicate notification logic.
 
 `resolve_harmony_track(provider, provider_id, title, artist, ...)` resolves a provider catalog item to a canonical Harmony track before queue insertion. It is idempotent by provider and provider ID, so provider-specific search clients can contribute tracks even before a cross-provider matcher has added mappings for the other services.
 
