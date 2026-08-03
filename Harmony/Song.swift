@@ -427,6 +427,108 @@ struct CanonicalAlbumDetailState {
     var errorMessage: String?
 }
 
+struct EavesdropProviderDestination: Equatable {
+    let provider: MusicProvider
+    let providerTrackID: String
+    let deepLink: URL?
+    let availability: ProviderAvailability
+}
+
+struct EavesdropBroadcast: Identifiable {
+    let id: UUID
+    let hostProfileID: UUID
+    let hostDisplayName: String
+    let status: String
+    let visibility: SocialVisibilityOption
+    let canonicalTrackID: UUID?
+    let title: String?
+    let artist: String?
+    let album: String?
+    let durationMilliseconds: Int?
+    let artworkURL: URL?
+    let isExplicit: Bool
+    let startedAt: Date
+    let expiresAt: Date
+    let sourceProvider: String?
+    let sourceDeepLink: URL?
+    var destinations: [MusicProvider: EavesdropProviderDestination]
+
+    var harmonyTrack: HarmonyTrack? {
+        guard let title, let artist else { return nil }
+        return HarmonyTrack(
+            canonicalTrackID: canonicalTrackID,
+            title: title,
+            artist: artist,
+            album: album ?? "Unknown album",
+            duration: TimeInterval(durationMilliseconds ?? 0) / 1000,
+            symbol: "music.note",
+            artworkURL: artworkURL,
+            isExplicit: isExplicit,
+            mappings: destinations.values.map {
+                ProviderTrackMapping(
+                    provider: $0.provider,
+                    providerID: $0.providerTrackID,
+                    availability: $0.availability,
+                    deepLinkURL: $0.deepLink
+                )
+            }
+        )
+    }
+}
+
+struct EavesdropBroadcastDetailState {
+    var broadcast: EavesdropBroadcast?
+    var comments: [RemoteEavesdropComment] = []
+    var reactions: [RemoteEavesdropReaction] = []
+    var isRefreshing = false
+    var errorMessage: String?
+}
+
+func mergedEavesdropBroadcasts(_ rows: [RemoteEavesdropBroadcastRow]) -> [EavesdropBroadcast] {
+    var broadcasts: [UUID: EavesdropBroadcast] = [:]
+    for row in rows {
+        var broadcast = broadcasts[row.broadcastID] ?? EavesdropBroadcast(
+            id: row.broadcastID,
+            hostProfileID: row.hostProfileID,
+            hostDisplayName: row.hostDisplayName,
+            status: row.status,
+            visibility: row.visibility,
+            canonicalTrackID: row.canonicalTrackID,
+            title: row.trackTitle,
+            artist: row.trackArtist,
+            album: row.trackAlbum,
+            durationMilliseconds: row.trackDurationMilliseconds,
+            artworkURL: row.trackArtworkURL,
+            isExplicit: row.trackIsExplicit ?? false,
+            startedAt: row.startedAt,
+            expiresAt: row.expiresAt,
+            sourceProvider: row.sourceProvider,
+            sourceDeepLink: row.sourceDeepLink,
+            destinations: [:]
+        )
+        if let providerName = row.viewerProvider,
+           let providerID = row.viewerProviderTrackID,
+           let provider = providerName == "spotify"
+            ? MusicProvider.spotify
+            : (providerName == "apple_music" ? MusicProvider.appleMusic : nil) {
+            let availability: ProviderAvailability = row.viewerAvailability == "playable"
+                ? .playable
+                : (row.viewerAvailability == "open_in_provider" ? .openInProvider : .unavailable)
+            broadcast.destinations[provider] = EavesdropProviderDestination(
+                provider: provider,
+                providerTrackID: providerID,
+                deepLink: row.viewerProviderDeepLink,
+                availability: availability
+            )
+        }
+        broadcasts[row.broadcastID] = broadcast
+    }
+    return broadcasts.values.sorted {
+        if $0.startedAt == $1.startedAt { return $0.id.uuidString > $1.id.uuidString }
+        return $0.startedAt > $1.startedAt
+    }
+}
+
 enum CatalogSearchPurpose: Hashable {
     case addMusic
     case reviews
@@ -470,6 +572,9 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var recentSessions: [RemoteHarmonySession] = []
     @Published private(set) var isLoadingRecentSessions = false
     @Published private(set) var listeningFeed: [RemoteListeningPresence] = []
+    @Published private(set) var eavesdropFeed: [EavesdropBroadcast] = []
+    @Published private(set) var eavesdropDetails: [UUID: EavesdropBroadcastDetailState] = [:]
+    @Published private(set) var mutatingEavesdropBroadcastIDs: Set<UUID> = []
     @Published private(set) var isRefreshingListeningFeed = false
     @Published private(set) var isPublishingListeningPresence = false
     @Published private(set) var isEavesdropping = false
@@ -497,7 +602,12 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var isImportingSpotifyHistory = false
     @Published private(set) var spotifyHistoryImportMessage: String?
     @Published private(set) var musicReviews: [RemoteMusicReview] = []
+    @Published private(set) var ownerReviews: [RemoteMusicReview] = []
+    @Published private(set) var ownerReviewStats: RemoteOwnerReviewStats = .empty
     @Published private(set) var isRefreshingMusicReviews = false
+    @Published private(set) var isRefreshingOwnerReviews = false
+    @Published private(set) var isLoadingMoreOwnerReviews = false
+    @Published private(set) var hasMoreOwnerReviews = false
     @Published private(set) var isPublishingMusicReview = false
     @Published private(set) var mutatingReviewIDs: Set<UUID> = []
     @Published private(set) var followingActivity: [RemoteFollowingActivityItem] = []
@@ -1140,13 +1250,128 @@ final class HarmonySessionStore: ObservableObject {
         isRefreshingListeningFeed = true
         defer { isRefreshingListeningFeed = false }
         do {
-            async let feed = collaborationRepository.listeningFeed()
-            async let currentUserID = collaborationRepository.currentUserID()
-            let (activity, userID) = try await (feed, currentUserID)
-            listeningFeed = activity
-            isEavesdropping = activity.contains(where: { $0.profileID == userID })
+            var rows = try await collaborationRepository.eavesdropBroadcastRows()
+            if providerState(for: .spotify) == .connected {
+                rows += (try? await collaborationRepository.eavesdropBroadcastRows(
+                    viewerProvider: .spotify,
+                    storefront: "global"
+                )) ?? []
+            }
+            if providerState(for: .appleMusic) == .connected {
+                rows += (try? await collaborationRepository.eavesdropBroadcastRows(
+                    viewerProvider: .appleMusic,
+                    storefront: "us"
+                )) ?? []
+            }
+            let userID = try await collaborationRepository.currentUserID()
+            eavesdropFeed = mergedEavesdropBroadcasts(rows)
+            isEavesdropping = eavesdropFeed.contains { $0.hostProfileID == userID }
         } catch {
             collaborationMessage = "Could not refresh listening activity."
+        }
+    }
+
+    func refreshEavesdropDetail(_ broadcast: EavesdropBroadcast) async {
+        guard eavesdropDetails[broadcast.id]?.isRefreshing != true else { return }
+        eavesdropDetails[broadcast.id, default: EavesdropBroadcastDetailState()].broadcast = broadcast
+        eavesdropDetails[broadcast.id]?.isRefreshing = true
+        defer { eavesdropDetails[broadcast.id]?.isRefreshing = false }
+        do {
+            async let comments = collaborationRepository.eavesdropComments(broadcastID: broadcast.id)
+            async let reactions = collaborationRepository.eavesdropReactions(broadcastID: broadcast.id)
+            let values = try await (comments, reactions)
+            eavesdropDetails[broadcast.id]?.comments = values.0
+            eavesdropDetails[broadcast.id]?.reactions = values.1
+            eavesdropDetails[broadcast.id]?.errorMessage = nil
+        } catch {
+            eavesdropDetails[broadcast.id]?.errorMessage = error.localizedDescription
+        }
+    }
+
+    @discardableResult
+    func addEavesdropComment(to broadcast: EavesdropBroadcast, body: String) async -> Bool {
+        let body = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (1...2000).contains(body.count) else {
+            collaborationMessage = "Comments must contain 1 to 2,000 characters."
+            return false
+        }
+        return await performEavesdropMutation(broadcast, success: "Comment added") {
+            try await self.collaborationRepository.addEavesdropComment(
+                broadcastID: broadcast.id,
+                body: body
+            )
+        }
+    }
+
+    func toggleEavesdropReaction(_ broadcast: EavesdropBroadcast, kind: String) async {
+        _ = await performEavesdropMutation(broadcast, success: "Reaction updated") {
+            _ = try await self.collaborationRepository.toggleEavesdropReaction(
+                broadcastID: broadcast.id,
+                kind: kind
+            )
+        }
+    }
+
+    func deleteEavesdropComment(_ comment: RemoteEavesdropComment, from broadcast: EavesdropBroadcast) async {
+        _ = await performEavesdropMutation(broadcast, success: "Comment deleted") {
+            _ = try await self.collaborationRepository.deleteEavesdropComment(comment.id)
+        }
+    }
+
+    func canDeleteEavesdropComment(_ comment: RemoteEavesdropComment, broadcast: EavesdropBroadcast) -> Bool {
+        comment.authorID == authenticatedProfileID || broadcast.hostProfileID == authenticatedProfileID
+    }
+
+    func hasEavesdropReaction(_ broadcastID: UUID, kind: String) -> Bool {
+        guard let authenticatedProfileID else { return false }
+        return eavesdropDetails[broadcastID]?.reactions.contains {
+            $0.profileID == authenticatedProfileID && $0.kind == kind
+        } ?? false
+    }
+
+    func startEavesdropPlayback(_ broadcast: EavesdropBroadcast, provider: MusicProvider) async -> Bool {
+        guard !mutatingEavesdropBroadcastIDs.contains(broadcast.id),
+              let track = broadcast.harmonyTrack,
+              broadcast.destinations[provider] != nil else { return false }
+        mutatingEavesdropBroadcastIDs.insert(broadcast.id)
+        defer { mutatingEavesdropBroadcastIDs.remove(broadcast.id) }
+        do {
+            let adapter: any HarmonyMusicProvider = provider == .spotify ? spotifyRemote : appleMusicProvider
+            let resolved = try await adapter.resolve(track: track)
+            let result = try await adapter.perform(.play(resolved))
+            switch result {
+            case .applied:
+                collaborationMessage = "Started in \(provider.name)"
+                return true
+            case .requiresOpenInProvider:
+                collaborationMessage = "Open \(provider.name) to listen to this track."
+                return false
+            case .unavailable(let reason):
+                collaborationMessage = reason
+                return false
+            }
+        } catch {
+            collaborationMessage = "Could not start \(provider.name): \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    private func performEavesdropMutation(
+        _ broadcast: EavesdropBroadcast,
+        success: String,
+        operation: @escaping () async throws -> Void
+    ) async -> Bool {
+        guard !mutatingEavesdropBroadcastIDs.contains(broadcast.id) else { return false }
+        mutatingEavesdropBroadcastIDs.insert(broadcast.id)
+        defer { mutatingEavesdropBroadcastIDs.remove(broadcast.id) }
+        do {
+            try await operation()
+            collaborationMessage = success
+            await refreshEavesdropDetail(broadcast)
+            return true
+        } catch {
+            collaborationMessage = "Could not update eavesdrop: \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -2629,6 +2854,14 @@ final class HarmonySessionStore: ObservableObject {
         authenticatedProfileID = profileID
         isDiaryEditorUITestFixtureActive = true
         musicReviews = [review]
+        ownerReviews = [review]
+        ownerReviewStats = RemoteOwnerReviewStats(
+            reviewCount: 1,
+            averageRating: review.rating,
+            lovedCount: 1,
+            songCount: 1,
+            albumCount: 0
+        )
         let entry = RemoteListeningHistoryEntry(
             id: entryID,
             profileID: profileID,
@@ -2947,6 +3180,55 @@ final class HarmonySessionStore: ObservableObject {
         catch { collaborationMessage = "Could not refresh reviews." }
     }
 
+    func refreshOwnerReviews() async {
+#if DEBUG
+        guard !isDiaryEditorUITestFixtureActive else { return }
+#endif
+        guard !isRefreshingOwnerReviews, !isLoadingMoreOwnerReviews else { return }
+        isRefreshingOwnerReviews = true
+        defer { isRefreshingOwnerReviews = false }
+        do {
+            async let page = collaborationRepository.ownerReviewsPage(
+                limit: socialShelfPageSize + 1
+            )
+            async let stats = collaborationRepository.ownerReviewStats()
+            let values = try await (page, stats)
+            ownerReviews = Array(values.0.prefix(socialShelfPageSize))
+            hasMoreOwnerReviews = values.0.count > socialShelfPageSize
+            ownerReviewStats = values.1
+        } catch {
+            collaborationMessage = "Could not refresh your review library."
+        }
+    }
+
+    func loadMoreOwnerReviews() async {
+        guard hasMoreOwnerReviews,
+              !isRefreshingOwnerReviews,
+              !isLoadingMoreOwnerReviews,
+              let cursor = ownerReviews.last else { return }
+        isLoadingMoreOwnerReviews = true
+        defer { isLoadingMoreOwnerReviews = false }
+        do {
+            let page = try await collaborationRepository.ownerReviewsPage(
+                beforeCreatedAt: cursor.createdAt,
+                beforeID: cursor.id,
+                limit: socialShelfPageSize + 1
+            )
+            let existingIDs = Set(ownerReviews.map(\.id))
+            ownerReviews.append(contentsOf: page.prefix(socialShelfPageSize).filter {
+                !existingIDs.contains($0.id)
+            })
+            hasMoreOwnerReviews = page.count > socialShelfPageSize
+        } catch {
+            collaborationMessage = "Could not load older reviews."
+        }
+    }
+
+    func review(withID reviewID: UUID) -> RemoteMusicReview? {
+        ownerReviews.first(where: { $0.id == reviewID })
+            ?? musicReviews.first(where: { $0.id == reviewID })
+    }
+
     @discardableResult
     func publishTrackReview(rating: Double, body: String, isLoved: Bool = false, containsSpoilers: Bool = false, visibility: SocialVisibilityOption? = nil) async -> Bool {
         guard let track = nowPlaying?.track else { return false }
@@ -2972,6 +3254,7 @@ final class HarmonySessionStore: ObservableObject {
                 ? "Review published to approved followers"
                 : "Private review saved"
             await refreshMusicReviews()
+            await refreshOwnerReviews()
             await refreshTrackSubjectShelf()
             return true
         } catch {
@@ -2999,6 +3282,7 @@ final class HarmonySessionStore: ObservableObject {
                 ? "Album review published to approved followers"
                 : "Private album review saved"
             await refreshMusicReviews()
+            await refreshOwnerReviews()
             await refreshAlbumSubjectShelf()
             return true
         } catch {
@@ -3012,6 +3296,9 @@ final class HarmonySessionStore: ObservableObject {
             let added = try await collaborationRepository.toggleHeart(on: reviewID)
             collaborationMessage = added ? "Reaction added" : "Reaction removed"
             await refreshMusicReviews()
+            if ownerReviews.contains(where: { $0.id == reviewID }) {
+                await refreshOwnerReviews()
+            }
         } catch { collaborationMessage = "Could not update reaction: \(error.localizedDescription)" }
     }
 
@@ -3043,9 +3330,9 @@ final class HarmonySessionStore: ObservableObject {
 
     @discardableResult
     func updateReview(_ reviewID: UUID, rating: Double, body: String, visibility: SocialVisibilityOption, isLoved: Bool, containsSpoilers: Bool = false) async -> Bool {
-        let updatesTrackState = musicReviews.contains {
+        let updatesTrackState = review(withID: reviewID).map {
             $0.id == reviewID && $0.subjectKind == "track" && $0.canonicalTrack?.id != nil
-        }
+        } ?? false
         let didUpdate = await performReviewMutation(reviewID, successMessage: "Review updated") {
             try await self.collaborationRepository.updateReview(
                 reviewID,
@@ -3072,7 +3359,7 @@ final class HarmonySessionStore: ObservableObject {
         successMessage: String,
         operation: @escaping () async throws -> Void
     ) async -> Bool {
-        let affectedAlbum = musicReviews.first(where: { $0.id == reviewID })?.canonicalAlbum
+        let affectedAlbum = review(withID: reviewID)?.canonicalAlbum
         guard !mutatingReviewIDs.contains(reviewID) else { return false }
         mutatingReviewIDs.insert(reviewID)
         defer { mutatingReviewIDs.remove(reviewID) }
@@ -3080,6 +3367,7 @@ final class HarmonySessionStore: ObservableObject {
             try await operation()
             collaborationMessage = successMessage
             await refreshMusicReviews()
+            await refreshOwnerReviews()
             if let affectedAlbum {
                 _ = await refreshAlbumSubjectState(for: affectedAlbum)
                 await refreshCanonicalAlbumDetail(affectedAlbum)

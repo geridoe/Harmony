@@ -76,6 +76,18 @@ interaction details that guide the next slices:
   understandable popular/highly-rated/friend activity paths rather than one
   opaque recommendation feed.
 
+The current public film-detail experience was also inspected directly on
+3 August 2026. Its information hierarchy places canonical subject metadata and
+personal actions beside a ten-bucket rating distribution, then presents popular
+reviews as independently addressable posts with author links, rating/Liked
+state, comment counts, spoiler gates, and Like counts. Harmony now mirrors that
+grammar in a music-native way: the Reviews root opens on follower Activity,
+review detail links to the author's member profile, album detail owns the
+canonical rating distribution and visible-review aggregate, and review bodies
+remain hidden behind an explicit spoiler reveal. Community-wide popularity is
+not claimed yet because Harmony currently has Only me and Followers audiences,
+not a public-review audience or an abuse-resistant ranking system.
+
 These points were verified against Letterboxd's current official
 [FAQ](https://letterboxd.com/about/faq/),
 [Welcome guide](https://letterboxd.com/welcome/),
@@ -111,9 +123,11 @@ Only the first stage should be described as implemented:
 5. **Current:** a durable typed following feed and follower member profiles
    with independent Reviews, Diary, and opt-in Loved shelves. Imported provider
    history and Harmony-room playback never generate feed events.
-6. **Current:** My Reviews includes an average/count/Loved summary, local
+6. **Current:** My Reviews is an auth-bound keyset-paginated owner library with
+   exhaustive server average/count/Loved totals. Loaded pages support local
    title/artist/album/body search, Songs / Albums / Loved scopes, and Newest /
-   Highest rated / Lowest rated ordering.
+   Highest rated / Lowest rated ordering without competing with the bounded
+   social-review cache.
 7. **Current:** Ratings is a full shelf in the root Reviews page, backed by
    independent current song and album state rather than inferred from review
    rows. Its All / Songs / Albums scopes present half-star distributions and
@@ -186,18 +200,19 @@ before broader discovery ships.
 ### Review browsing and ratings summary
 
 **Reviews → Reviews** now treats a member's opinions as a browsable catalog,
-not a chronological text dump. Its summary reports the average of the loaded
-owner reviews, total review count, and Loved count. Search folds case and
+not a chronological text dump. `list_my_music_reviews` provides stable keyset
+pagination independent of followed members' activity, while
+`get_my_music_review_stats` reports exhaustive active-review count, average,
+and Loved count. Search folds case and
 diacritics and matches subject title, artist, album, or review body. Scope is
 **All**, **Songs**, **Albums**, or **Loved**; sort is **Newest**, **Highest
 rated**, or **Lowest rated**, with creation time breaking rating ties.
 
 `ReviewBrowseFilter` owns the three controls and `browseMusicReviews` remains a
-pure client transformation, covered by unit tests. The current review query is
-limited to 50 records, so these values and filters describe the loaded review
-page rather than claiming all-time statistics. Server-keyset pagination and
-exhaustive statistics remain a later slice. This limitation is stated here so
-future UI copy does not misrepresent partial data.
+pure client transformation, covered by unit tests. Filters describe the owner
+pages loaded so far; **Load older reviews** advances the stable cursor. The
+summary is exhaustive even before every page is loaded. Exhaustive server-side
+filtered search remains a later slice.
 
 ## Implemented manual music-diary slice
 

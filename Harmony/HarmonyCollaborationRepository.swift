@@ -216,6 +216,19 @@ private struct CanonicalAlbumReviewsPageParameters: Encodable {
     let p_before_id: UUID?
     let p_limit: Int
 }
+private struct EavesdropBroadcastParameters: Encodable {
+    let p_broadcast_id: UUID?
+    let p_viewer_provider: String?
+    let p_storefront: String
+}
+private struct EavesdropCommentParameters: Encodable {
+    let p_broadcast_id: UUID
+    let p_body: String
+}
+private struct EavesdropReactionParameters: Encodable {
+    let p_broadcast_id: UUID
+    let p_kind: String
+}
 private struct ResolveCanonicalAlbumParameters: Encodable {
     let p_provider: String
     let p_provider_id: String
@@ -236,6 +249,11 @@ private struct FollowingActivityPageParameters: Encodable {
 }
 private struct ProfileReviewsPageParameters: Encodable {
     let p_profile_id: UUID
+    let p_before_created_at: Date?
+    let p_before_id: UUID?
+    let p_limit: Int
+}
+private struct OwnerReviewsPageParameters: Encodable {
     let p_before_created_at: Date?
     let p_before_id: UUID?
     let p_limit: Int
@@ -480,9 +498,11 @@ struct RemoteSocialNotification: Decodable, Identifiable {
     let actor: RemoteProfile
     let review: RemoteNotificationReview?
     let musicList: RemoteNotificationMusicList?
+    let listeningBroadcastID: UUID?
     enum CodingKeys: String, CodingKey {
         case id, kind, actor, review
         case musicList = "music_list"
+        case listeningBroadcastID = "listening_broadcast_id"
         case createdAt = "created_at"
         case readAt = "read_at"
     }
@@ -572,6 +592,79 @@ struct RemoteListeningPresence: Decodable, Identifiable {
         case expiresAt = "expires_at"
         case canonicalTrack = "canonical_tracks"
         case profile = "profiles"
+    }
+}
+
+struct RemoteEavesdropBroadcastRow: Decodable {
+    let broadcastID: UUID
+    let hostProfileID: UUID
+    let hostDisplayName: String
+    let status: String
+    let visibility: SocialVisibilityOption
+    let canonicalTrackID: UUID?
+    let trackTitle: String?
+    let trackArtist: String?
+    let trackAlbum: String?
+    let trackDurationMilliseconds: Int?
+    let trackArtworkURL: URL?
+    let trackIsExplicit: Bool?
+    let startedAt: Date
+    let expiresAt: Date
+    let updatedAt: Date
+    let sourceProvider: String?
+    let sourceDeepLink: URL?
+    let viewerProvider: String?
+    let viewerProviderTrackID: String?
+    let viewerProviderDeepLink: URL?
+    let viewerAvailability: String?
+
+    enum CodingKeys: String, CodingKey {
+        case status, visibility
+        case broadcastID = "broadcast_id"
+        case hostProfileID = "host_profile_id"
+        case hostDisplayName = "host_display_name"
+        case canonicalTrackID = "canonical_track_id"
+        case trackTitle = "track_title"
+        case trackArtist = "track_artist"
+        case trackAlbum = "track_album"
+        case trackDurationMilliseconds = "track_duration_ms"
+        case trackArtworkURL = "track_artwork_url"
+        case trackIsExplicit = "track_is_explicit"
+        case startedAt = "started_at"
+        case expiresAt = "expires_at"
+        case updatedAt = "updated_at"
+        case sourceProvider = "source_provider"
+        case sourceDeepLink = "source_deep_link"
+        case viewerProvider = "viewer_provider"
+        case viewerProviderTrackID = "viewer_provider_track_id"
+        case viewerProviderDeepLink = "viewer_provider_deep_link"
+        case viewerAvailability = "viewer_availability"
+    }
+}
+
+struct RemoteEavesdropComment: Decodable, Identifiable {
+    let id: UUID
+    let broadcastID: UUID
+    let authorID: UUID
+    let body: String
+    let createdAt: Date
+    let author: RemoteProfile
+    enum CodingKeys: String, CodingKey {
+        case id, body, author
+        case broadcastID = "broadcast_id"
+        case authorID = "author_id"
+        case createdAt = "created_at"
+    }
+}
+
+struct RemoteEavesdropReaction: Decodable, Hashable {
+    let broadcastID: UUID
+    let profileID: UUID
+    let kind: String
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case broadcastID = "broadcast_id"
+        case profileID = "profile_id"
     }
 }
 
@@ -757,6 +850,30 @@ struct RemoteMusicReview: Decodable, Identifiable {
         case profile = "profiles"
         case comments = "review_comments"
         case reactions = "review_reactions"
+    }
+}
+
+struct RemoteOwnerReviewStats: Decodable, Equatable {
+    let reviewCount: Int
+    let averageRating: Double?
+    let lovedCount: Int
+    let songCount: Int
+    let albumCount: Int
+
+    static let empty = RemoteOwnerReviewStats(
+        reviewCount: 0,
+        averageRating: nil,
+        lovedCount: 0,
+        songCount: 0,
+        albumCount: 0
+    )
+
+    enum CodingKeys: String, CodingKey {
+        case reviewCount = "review_count"
+        case averageRating = "average_rating"
+        case lovedCount = "loved_count"
+        case songCount = "song_count"
+        case albumCount = "album_count"
     }
 }
 
@@ -1192,7 +1309,7 @@ final class HarmonyCollaborationRepository {
     func socialNotifications() async throws -> [RemoteSocialNotification] {
         try await authenticate()
         return try await client.from("social_notifications")
-            .select("id,kind,created_at,read_at,actor:profiles!social_notifications_actor_id_fkey(display_name),review:music_reviews!social_notifications_review_id_fkey(subject_title,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit)),music_list:music_lists!social_notifications_music_list_id_fkey(title)")
+            .select("id,kind,created_at,read_at,listening_broadcast_id,actor:profiles!social_notifications_actor_id_fkey(display_name),review:music_reviews!social_notifications_review_id_fkey(subject_title,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit)),music_list:music_lists!social_notifications_music_list_id_fkey(title)")
             .order("created_at", ascending: false)
             .limit(50).execute().value
     }
@@ -1246,6 +1363,63 @@ final class HarmonyCollaborationRepository {
             .order("updated_at", ascending: false)
             .execute()
             .value
+    }
+
+    func eavesdropBroadcastRows(
+        broadcastID: UUID? = nil,
+        viewerProvider: MusicProvider? = nil,
+        storefront: String = "us"
+    ) async throws -> [RemoteEavesdropBroadcastRow] {
+        try await authenticate()
+        return try await client.rpc(
+            "list_eavesdrop_broadcasts",
+            params: EavesdropBroadcastParameters(
+                p_broadcast_id: broadcastID,
+                p_viewer_provider: viewerProvider.map { $0 == .spotify ? "spotify" : "apple_music" },
+                p_storefront: storefront
+            )
+        ).execute().value
+    }
+
+    func eavesdropComments(broadcastID: UUID) async throws -> [RemoteEavesdropComment] {
+        try await authenticate()
+        return try await client.from("listening_broadcast_comments")
+            .select("id,broadcast_id,author_id,body,created_at,author:profiles!listening_broadcast_comments_author_id_fkey(display_name)")
+            .eq("broadcast_id", value: broadcastID.uuidString)
+            .order("created_at", ascending: true)
+            .limit(100).execute().value
+    }
+
+    func eavesdropReactions(broadcastID: UUID) async throws -> [RemoteEavesdropReaction] {
+        try await authenticate()
+        return try await client.from("listening_broadcast_reactions")
+            .select("broadcast_id,profile_id,kind")
+            .eq("broadcast_id", value: broadcastID.uuidString)
+            .execute().value
+    }
+
+    func addEavesdropComment(broadcastID: UUID, body: String) async throws {
+        try await authenticate()
+        _ = try await client.rpc(
+            "add_listening_broadcast_comment",
+            params: EavesdropCommentParameters(p_broadcast_id: broadcastID, p_body: body)
+        ).execute()
+    }
+
+    func deleteEavesdropComment(_ commentID: UUID) async throws -> Bool {
+        try await authenticate()
+        return try await client.rpc(
+            "delete_listening_broadcast_comment",
+            params: CommentIDParameters(p_comment_id: commentID)
+        ).execute().value
+    }
+
+    func toggleEavesdropReaction(broadcastID: UUID, kind: String) async throws -> Bool {
+        try await authenticate()
+        return try await client.rpc(
+            "toggle_listening_broadcast_reaction",
+            params: EavesdropReactionParameters(p_broadcast_id: broadcastID, p_kind: kind)
+        ).execute().value
     }
 
     func listeningHistory() async throws -> [RemoteListeningHistoryEntry] {
@@ -1512,6 +1686,28 @@ final class HarmonyCollaborationRepository {
         }
     }
 
+    func ownerReviewsPage(
+        beforeCreatedAt: Date? = nil,
+        beforeID: UUID? = nil,
+        limit: Int = 51
+    ) async throws -> [RemoteMusicReview] {
+        try await authenticate()
+        let params = OwnerReviewsPageParameters(
+            p_before_created_at: beforeCreatedAt,
+            p_before_id: beforeID,
+            p_limit: limit
+        )
+        do {
+            return try await client.rpc("list_my_music_reviews", params: params)
+                .select(Self.musicReviewSelection)
+                .execute().value
+        } catch where Self.isMissingCanonicalAlbumContract(error) {
+            return try await client.rpc("list_my_music_reviews", params: params)
+                .select(Self.legacyMusicReviewSelection)
+                .execute().value
+        }
+    }
+
     func publicProfileDiaryPage(
         profileID: UUID,
         beforePlayedAt: Date? = nil,
@@ -1742,6 +1938,14 @@ final class HarmonyCollaborationRepository {
                 .select(Self.legacyMusicReviewSelection)
                 .order("created_at", ascending: false).limit(50).execute().value
         }
+    }
+
+    func ownerReviewStats() async throws -> RemoteOwnerReviewStats {
+        try await authenticate()
+        let rows: [RemoteOwnerReviewStats] = try await client
+            .rpc("get_my_music_review_stats")
+            .execute().value
+        return rows.first ?? .empty
     }
 
     func exchangeSpotifyAuthorization(_ response: SpotifyAuthorizationResponse) async throws {
@@ -2358,6 +2562,9 @@ final class HarmonyCollaborationRepository {
             "social_follows",
             "profile_blocks",
             "listening_presence",
+            "listening_broadcasts",
+            "listening_broadcast_comments",
+            "listening_broadcast_reactions",
             "listening_history_entries",
             "music_reviews",
             "review_comments",

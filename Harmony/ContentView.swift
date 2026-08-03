@@ -159,16 +159,19 @@ struct SocialView: View {
                 }
 
                 Section("Listening now") {
-                    if store.isRefreshingListeningFeed && store.listeningFeed.isEmpty {
+                    if store.isRefreshingListeningFeed && store.eavesdropFeed.isEmpty {
                         ProgressView("Loading listener activity…")
-                    } else if store.listeningFeed.isEmpty {
+                    } else if store.eavesdropFeed.isEmpty {
                         Text("No approved listeners are sharing activity right now.")
                             .foregroundColor(.secondary)
                     } else {
-                        ForEach(store.listeningFeed) { presence in
-                            HStack(spacing: 12) {
-                                if let track = presence.canonicalTrack {
-                                    TrackArtwork(track: track.harmonyTrack, size: 42, cornerRadius: 10)
+                        ForEach(store.eavesdropFeed) { broadcast in
+                            NavigationLink {
+                                EavesdropBroadcastDetailView(broadcast: broadcast)
+                            } label: {
+                                HStack(spacing: 12) {
+                                if let track = broadcast.harmonyTrack {
+                                    TrackArtwork(track: track, size: 42, cornerRadius: 10)
                                 } else {
                                     Image(systemName: "music.note")
                                         .frame(width: 42, height: 42)
@@ -176,22 +179,19 @@ struct SocialView: View {
                                         .clipShape(RoundedRectangle(cornerRadius: 10))
                                 }
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text(presence.profile.displayName).font(.headline)
-                                    Text(presence.canonicalTrack.map { "\($0.title) · \($0.artist)" } ?? "Listening privately")
+                                    Text(broadcast.hostDisplayName).font(.headline)
+                                    Text([broadcast.title, broadcast.artist].compactMap { $0 }.joined(separator: " · "))
                                         .font(.subheadline)
                                         .foregroundColor(.secondary)
-                                    Text(presence.status == "paused" ? "Paused" : "Listening now")
+                                    Text(broadcast.status == "paused" ? "Paused" : "Listening now")
                                         .font(.caption)
                                         .foregroundColor(.indigo)
                                 }
                                 Spacer()
-                                if let deepLink = presence.providerDeepLink {
-                                    Link(destination: deepLink) {
-                                        Image(systemName: "arrow.up.right.square")
-                                    }
-                                    .accessibilityLabel("Open in connected provider")
+                                Image(systemName: "chevron.right").foregroundStyle(.secondary)
                                 }
                             }
+                            .accessibilityIdentifier("eavesdrop-feed-card-\(broadcast.id.uuidString)")
                         }
                     }
                 }
@@ -330,6 +330,8 @@ struct SocialView: View {
         case "review_reaction": "heart.fill"
         case "music_list_like": "heart.fill"
         case "music_list_comment": "bubble.left.fill"
+        case "listening_broadcast_comment": "bubble.left.fill"
+        case "listening_broadcast_reaction": "headphones"
         default: "bell.fill"
         }
     }
@@ -347,16 +349,157 @@ struct SocialView: View {
         case "review_reaction": return "\(actor) reacted to \(reviewTitle)"
         case "music_list_like": return "\(actor) liked \(listTitle)"
         case "music_list_comment": return "\(actor) commented on \(listTitle)"
+        case "listening_broadcast_comment": return "\(actor) commented on your live listening"
+        case "listening_broadcast_reaction": return "\(actor) reacted to your live listening"
         default: return "New activity from \(actor)"
         }
     }
 }
 
+private struct EavesdropBroadcastDetailView: View {
+    @EnvironmentObject private var store: HarmonySessionStore
+    let broadcast: EavesdropBroadcast
+    @State private var commentDraft = ""
+
+    private var detail: EavesdropBroadcastDetailState {
+        store.eavesdropDetails[broadcast.id] ?? EavesdropBroadcastDetailState(broadcast: broadcast)
+    }
+
+    private var isActive: Bool {
+        broadcast.expiresAt > Date()
+    }
+
+    var body: some View {
+        List {
+            Section {
+                HStack(spacing: 14) {
+                    if let track = broadcast.harmonyTrack {
+                        TrackArtwork(track: track, size: 72, cornerRadius: 12)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(broadcast.title ?? "Unknown track").font(.headline)
+                        Text(broadcast.artist ?? "Unknown artist").foregroundStyle(.secondary)
+                        Text("Shared by \(broadcast.hostDisplayName)").font(.caption)
+                    }
+                }
+                Text("Harmony starts the same song in your service. It does not stream audio or guarantee synchronized position.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Listen in") {
+                if !isActive {
+                    Label("Broadcast ended", systemImage: "clock.badge.xmark")
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("eavesdrop-ended-\(broadcast.id.uuidString)")
+                }
+                if broadcast.destinations.isEmpty {
+                    Text("No connected-provider mapping is available for this recording.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(MusicProvider.allCases) { provider in
+                    if let destination = broadcast.destinations[provider] {
+                        Button {
+                            Task { _ = await store.startEavesdropPlayback(broadcast, provider: provider) }
+                        } label: {
+                            Label("Play in \(provider.name)", systemImage: "play.fill")
+                        }
+                        .disabled(!isActive || store.mutatingEavesdropBroadcastIDs.contains(broadcast.id))
+                        .accessibilityIdentifier("eavesdrop-listen-\(provider.rawValue)-\(broadcast.id.uuidString)")
+                        if let deepLink = destination.deepLink {
+                            Link(destination: deepLink) {
+                                Label("Open in \(provider.name)", systemImage: "arrow.up.right.square")
+                            }
+                        }
+                    }
+                }
+            }
+
+            Section("Reactions") {
+                HStack {
+                    reactionButton(kind: "heart", label: "Heart", symbol: "heart")
+                    reactionButton(kind: "fire", label: "Fire", symbol: "flame")
+                    reactionButton(
+                        kind: "headphones",
+                        label: "Headphones",
+                        symbol: "headphones",
+                        selectedSymbol: "headphones.circle.fill"
+                    )
+                }
+            }
+
+            Section("Comments") {
+                if detail.comments.isEmpty {
+                    Text("No comments yet.").foregroundStyle(.secondary)
+                }
+                ForEach(detail.comments) { comment in
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(comment.author.displayName).font(.caption.bold())
+                            Text(comment.body)
+                        }
+                        Spacer()
+                        if store.canDeleteEavesdropComment(comment, broadcast: broadcast) {
+                            Button(role: .destructive) {
+                                Task { await store.deleteEavesdropComment(comment, from: broadcast) }
+                            } label: { Image(systemName: "trash") }
+                            .accessibilityIdentifier("eavesdrop-comment-delete-\(comment.id.uuidString)")
+                        }
+                    }
+                    .accessibilityIdentifier("eavesdrop-comment-\(comment.id.uuidString)")
+                }
+                HStack {
+                    TextField("Add a live comment", text: $commentDraft, axis: .vertical)
+                        .lineLimit(1...4)
+                        .accessibilityIdentifier("eavesdrop-comment-field-\(broadcast.id.uuidString)")
+                    Button {
+                        let submitted = commentDraft
+                        Task {
+                            if await store.addEavesdropComment(to: broadcast, body: submitted) {
+                                commentDraft = ""
+                            }
+                        }
+                    } label: { Image(systemName: "paperplane.fill") }
+                    .disabled(!isActive || commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityIdentifier("eavesdrop-comment-post-\(broadcast.id.uuidString)")
+                }
+            }
+        }
+        .navigationTitle("Listening with \(broadcast.hostDisplayName)")
+        .navigationBarTitleDisplayMode(.inline)
+        .accessibilityIdentifier("eavesdrop-detail-\(broadcast.id.uuidString)")
+        .task { await store.refreshEavesdropDetail(broadcast) }
+        .refreshable { await store.refreshEavesdropDetail(broadcast) }
+    }
+
+    private func reactionButton(
+        kind: String,
+        label: String,
+        symbol: String,
+        selectedSymbol: String? = nil
+    ) -> some View {
+        let selected = store.hasEavesdropReaction(broadcast.id, kind: kind)
+        let count = detail.reactions.filter { $0.kind == kind }.count
+        return Button {
+            Task { await store.toggleEavesdropReaction(broadcast, kind: kind) }
+        } label: {
+            VStack {
+                Image(systemName: selected ? (selectedSymbol ?? "\(symbol).fill") : symbol)
+                Text("\(count)").font(.caption.monospacedDigit())
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .disabled(!isActive || store.mutatingEavesdropBroadcastIDs.contains(broadcast.id))
+        .accessibilityLabel("\(label), \(count) reactions")
+        .accessibilityIdentifier("eavesdrop-reaction-\(kind)-\(broadcast.id.uuidString)")
+    }
+}
+
 private enum ReviewsShelf: String, CaseIterable, Identifiable {
+    case activity = "Activity"
     case reviews = "Reviews"
     case ratings = "Ratings"
     case diary = "Diary"
-    case activity = "Activity"
     var id: String { rawValue }
 }
 
@@ -688,7 +831,7 @@ private func journalSearchKey(_ value: String) -> String {
 
 struct ReviewsView: View {
     @EnvironmentObject private var store: HarmonySessionStore
-    @State private var shelf = ReviewsShelf.reviews
+    @State private var shelf = ReviewsShelf.activity
     @State private var draft = ReviewDraft()
     @State private var hasSeededDraftVisibility = false
     @State private var isComposingReview = false
@@ -708,7 +851,7 @@ struct ReviewsView: View {
     @State private var editingContainsSpoilers = false
 
     private var ownReviews: [RemoteMusicReview] {
-        store.musicReviews.filter(store.isOwnReview)
+        store.ownerReviews
     }
 
     private var ownHistory: [RemoteListeningHistoryEntry] {
@@ -796,6 +939,7 @@ struct ReviewsView: View {
                 await store.refreshListeningHistory()
                 await store.refreshJournalEntries()
                 await store.refreshMusicReviews()
+                await store.refreshOwnerReviews()
                 await store.refreshTrackSubjectShelf()
                 await store.refreshAlbumSubjectShelf()
                 await store.refreshFollowingActivity()
@@ -805,6 +949,7 @@ struct ReviewsView: View {
                 await store.refreshListeningHistory()
                 await store.refreshJournalEntries()
                 await store.refreshMusicReviews()
+                await store.refreshOwnerReviews()
                 await store.refreshTrackSubjectShelf()
                 await store.refreshAlbumSubjectShelf()
                 await store.refreshFollowingActivity()
@@ -1253,6 +1398,19 @@ struct ReviewsView: View {
                 } else {
                     ForEach(browsedOwnReviews) { review in reviewCard(review) }
                 }
+                if store.hasMoreOwnerReviews {
+                    Button {
+                        Task { await store.loadMoreOwnerReviews() }
+                    } label: {
+                        if store.isLoadingMoreOwnerReviews {
+                            ProgressView("Loading older reviews…")
+                        } else {
+                            Label("Load older reviews", systemImage: "arrow.down.circle")
+                        }
+                    }
+                    .disabled(store.isLoadingMoreOwnerReviews)
+                    .accessibilityIdentifier("reviews-load-older")
+                }
             }
         }
     }
@@ -1371,8 +1529,8 @@ struct ReviewsView: View {
     }
 
     private var ratingsSummary: some View {
-        let average = ownReviews.map(\.rating).reduce(0, +) / Double(ownReviews.count)
-        let lovedCount = ownReviews.filter(\.isLoved).count
+        let stats = store.ownerReviewStats
+        let average = stats.averageRating ?? 0
         return HStack(spacing: 18) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(String(format: "%.1f", average)).font(.title2.weight(.bold))
@@ -1380,12 +1538,12 @@ struct ReviewsView: View {
             }
             Divider()
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(ownReviews.count)").font(.title2.weight(.bold))
-                Text(ownReviews.count == 1 ? "Review" : "Reviews").font(.caption).foregroundColor(.secondary)
+                Text("\(stats.reviewCount)").font(.title2.weight(.bold))
+                Text(stats.reviewCount == 1 ? "Review" : "Reviews").font(.caption).foregroundColor(.secondary)
             }
             Divider()
             VStack(alignment: .leading, spacing: 2) {
-                Label("\(lovedCount)", systemImage: "heart.fill")
+                Label("\(stats.lovedCount)", systemImage: "heart.fill")
                     .font(.title2.weight(.bold))
                     .foregroundColor(.pink)
                 Text("Loved").font(.caption).foregroundColor(.secondary)
@@ -1393,7 +1551,7 @@ struct ReviewsView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(ownReviews.count) reviews, average rating \(String(format: "%.1f", average)) out of 5, \(lovedCount) loved")
+        .accessibilityLabel("\(stats.reviewCount) reviews, average rating \(String(format: "%.1f", average)) out of 5, \(stats.lovedCount) loved")
         .accessibilityIdentifier("reviews-ratings-summary")
     }
 
@@ -2844,7 +3002,7 @@ private struct ReviewDetailView: View {
     @State private var showingDeleteConfirmation = false
 
     private var review: RemoteMusicReview {
-        store.musicReviews.first(where: { $0.id == reviewID }) ?? fallbackReview
+        store.review(withID: reviewID) ?? fallbackReview
     }
 
     var body: some View {
@@ -2864,7 +3022,16 @@ private struct ReviewDetailView: View {
                     ReviewSubjectSummary(review: review)
                 }
                 HStack(spacing: 8) {
-                    Text(review.profile.displayName).font(.headline)
+                    NavigationLink {
+                        MemberProfileView(
+                            profileID: review.profileID,
+                            displayName: review.profile.displayName
+                        )
+                    } label: {
+                        Label(review.profile.displayName, systemImage: "person.crop.circle")
+                            .font(.headline)
+                    }
+                    .accessibilityIdentifier("review-author-\(review.profileID.uuidString)")
                     Text("\(String(format: "%.1f", review.rating)) ★")
                         .foregroundColor(.orange)
                     if review.isLoved {

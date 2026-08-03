@@ -1083,6 +1083,37 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(buckets.map(\.count).reduce(0, +), 4)
     }
 
+    func testEavesdropRowsMergeProviderDestinationsByBroadcastIdentity() {
+        let broadcastID = UUID()
+        let hostID = UUID()
+        let spotify = eavesdropRow(
+            broadcastID: broadcastID,
+            hostID: hostID,
+            viewerProvider: "spotify",
+            viewerTrackID: "spotify:track:0123456789012345678901"
+        )
+        let apple = eavesdropRow(
+            broadcastID: broadcastID,
+            hostID: hostID,
+            viewerProvider: "apple_music",
+            viewerTrackID: "123456789"
+        )
+        let laterBroadcast = eavesdropRow(
+            broadcastID: UUID(),
+            hostID: hostID,
+            viewerProvider: "spotify",
+            viewerTrackID: "spotify:track:1234567890123456789012"
+        )
+
+        let broadcasts = mergedEavesdropBroadcasts([spotify, apple, laterBroadcast])
+
+        XCTAssertEqual(broadcasts.count, 2, "Distinct broadcasts from one host must not share a conversation")
+        let merged = try! XCTUnwrap(broadcasts.first { $0.id == broadcastID })
+        XCTAssertEqual(Set(merged.destinations.keys), Set([.spotify, .appleMusic]))
+        XCTAssertEqual(merged.destinations[.spotify]?.providerTrackID, "spotify:track:0123456789012345678901")
+        XCTAssertEqual(merged.destinations[.appleMusic]?.providerTrackID, "123456789")
+    }
+
     func testClearingSessionRemovesRoomStateAndRestoresLocalOwnership() {
         let store = HarmonySessionStore()
 
@@ -1293,6 +1324,37 @@ final class HarmonyTests: XCTestCase {
             createdAt: now,
             updatedAt: now,
             canonicalTrack: canonicalTrack
+        )
+    }
+
+    private func eavesdropRow(
+        broadcastID: UUID,
+        hostID: UUID,
+        viewerProvider: String?,
+        viewerTrackID: String?
+    ) -> RemoteEavesdropBroadcastRow {
+        RemoteEavesdropBroadcastRow(
+            broadcastID: broadcastID,
+            hostProfileID: hostID,
+            hostDisplayName: "Test host",
+            status: "listening",
+            visibility: .followers,
+            canonicalTrackID: UUID(),
+            trackTitle: "Shared song",
+            trackArtist: "Shared artist",
+            trackAlbum: "Shared album",
+            trackDurationMilliseconds: 180_000,
+            trackArtworkURL: nil,
+            trackIsExplicit: false,
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            expiresAt: Date(timeIntervalSince1970: 1_700_000_300),
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            sourceProvider: "apple_music",
+            sourceDeepLink: nil,
+            viewerProvider: viewerProvider,
+            viewerProviderTrackID: viewerTrackID,
+            viewerProviderDeepLink: nil,
+            viewerAvailability: "playable"
         )
     }
 }

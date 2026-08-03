@@ -314,12 +314,46 @@ jq -s -e 'unique | length == 1' "$smoke_tmp"/concurrent-canonical-*.json >/dev/n
 stage="follower listening visibility"
 presence_expires_at="$(date -u -v+5M '+%Y-%m-%dT%H:%M:%SZ')"
 rpc "$collaborator_token" publish_listening_presence \
-  "{\"p_canonical_track_id\":\"$canonical_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-smoke-apple-track\",\"p_provider_deep_link\":null,\"p_status\":\"listening\",\"p_visibility\":\"followers\",\"p_started_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_expires_at\":\"$presence_expires_at\"}" \
+  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-cross-isrc-apple\",\"p_provider_deep_link\":\"https://music.apple.com/us/song/harmony-cross-isrc/90101\",\"p_status\":\"listening\",\"p_visibility\":\"followers\",\"p_started_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_expires_at\":\"$presence_expires_at\"}" \
   "$smoke_tmp/presence.json"
 rest_get "$conductor_token" \
-  "listening_presence?select=profile_id,canonical_track_id,status&profile_id=eq.$collaborator_id" \
+  "listening_presence?select=profile_id,broadcast_id,canonical_track_id,status&profile_id=eq.$collaborator_id" \
   "$smoke_tmp/follower-presence.json"
-jq -e --arg profile "$collaborator_id" --arg track "$canonical_track_id" 'length == 1 and .[0].profile_id == $profile and .[0].canonical_track_id == $track and .[0].status == "listening"' "$smoke_tmp/follower-presence.json" >/dev/null
+jq -e --arg profile "$collaborator_id" --arg track "$cross_isrc_track_id" 'length == 1 and .[0].profile_id == $profile and .[0].canonical_track_id == $track and .[0].status == "listening"' "$smoke_tmp/follower-presence.json" >/dev/null
+listening_broadcast_id="$(jq -er '.[0].broadcast_id' "$smoke_tmp/follower-presence.json")"
+rpc "$conductor_token" list_eavesdrop_broadcasts \
+  "{\"p_broadcast_id\":\"$listening_broadcast_id\",\"p_viewer_provider\":\"spotify\",\"p_storefront\":\"global\"}" \
+  "$smoke_tmp/eavesdrop-cross-provider.json"
+jq -e --arg broadcast "$listening_broadcast_id" --arg host "$collaborator_id" '
+  length == 1 and .[0].broadcast_id == $broadcast
+  and .[0].host_profile_id == $host
+  and .[0].source_provider == "apple_music"
+  and .[0].viewer_provider == "spotify"
+  and (.[] | .viewer_provider_track_id | length) > 0
+' "$smoke_tmp/eavesdrop-cross-provider.json" >/dev/null
+rpc "$conductor_token" add_listening_broadcast_comment \
+  "{\"p_broadcast_id\":\"$listening_broadcast_id\",\"p_body\":\"This transition is perfect.\"}" \
+  "$smoke_tmp/eavesdrop-comment.json"
+listening_comment_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/eavesdrop-comment.json")"
+rpc "$conductor_token" toggle_listening_broadcast_reaction \
+  "{\"p_broadcast_id\":\"$listening_broadcast_id\",\"p_kind\":\"headphones\"}" \
+  "$smoke_tmp/eavesdrop-reaction.json"
+[[ "$(jq -er '.' "$smoke_tmp/eavesdrop-reaction.json")" == "true" ]]
+rest_get "$collaborator_token" \
+  "social_notifications?select=kind,listening_broadcast_id,listening_broadcast_comment_id&listening_broadcast_id=eq.$listening_broadcast_id" \
+  "$smoke_tmp/eavesdrop-notifications.json"
+jq -e --arg comment "$listening_comment_id" '
+  any(.[]; .kind == "listening_broadcast_comment" and .listening_broadcast_comment_id == $comment)
+  and any(.[]; .kind == "listening_broadcast_reaction")
+' "$smoke_tmp/eavesdrop-notifications.json" >/dev/null
+presence_refresh_expires_at="$(date -u -v+6M '+%Y-%m-%dT%H:%M:%SZ')"
+rpc "$collaborator_token" publish_listening_presence \
+  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-cross-isrc-apple\",\"p_provider_deep_link\":\"https://music.apple.com/us/song/harmony-cross-isrc/90101\",\"p_status\":\"listening\",\"p_visibility\":\"followers\",\"p_started_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_expires_at\":\"$presence_refresh_expires_at\"}" \
+  "$smoke_tmp/refreshed-presence.json"
+rest_get "$collaborator_token" \
+  "listening_presence?select=broadcast_id&profile_id=eq.$collaborator_id" \
+  "$smoke_tmp/refreshed-presence-id.json"
+[[ "$(jq -er '.[0].broadcast_id' "$smoke_tmp/refreshed-presence-id.json")" == "$listening_broadcast_id" ]]
 rpc "$collaborator_token" record_listening_history \
   "{\"p_canonical_track_id\":\"$canonical_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-smoke-apple-track\",\"p_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_source\":\"manual\",\"p_visibility\":\"followers\",\"p_rating\":4.0}" \
   "$smoke_tmp/history.json"
@@ -808,6 +842,35 @@ rpc "$conductor_token" list_profile_music_reviews \
   "{\"p_profile_id\":\"$collaborator_id\",\"p_before_created_at\":\"$profile_review_first_created_at\",\"p_before_id\":\"$profile_review_first_id\",\"p_limit\":10}" \
   "$smoke_tmp/profile-review-second-page.json"
 jq -e --arg review "$review_id" 'length == 1 and .[0].id == $review' "$smoke_tmp/profile-review-second-page.json" >/dev/null
+
+stage="owner review library pagination and exhaustive stats"
+rpc "$collaborator_token" list_my_music_reviews \
+  '{"p_before_created_at":null,"p_before_id":null,"p_limit":1}' \
+  "$smoke_tmp/owner-review-first-page.json"
+owner_review_first_id="$(jq -er '.[0].id' "$smoke_tmp/owner-review-first-page.json")"
+owner_review_first_created_at="$(jq -er '.[0].created_at' "$smoke_tmp/owner-review-first-page.json")"
+[[ "$owner_review_first_id" == "$album_review_id" ]]
+rpc "$collaborator_token" list_my_music_reviews \
+  "{\"p_before_created_at\":\"$owner_review_first_created_at\",\"p_before_id\":\"$owner_review_first_id\",\"p_limit\":10}" \
+  "$smoke_tmp/owner-review-second-page.json"
+jq -e --arg first "$owner_review_first_id" --arg review "$review_id" 'length == 1 and .[0].id == $review and .[0].id != $first' "$smoke_tmp/owner-review-second-page.json" >/dev/null
+rpc "$conductor_token" list_my_music_reviews \
+  '{"p_before_created_at":null,"p_before_id":null,"p_limit":50}' \
+  "$smoke_tmp/foreign-owner-review-page.json"
+[[ "$(jq 'length' "$smoke_tmp/foreign-owner-review-page.json")" -eq 0 ]]
+partial_owner_review_cursor_status="$(rpc_status "$collaborator_token" list_my_music_reviews \
+  "{\"p_before_created_at\":\"$owner_review_first_created_at\",\"p_before_id\":null,\"p_limit\":50}" \
+  "$smoke_tmp/partial-owner-review-cursor.json")"
+[[ "$partial_owner_review_cursor_status" == "400" ]]
+oversized_owner_review_page_status="$(rpc_status "$collaborator_token" list_my_music_reviews \
+  '{"p_before_created_at":null,"p_before_id":null,"p_limit":101}' \
+  "$smoke_tmp/oversized-owner-review-page.json")"
+[[ "$oversized_owner_review_page_status" == "400" ]]
+rpc "$collaborator_token" get_my_music_review_stats '{}' "$smoke_tmp/owner-review-stats.json"
+jq -e 'length == 1 and .[0].review_count == 2 and .[0].song_count == 1 and .[0].album_count == 1 and .[0].loved_count == 2 and .[0].average_rating == 4.0' "$smoke_tmp/owner-review-stats.json" >/dev/null
+rpc "$conductor_token" get_my_music_review_stats '{}' "$smoke_tmp/empty-owner-review-stats.json"
+jq -e 'length == 1 and .[0].review_count == 0 and .[0].song_count == 0 and .[0].album_count == 0 and .[0].loved_count == 0 and .[0].average_rating == null' "$smoke_tmp/empty-owner-review-stats.json" >/dev/null
+
 rpc "$conductor_token" add_review_comment \
   "{\"p_review_id\":\"$review_id\",\"p_body\":\"Agreed.\"}" \
   "$smoke_tmp/review-comment.json"
@@ -1093,6 +1156,16 @@ rpc "$collaborator_token" unblock_social_profile \
   "{\"p_profile_id\":\"$conductor_id\"}" \
   "$smoke_tmp/unblock.json"
 [[ "$(jq -er '.' "$smoke_tmp/unblock.json")" == "true" ]]
+rpc "$collaborator_token" stop_listening_presence '{}' \
+  "$smoke_tmp/stopped-eavesdrop.json"
+rest_get "$collaborator_token" \
+  "listening_broadcasts?select=id,ended_at&id=eq.$listening_broadcast_id" \
+  "$smoke_tmp/stopped-eavesdrop-broadcast.json"
+jq -e 'length == 1 and .[0].ended_at != null' "$smoke_tmp/stopped-eavesdrop-broadcast.json" >/dev/null
+stopped_eavesdrop_comment_status="$(rpc_status "$conductor_token" add_listening_broadcast_comment \
+  "{\"p_broadcast_id\":\"$listening_broadcast_id\",\"p_body\":\"Too late.\"}" \
+  "$smoke_tmp/stopped-eavesdrop-comment.json")"
+[[ "$stopped_eavesdrop_comment_status" == "400" || "$stopped_eavesdrop_comment_status" == "403" ]]
 rpc "$collaborator_token" delete_music_list \
   "{\"p_list_id\":\"$music_list_id\"}" \
   "$smoke_tmp/music-list-delete.json"

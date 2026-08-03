@@ -94,5 +94,6 @@ Ratings, Lists, Spotify, or simulator work.
 - [System design plan](Docs/DESIGN_PLAN.md)
 - [Implementation guide](Docs/IMPLEMENTATION_GUIDE.md)
 - [Reviews and Diary design](Docs/REVIEW_DESIGN.md)
+- [Eavesdrop design](Docs/EAVESDROP_DESIGN.md)
 - [Collections design](Docs/COLLECTIONS_DESIGN.md)
 - [Social expansion specification](Docs/SOCIAL_EXPANSION_SPEC.md)

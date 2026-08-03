@@ -69,10 +69,13 @@ playback/catalog interaction.
   follow, remove a follower, block, and unblock.
 - Blocking removes both follow edges and hides each person’s follower-visible
   data immediately through database policy.
-- Eavesdrop is an explicit foreground action. It publishes one card per user,
-  with a five-minute normal lifetime and a database-enforced ten-minute maximum.
-  Users can stop it explicitly. Spotify “now playing” is an explicit snapshot,
-  not a background polling system.
+- Eavesdrop is an explicit foreground action. It publishes one active card per
+  user, backed by a durable broadcast identity so comments, Heart/Fire/Headphones
+  reactions, moderation, and notifications cannot attach to a later song by
+  mistake. The active window has a five-minute normal lifetime and a
+  database-enforced ten-minute maximum. Users can stop it explicitly. Spotify
+  “now playing” is an explicit snapshot, not a background polling system. See
+  `EAVESDROP_DESIGN.md` for the identity, cross-provider, and privacy contract.
 - Listening history supports manual dated track logs with Relisten, normalized
   tags, and a per-entry audience; opt-in Harmony skip logging; and explicit
   import of up to 20 recently played Spotify tracks. Imported plays are exactly
@@ -109,9 +112,14 @@ Reviews       ReviewsView                       reviews, ratings, diary, activit
 ```
 
 The Reviews destination is a root tab, never a child of Listen. It opens on a
-full Reviews shelf and provides sibling Ratings, Diary, and Activity shelves.
-My Reviews provides a loaded-page review summary plus search, Songs/Albums/Loved
-scope, and newest/highest/lowest sorting. `ReviewBrowseFilter` is value-typed
+social Activity shelf and provides sibling Reviews, Ratings, and Diary shelves.
+That hierarchy follows the product distinction between discovering authored
+opinions, maintaining one's current ratings, and recording dated listens.
+My Reviews uses an auth-bound keyset-paginated owner library and exhaustive
+server totals for review count, average rating, and Loved count. Search and
+Songs/Albums/Loved scope apply to the currently loaded owner pages, while the
+summary never changes merely because followed members publish newer content.
+`ReviewBrowseFilter` is value-typed
 and `browseMusicReviews` is a pure transformation, which keeps browsing from
 mutating review, Diary, playback, queue, or catalog-search state.
 
