@@ -438,6 +438,58 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Northern Lights"].waitForExistence(timeout: 5))
     }
 
+    func testMemberProfileFollowerAndFollowingCountsOpenSeparateGraphPages() throws {
+        let app = XCUIApplication()
+        app.launchArguments.append("--ui-test-social-activity")
+        app.launch()
+
+        let listenTab = app.tabBars.buttons["Listen"]
+        XCTAssertTrue(listenTab.waitForExistence(timeout: 10))
+        listenTab.tap()
+        XCTAssertTrue(app.navigationBars["Listen"].waitForExistence(timeout: 5))
+        app.buttons["Following activity"].tap()
+        XCTAssertTrue(app.navigationBars["Activity"].waitForExistence(timeout: 5))
+        let actor = app.staticTexts["UI Test Listener"].firstMatch
+        XCTAssertTrue(actor.waitForExistence(timeout: 5))
+        actor.tap()
+
+        if !app.navigationBars["UI Test Listener"].waitForExistence(timeout: 1),
+           app.navigationBars["Afterglow"].exists {
+            app.navigationBars["Afterglow"].buttons["UI Test Listener"].tap()
+        }
+        XCTAssertTrue(app.navigationBars["UI Test Listener"].waitForExistence(timeout: 5))
+        let followers = app.buttons["member-profile-followers"]
+        let following = app.buttons["member-profile-following"]
+        XCTAssertTrue(followers.waitForExistence(timeout: 5))
+        XCTAssertTrue(following.exists)
+        XCTAssertTrue(followers.label.contains("2"))
+        XCTAssertTrue(following.label.contains("1"))
+
+        followers.tap()
+        let followersPage = app.descendants(matching: .any)["member-profile-followers-page"]
+        XCTAssertTrue(followersPage.waitForExistence(timeout: 5))
+        let mutualFollower = app.descendants(matching: .any)[
+            "member-profile-followers-row-83000000-0000-0000-0000-000000000008"
+        ]
+        XCTAssertTrue(mutualFollower.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Follower Listener"].exists)
+        mutualFollower.tap()
+        XCTAssertTrue(app.descendants(matching: .any)[
+            "member-profile-page-83000000-0000-0000-0000-000000000008"
+        ].waitForExistence(timeout: 5))
+        app.navigationBars["Mutual Listener"].buttons["Followers"].tap()
+        XCTAssertTrue(followersPage.waitForExistence(timeout: 5))
+        app.navigationBars["Followers"].buttons["UI Test Listener"].tap()
+
+        XCTAssertTrue(app.navigationBars["UI Test Listener"].waitForExistence(timeout: 5))
+        app.buttons["member-profile-following"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["member-profile-following-page"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)[
+            "member-profile-following-row-83000000-0000-0000-0000-000000000008"
+        ].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Follower Listener"].exists)
+    }
+
     func testJournalComposerCapturesDatedRelistenContext() throws {
         let app = XCUIApplication()
         app.launch()

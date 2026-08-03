@@ -9,6 +9,7 @@ smoke_tmp="$(mktemp -d)"
 conductor_token=""
 collaborator_token=""
 directory_token=""
+graph_token=""
 stage="initialization"
 
 report_failure() {
@@ -30,6 +31,7 @@ cleanup_account() {
 }
 
 cleanup() {
+  cleanup_account "$graph_token" || true
   cleanup_account "$directory_token" || true
   cleanup_account "$collaborator_token" || true
   cleanup_account "$conductor_token" || true
@@ -207,6 +209,8 @@ jq -e 'length == 1 and .[0].live_visibility == "followers" and .[0].history_visi
 stage="follower discovery search and keyset pagination"
 directory_token="$(anonymous_token "$smoke_tmp/directory-auth.json")"
 directory_id="$(jq -er '.user.id' "$smoke_tmp/directory-auth.json")"
+graph_token="$(anonymous_token "$smoke_tmp/graph-auth.json")"
+graph_id="$(jq -er '.user.id' "$smoke_tmp/graph-auth.json")"
 directory_marker="H55$(printf '%05d' "$((RANDOM % 100000))")"
 directory_marker_lower="$(printf '%s' "$directory_marker" | tr '[:upper:]' '[:lower:]')"
 rest_patch "$directory_token" \
@@ -217,6 +221,10 @@ rest_patch "$collaborator_token" \
   "profiles?id=eq.$collaborator_id" \
   "{\"display_name\":\"$directory_marker Zulu Directory\"}" \
   "$smoke_tmp/collaborator-directory-profile-update.json"
+rest_patch "$graph_token" \
+  "profiles?id=eq.$graph_id" \
+  '{"display_name":"Harmony Graph Member"}' \
+  "$smoke_tmp/graph-profile-update.json"
 
 rpc "$conductor_token" list_social_profiles \
   "{\"p_search\":\"  $directory_marker_lower  \",\"p_after_display_name\":null,\"p_after_id\":null,\"p_limit\":1}" \
@@ -341,6 +349,258 @@ rest_get "$conductor_token" \
   "social_follows?select=follower_id,followed_id,state&follower_id=eq.$conductor_id&followed_id=eq.$collaborator_id" \
   "$smoke_tmp/follows.json"
 jq -e 'length == 1 and .[0].state == "accepted"' "$smoke_tmp/follows.json" >/dev/null
+
+stage="privacy-safe member follower and following graph"
+# Requested edges are relationship-management state, not profile graph rows.
+rpc "$directory_token" request_social_follow \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/graph-pending-request.json"
+
+# Give the target two accepted followers and two accepted following accounts so
+# both destinations exercise real keyset continuation. The conductor/target
+# relationship becomes mutual; the fourth account remains independent for
+# viewer-relative block filtering.
+rpc "$graph_token" request_social_follow \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/graph-follow-target-request.json"
+rpc "$collaborator_token" respond_to_social_follow \
+  "{\"p_requester_id\":\"$graph_id\",\"p_accept\":true}" \
+  "$smoke_tmp/graph-follow-target-accept.json"
+rpc "$collaborator_token" request_social_follow \
+  "{\"p_profile_id\":\"$conductor_id\"}" \
+  "$smoke_tmp/target-follow-conductor-request.json"
+rpc "$conductor_token" respond_to_social_follow \
+  "{\"p_requester_id\":\"$collaborator_id\",\"p_accept\":true}" \
+  "$smoke_tmp/target-follow-conductor-accept.json"
+rpc "$collaborator_token" request_social_follow \
+  "{\"p_profile_id\":\"$graph_id\"}" \
+  "$smoke_tmp/target-follow-graph-request.json"
+rpc "$graph_token" respond_to_social_follow \
+  "{\"p_requester_id\":\"$collaborator_id\",\"p_accept\":true}" \
+  "$smoke_tmp/target-follow-graph-accept.json"
+
+rpc "$conductor_token" get_member_profile_overview \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/graph-viewer-overview.json"
+jq -e '
+  (if type == "array" then .[0] else . end)
+  | type == "object"
+  and (keys | sort) == [
+    "avatar_url","average_rating","diary_entry_count","display_name",
+    "follower_count","following_count","follows_viewer",
+    "incoming_follow_state","is_self","loved_music_count",
+    "music_list_count","outgoing_follow_state","profile_id","rating_count",
+    "ratings_visible","viewer_follows","written_review_count"
+  ]
+' "$smoke_tmp/graph-viewer-overview.json" >/dev/null
+jq -e '
+  (if type == "array" then .[0] else . end)
+  | .follower_count == 2 and .following_count == 2
+' "$smoke_tmp/graph-viewer-overview.json" >/dev/null
+graph_follower_count="$(jq -er '(if type == "array" then .[0] else . end) | .follower_count' "$smoke_tmp/graph-viewer-overview.json")"
+graph_following_count="$(jq -er '(if type == "array" then .[0] else . end) | .following_count' "$smoke_tmp/graph-viewer-overview.json")"
+rpc "$collaborator_token" get_member_profile_overview \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/graph-owner-overview.json"
+jq -e '
+  (if type == "array" then .[0] else . end)
+  | .follower_count == 2 and .following_count == 2
+' "$smoke_tmp/graph-owner-overview.json" >/dev/null
+
+rpc "$conductor_token" list_member_profile_connections \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_direction\":\"FOLLOWERS\",\"p_after_display_name\":null,\"p_after_id\":null,\"p_limit\":100}" \
+  "$smoke_tmp/graph-followers-all.json"
+jq -e --arg self "$conductor_id" --arg graph "$graph_id" --arg pending "$directory_id" '
+  length == 2
+  and (map(.profile_id) | sort) == ([$self, $graph] | sort)
+  and all(.[];
+    (keys | sort) == ["avatar_url","display_name","incoming_follow_state","outgoing_follow_state","profile_id"]
+  )
+  and all(.[]; .profile_id != $pending)
+  and (.[] | select(.profile_id == $self)
+       | .outgoing_follow_state == null and .incoming_follow_state == null)
+' "$smoke_tmp/graph-followers-all.json" >/dev/null
+[[ "$(jq 'length' "$smoke_tmp/graph-followers-all.json")" -eq "$graph_follower_count" ]]
+rpc "$conductor_token" list_member_profile_connections \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_direction\":\"following\",\"p_after_display_name\":null,\"p_after_id\":null,\"p_limit\":100}" \
+  "$smoke_tmp/graph-following-all.json"
+jq -e --arg self "$conductor_id" --arg graph "$graph_id" '
+  length == 2 and (map(.profile_id) | sort) == ([$self, $graph] | sort)
+' "$smoke_tmp/graph-following-all.json" >/dev/null
+[[ "$(jq 'length' "$smoke_tmp/graph-following-all.json")" -eq "$graph_following_count" ]]
+
+# A case-insensitive display-name cursor and UUID tiebreaker produce two dense,
+# nonoverlapping pages, followed by an empty terminal page.
+rpc "$conductor_token" list_member_profile_connections \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_direction\":\"followers\",\"p_after_display_name\":null,\"p_after_id\":null,\"p_limit\":1}" \
+  "$smoke_tmp/graph-followers-first.json"
+graph_cursor_name="$(jq -er '.[0].display_name' "$smoke_tmp/graph-followers-first.json")"
+graph_cursor_name_upper="$(printf '%s' "$graph_cursor_name" | tr '[:lower:]' '[:upper:]')"
+graph_cursor_id="$(jq -er '.[0].profile_id' "$smoke_tmp/graph-followers-first.json")"
+rpc "$conductor_token" list_member_profile_connections \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_direction\":\"followers\",\"p_after_display_name\":\"$graph_cursor_name_upper\",\"p_after_id\":\"$graph_cursor_id\",\"p_limit\":1}" \
+  "$smoke_tmp/graph-followers-second.json"
+jq -e --arg first "$graph_cursor_id" 'length == 1 and .[0].profile_id != $first' \
+  "$smoke_tmp/graph-followers-second.json" >/dev/null
+graph_second_cursor_name="$(jq -er '.[0].display_name' "$smoke_tmp/graph-followers-second.json")"
+graph_second_cursor_id="$(jq -er '.[0].profile_id' "$smoke_tmp/graph-followers-second.json")"
+rpc "$conductor_token" list_member_profile_connections \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_direction\":\"followers\",\"p_after_display_name\":\"$graph_second_cursor_name\",\"p_after_id\":\"$graph_second_cursor_id\",\"p_limit\":1}" \
+  "$smoke_tmp/graph-followers-terminal.json"
+[[ "$(jq 'length' "$smoke_tmp/graph-followers-terminal.json")" -eq 0 ]]
+
+# A listed account's block relationship with the viewer affects neither its
+# accepted edge with the target nor what the target sees, but it is removed
+# from this viewer's count and both profile destinations.
+rpc "$graph_token" block_social_profile \
+  "{\"p_profile_id\":\"$conductor_id\"}" \
+  "$smoke_tmp/graph-member-blocks-viewer.json"
+rpc "$conductor_token" get_member_profile_overview \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/graph-viewer-filtered-overview.json"
+jq -e '
+  (if type == "array" then .[0] else . end)
+  | .follower_count == 1 and .following_count == 1
+' "$smoke_tmp/graph-viewer-filtered-overview.json" >/dev/null
+rpc "$conductor_token" list_member_profile_connections \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_direction\":\"followers\",\"p_limit\":100}" \
+  "$smoke_tmp/graph-viewer-filtered-followers.json"
+jq -e --arg self "$conductor_id" --arg hidden "$graph_id" '
+  length == 1 and .[0].profile_id == $self and all(.[]; .profile_id != $hidden)
+' "$smoke_tmp/graph-viewer-filtered-followers.json" >/dev/null
+rpc "$collaborator_token" get_member_profile_overview \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/graph-owner-unfiltered-overview.json"
+jq -e '
+  (if type == "array" then .[0] else . end)
+  | .follower_count == 2 and .following_count == 2
+' "$smoke_tmp/graph-owner-unfiltered-overview.json" >/dev/null
+
+# Missing and blocked follow requests share the same exact unavailable result.
+graph_missing_profile_id="$(new_uuid)"
+missing_follow_request_status="$(rpc_status "$conductor_token" request_social_follow \
+  "{\"p_profile_id\":\"$graph_missing_profile_id\"}" \
+  "$smoke_tmp/graph-missing-follow-request.json")"
+blocked_follow_request_status="$(rpc_status "$conductor_token" request_social_follow \
+  "{\"p_profile_id\":\"$graph_id\"}" \
+  "$smoke_tmp/graph-blocked-follow-request.json")"
+[[ "$blocked_follow_request_status" == "$missing_follow_request_status" ]]
+jq -e --slurpfile missing "$smoke_tmp/graph-missing-follow-request.json" '
+  .code == $missing[0].code and .message == $missing[0].message
+' "$smoke_tmp/graph-blocked-follow-request.json" >/dev/null
+rpc "$graph_token" unblock_social_profile \
+  "{\"p_profile_id\":\"$conductor_id\"}" \
+  "$smoke_tmp/graph-member-unblocks-viewer.json"
+
+# Exercise the opposite member/viewer block direction, then restore it.
+rpc "$conductor_token" block_social_profile \
+  "{\"p_profile_id\":\"$graph_id\"}" \
+  "$smoke_tmp/graph-viewer-blocks-member.json"
+rpc "$conductor_token" list_member_profile_connections \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_direction\":\"following\",\"p_limit\":100}" \
+  "$smoke_tmp/graph-viewer-filtered-following.json"
+jq -e --arg self "$conductor_id" --arg hidden "$graph_id" '
+  length == 1 and .[0].profile_id == $self and all(.[]; .profile_id != $hidden)
+' "$smoke_tmp/graph-viewer-filtered-following.json" >/dev/null
+rpc "$conductor_token" get_member_profile_overview \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/graph-viewer-forward-filtered-overview.json"
+jq -e '
+  (if type == "array" then .[0] else . end)
+  | .follower_count == 1 and .following_count == 1
+' "$smoke_tmp/graph-viewer-forward-filtered-overview.json" >/dev/null
+rpc "$conductor_token" unblock_social_profile \
+  "{\"p_profile_id\":\"$graph_id\"}" \
+  "$smoke_tmp/graph-viewer-unblocks-member.json"
+
+partial_graph_cursor_status="$(rpc_status "$conductor_token" list_member_profile_connections \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_direction\":\"followers\",\"p_after_display_name\":\"$graph_cursor_name\",\"p_after_id\":null,\"p_limit\":50}" \
+  "$smoke_tmp/graph-partial-cursor.json")"
+blank_graph_cursor_status="$(rpc_status "$conductor_token" list_member_profile_connections \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_direction\":\"followers\",\"p_after_display_name\":\"   \",\"p_after_id\":\"$graph_cursor_id\",\"p_limit\":50}" \
+  "$smoke_tmp/graph-blank-cursor.json")"
+invalid_graph_direction_status="$(rpc_status "$conductor_token" list_member_profile_connections \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_direction\":\"requests\",\"p_limit\":50}" \
+  "$smoke_tmp/graph-invalid-direction.json")"
+zero_graph_limit_status="$(rpc_status "$conductor_token" list_member_profile_connections \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_direction\":\"followers\",\"p_limit\":0}" \
+  "$smoke_tmp/graph-zero-limit.json")"
+oversized_graph_limit_status="$(rpc_status "$conductor_token" list_member_profile_connections \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_direction\":\"following\",\"p_limit\":101}" \
+  "$smoke_tmp/graph-oversized-limit.json")"
+[[ "$partial_graph_cursor_status" == "400" ]]
+[[ "$blank_graph_cursor_status" == "400" ]]
+[[ "$invalid_graph_direction_status" == "400" ]]
+[[ "$zero_graph_limit_status" == "400" ]]
+[[ "$oversized_graph_limit_status" == "400" ]]
+
+# The raw arbitrary-pair helper is not a client RPC anymore.
+raw_block_helper_status="$(rpc_status "$conductor_token" social_accounts_are_blocked \
+  "{\"p_left_id\":\"$collaborator_id\",\"p_right_id\":\"$graph_id\"}" \
+  "$smoke_tmp/graph-raw-helper-denied.json")"
+[[ "$raw_block_helper_status" == "401" || "$raw_block_helper_status" == "403" || "$raw_block_helper_status" == "404" ]]
+viewer_block_helper_public_status="$(rpc_status "$conductor_token" viewer_social_account_is_blocked \
+  "{\"p_profile_id\":\"$graph_id\"}" \
+  "$smoke_tmp/graph-viewer-helper-public-denied.json")"
+[[ "$viewer_block_helper_public_status" == "404" ]]
+viewer_block_helper_private_status="$(curl --silent --show-error \
+  -X POST "$supabase_url/rest/v1/rpc/viewer_social_account_is_blocked" \
+  -H "apikey: $publishable_key" \
+  -H "Authorization: Bearer $conductor_token" \
+  -H "Content-Type: application/json" \
+  -H "Content-Profile: private" \
+  --data "{\"p_profile_id\":\"$graph_id\"}" \
+  -o "$smoke_tmp/graph-viewer-helper-private-denied.json" \
+  -w '%{http_code}')"
+[[ "$viewer_block_helper_private_status" == "404" || "$viewer_block_helper_private_status" == "406" ]]
+
+# Exact target lists use the same missing/either-direction-block boundary as
+# the profile overview. Compare both status and structured error body.
+missing_graph_followers_status="$(rpc_status "$conductor_token" list_member_profile_connections \
+  "{\"p_profile_id\":\"$graph_missing_profile_id\",\"p_direction\":\"followers\",\"p_limit\":50}" \
+  "$smoke_tmp/graph-missing-followers.json")"
+missing_graph_following_status="$(rpc_status "$conductor_token" list_member_profile_connections \
+  "{\"p_profile_id\":\"$graph_missing_profile_id\",\"p_direction\":\"following\",\"p_limit\":50}" \
+  "$smoke_tmp/graph-missing-following.json")"
+rpc "$graph_token" block_social_profile \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/graph-blocks-target.json"
+blocked_graph_followers_status="$(rpc_status "$graph_token" list_member_profile_connections \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_direction\":\"followers\",\"p_limit\":50}" \
+  "$smoke_tmp/graph-blocked-followers.json")"
+blocked_graph_following_status="$(rpc_status "$graph_token" list_member_profile_connections \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_direction\":\"following\",\"p_limit\":50}" \
+  "$smoke_tmp/graph-blocked-following.json")"
+reverse_blocked_graph_followers_status="$(rpc_status "$collaborator_token" list_member_profile_connections \
+  "{\"p_profile_id\":\"$graph_id\",\"p_direction\":\"followers\",\"p_limit\":50}" \
+  "$smoke_tmp/graph-reverse-blocked-followers.json")"
+reverse_blocked_graph_following_status="$(rpc_status "$collaborator_token" list_member_profile_connections \
+  "{\"p_profile_id\":\"$graph_id\",\"p_direction\":\"following\",\"p_limit\":50}" \
+  "$smoke_tmp/graph-reverse-blocked-following.json")"
+[[ "$blocked_graph_followers_status" == "$missing_graph_followers_status" ]]
+[[ "$blocked_graph_following_status" == "$missing_graph_following_status" ]]
+[[ "$reverse_blocked_graph_followers_status" == "$missing_graph_followers_status" ]]
+[[ "$reverse_blocked_graph_following_status" == "$missing_graph_following_status" ]]
+jq -e --slurpfile missing "$smoke_tmp/graph-missing-followers.json" '
+  .code == $missing[0].code and .message == $missing[0].message
+' "$smoke_tmp/graph-blocked-followers.json" >/dev/null
+jq -e --slurpfile missing "$smoke_tmp/graph-missing-following.json" '
+  .code == $missing[0].code and .message == $missing[0].message
+' "$smoke_tmp/graph-blocked-following.json" >/dev/null
+jq -e --slurpfile missing "$smoke_tmp/graph-missing-followers.json" '
+  .code == $missing[0].code and .message == $missing[0].message
+' "$smoke_tmp/graph-reverse-blocked-followers.json" >/dev/null
+jq -e --slurpfile missing "$smoke_tmp/graph-missing-following.json" '
+  .code == $missing[0].code and .message == $missing[0].message
+' "$smoke_tmp/graph-reverse-blocked-following.json" >/dev/null
+rpc "$graph_token" unblock_social_profile \
+  "{\"p_profile_id\":\"$collaborator_id\"}" \
+  "$smoke_tmp/graph-unblocks-target.json"
+# Remove the dedicated graph fixture now so its follow notifications and edges
+# cannot change the later notification/block scenarios, which intentionally
+# isolate the original three accounts.
+cleanup_account "$graph_token"
+graph_token=""
 
 stage="session creation and join"
 rpc "$conductor_token" create_session \
@@ -1921,7 +2181,15 @@ jq -e '
     (keys | sort) == ["profile_id","rating","subject","subject_id","subject_kind","updated_at"]
     and (.subject_kind == "track" or .subject_kind == "album")
     and .rating >= 0.5 and .rating <= 5.0
-    and (if .subject_kind == "track" then (.subject.provider_tracks | length) > 0 else (.subject.provider_albums | length) > 0 and .subject.upc != null end)
+    and (if .subject_kind == "track" then
+      (.subject.provider_tracks | length) > 0
+    else
+      (.subject | has("upc"))
+      and (.subject.provider_albums | length) > 0
+      and all(.subject.provider_albums[];
+        .identity_basis == "provider" or .identity_basis == "upc"
+      )
+    end)
     and (.subject | has("has_listened") | not)
     and (.subject | has("is_loved") | not)
     and (.subject | has("want_to_listen") | not)
@@ -1943,7 +2211,14 @@ rpc "$collaborator_token" list_profile_loved_music \
 jq -e '
   length > 1
   and any(.[]; .subject_kind == "track" and (.subject.provider_tracks | length) > 0)
-  and any(.[]; .subject_kind == "album" and (.subject.provider_albums | length) > 0 and .subject.upc != null)
+  and any(.[];
+    .subject_kind == "album"
+    and (.subject | has("upc"))
+    and (.subject.provider_albums | length) > 0
+    and all(.subject.provider_albums[];
+      .identity_basis == "provider" or .identity_basis == "upc"
+    )
+  )
   and all(.[]; (keys | sort) == ["profile_id","subject","subject_id","subject_kind","updated_at"] and (.subject | has("is_loved") | not))
 ' "$smoke_tmp/member-owner-loved-page.json" >/dev/null
 

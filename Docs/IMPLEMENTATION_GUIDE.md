@@ -71,6 +71,12 @@ playback/catalog interaction.
   requests, sent requests, Following, and Followers. Incoming and outgoing
   edges are never collapsed, so an incoming Accept action remains available
   even when the viewer already follows or has requested the same person.
+- Every member overview also exposes separate **Followers** and **Following**
+  destinations. These are accepted-edge social graph pages, not request
+  management: pending edges are excluded, while two mutually following
+  members appear in both lists. Selecting any listed identity opens that
+  member's overview, making the graph itself an account-discovery path in the
+  same spirit as Letterboxd's separate Followers and Following profile pages.
 - Account discovery is an authenticated, block-aware, keyset-paginated search.
   The app no longer downloads the full profile directory. A separate Manage
   blocked projection returns only people the caller blocked so Unblock remains
@@ -575,6 +581,33 @@ half-star buckets plus exhaustive total/average when the shelf is authorized.
 Private Ratings return no rows. Missing IDs and either direction of a block
 share the same unavailable result.
 
+Migration `202608030059_member_profile_social_graph.sql` extends that overview
+with exhaustive, viewer-relative `follower_count` and `following_count` values
+and adds `list_member_profile_connections(profile_id, direction,
+after_display_name, after_id, limit)`. The RPC accepts only `followers` or
+`following`, includes accepted edges only, and orders ascending by
+`lower(display_name), profile_id`; both cursor fields must be supplied
+together. Counts and rows exclude any listed identity blocked in either
+direction with the current viewer. A mutual relationship is therefore present
+in both destinations, while pending requests appear only in Connections
+management. A missing or blocked owner produces the same neutral profile
+unavailable result. Exact-target `request_social_follow` calls use that same
+missing-or-blocked response instead of revealing which condition occurred.
+
+Migration `202608030060_member_profile_overview_table_return.sql` preserves
+that contract as one explicit table row. This avoids relying on PostgreSQL's
+in-place coercion of an extended named composite at the PostgREST boundary;
+the iOS decoder still receives the same single overview object.
+
+Each returned row contains minimal identity plus incoming and outgoing states
+relative to the signed-in viewer, not relative to the profile whose graph is
+being browsed. This lets the row offer the correct Follow, Follow back,
+Requested, Following, Accept/Decline, Remove follower, and Block actions.
+Successful relationship mutations refresh every cached member overview and
+already-open graph direction. Social Realtime invalidates visited member
+caches and reloads only previously requested graph directions, while blocking
+also removes the blocked identity from all cached graph pages immediately.
+
 ## 4. Supabase data model
 
 ### Collaboration tables
@@ -703,8 +736,15 @@ read-then-insert algorithms.
 ### Social commands and visibility
 
 `can_view_social(owner, visibility)` centralizes private/follower/public logic;
-it first denies either-direction blocks. `is_accepted_follower(owner)` and
-`social_accounts_are_blocked(left, right)` support it. Activity, history,
+it first denies either-direction blocks. `is_accepted_follower(owner)` and the
+trusted `social_accounts_are_blocked(left, right)` helper support it. Migration
+059 revokes client execution of that raw arbitrary-pair helper so an
+authenticated caller cannot probe two unrelated accounts' block relationship.
+RLS uses the auth-bound
+`private.viewer_social_account_is_blocked(profile_id)` helper, which is outside
+the exposed API schema; authenticated clients can execute neither block
+helper. Trusted security-definer functions retain the raw helper where
+two-account comparison is required. Activity, history,
 reviews, comments, reactions, and notifications all rely on this database
 policy layer.
 
@@ -719,6 +759,7 @@ The main social RPCs are `request_social_follow`,
 `list_my_track_subject_states`,
 `list_following_activity`, `list_profile_listening_diary`,
 `get_member_profile_overview`, `list_profile_music_reviews`,
+`list_member_profile_connections`,
 `list_profile_ratings`, `get_profile_rating_distribution`,
 `list_profile_loved_tracks`, `list_profile_loved_music`,
 `create_music_review`, `update_music_review`, `delete_music_review`,
@@ -864,14 +905,20 @@ Following-activity coverage verifies typed Diary/Review presentation and the
 member-profile route. The deterministic DEBUG fixture
 `--ui-test-social-activity` supplies both event types without depending on a
 hosted account. A focused UI test navigates through the actor into Reviews,
-Diary, and Loved shelves; a second test verifies the separate Connections
-privacy control. Hosted smoke is the authority for first-publication
-idempotency, no import/backfill emission, current object visibility, blocks,
-profile shelf isolation, and stable keyset pagination. Migration 058 smoke
+Ratings, Diary, Loved, Followers, and Following destinations; a second test
+verifies the separate Connections privacy control. Hosted smoke is the
+authority for first-publication idempotency, no import/backfill emission,
+current object visibility, blocks, profile shelf isolation, and stable keyset
+pagination. Migration 058 smoke
 also proves private Ratings defaults, requested-versus-accepted relationship
 state, authoritative overview counts, unified song/album Ratings and Loved
 rows, ten-bucket distributions, cursor validation, narrow projections, and
 identical missing/both-direction-block unavailable responses.
+Migration 059 smoke additionally proves accepted-only graph totals and pages,
+pending-edge exclusion, mutual membership in both directions, stable
+case-folded name/ID cursors, viewer-block filtering, neutral unavailable-owner
+behavior, viewer-relative row states, and denial of authenticated execution on
+both the raw arbitrary-pair and viewer-bound block helpers.
 
 Track-detail unit coverage verifies half-step bounds, normalization, value
 snapshot isolation, failure-safe caches, direct canonical identity, and empty

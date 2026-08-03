@@ -439,6 +439,12 @@ struct PublicProfileShelfState {
     var refreshingRatingDistributionScopes: Set<String> = []
     var loved: [String: PaginatedShelfState<RemotePublicLovedMusic>] = [:]
     var lists = PaginatedShelfState<RemoteMusicList>()
+    var connections: [MemberProfileGraphDirection: PaginatedShelfState<RemoteMemberProfileConnection>] = [:]
+}
+
+private struct MemberProfileConnectionRequestKey: Hashable {
+    let profileID: UUID
+    let direction: MemberProfileGraphDirection
 }
 
 struct MusicListDetailState {
@@ -759,6 +765,7 @@ final class HarmonySessionStore: ObservableObject {
     private var socialNotificationCursor: RemoteSocialNotificationCursor?
     private var socialDiscoveryCursor: RemoteSocialProfileCursor?
     private var socialDiscoveryRequestID: UUID?
+    private var memberProfileConnectionRequestIDs: [MemberProfileConnectionRequestKey: UUID] = [:]
 #if DEBUG
     private var isDiaryEditorUITestFixtureActive = false
     private var socialDiscoveryFixtureProfiles: [RemoteSocialProfile] = []
@@ -1538,6 +1545,8 @@ final class HarmonySessionStore: ObservableObject {
         for (profileID, shelves) in cached {
             let ratingScopes = Array(shelves.ratings.keys)
             let lovedScopes = Array(shelves.loved.keys)
+            let connectionDirections = Array(shelves.connections.keys)
+            invalidateMemberProfileConnectionRequests(for: profileID)
             publicProfileShelves.removeValue(forKey: profileID)
 
             await refreshMemberProfileOverview(for: profileID)
@@ -1552,6 +1561,19 @@ final class HarmonySessionStore: ObservableObject {
             }
             for scope in ratingScopes {
                 await refreshPublicProfileRatings(for: profileID, scope: scope)
+            }
+            for direction in connectionDirections {
+                await refreshMemberProfileConnections(for: profileID, direction: direction)
+            }
+        }
+    }
+
+    private func refreshCachedMemberProfileRelationships() async {
+        let cached = publicProfileShelves.map { ($0.key, Array($0.value.connections.keys)) }
+        for (profileID, directions) in cached {
+            await refreshMemberProfileOverview(for: profileID)
+            for direction in directions {
+                await refreshMemberProfileConnections(for: profileID, direction: direction)
             }
         }
     }
@@ -2222,6 +2244,95 @@ final class HarmonySessionStore: ObservableObject {
         publicProfileShelves[profileID]?.ratings[normalizedMemberMusicScope(scope)] ?? PaginatedShelfState()
     }
 
+    func memberProfileConnections(
+        for profileID: UUID,
+        direction: MemberProfileGraphDirection
+    ) -> PaginatedShelfState<RemoteMemberProfileConnection> {
+        publicProfileShelves[profileID]?.connections[direction] ?? PaginatedShelfState()
+    }
+
+    func refreshMemberProfileConnections(
+        for profileID: UUID,
+        direction: MemberProfileGraphDirection
+    ) async {
+#if DEBUG
+        if isDiaryEditorUITestFixtureActive { return }
+#endif
+        var shelves = publicProfileShelves[profileID] ?? PublicProfileShelfState()
+        let current = shelves.connections[direction] ?? PaginatedShelfState()
+        guard !current.isRefreshing, !current.isLoadingMore else { return }
+        let requestKey = MemberProfileConnectionRequestKey(profileID: profileID, direction: direction)
+        let requestID = UUID()
+        memberProfileConnectionRequestIDs[requestKey] = requestID
+        var loading = current
+        loading.isRefreshing = true
+        shelves.connections[direction] = loading
+        publicProfileShelves[profileID] = shelves
+        defer {
+            if memberProfileConnectionRequestIDs[requestKey] == requestID {
+                publicProfileShelves[profileID]?.connections[direction]?.isRefreshing = false
+                memberProfileConnectionRequestIDs.removeValue(forKey: requestKey)
+            }
+        }
+        do {
+            let page = try await collaborationRepository.memberProfileConnectionsPage(
+                profileID: profileID,
+                direction: direction,
+                limit: socialShelfPageSize + 1
+            )
+            guard memberProfileConnectionRequestIDs[requestKey] == requestID,
+                  publicProfileShelves[profileID] != nil else { return }
+            publicProfileShelves[profileID]?.connections[direction]?.items = Array(page.prefix(socialShelfPageSize))
+            publicProfileShelves[profileID]?.connections[direction]?.hasMore = page.count > socialShelfPageSize
+        } catch {
+            guard memberProfileConnectionRequestIDs[requestKey] == requestID else { return }
+            handleMemberProfileLoadFailure(error, profileID: profileID)
+        }
+    }
+
+    func loadMoreMemberProfileConnections(
+        for profileID: UUID,
+        direction: MemberProfileGraphDirection
+    ) async {
+        guard var shelves = publicProfileShelves[profileID],
+              var state = shelves.connections[direction],
+              state.hasMore,
+              !state.isRefreshing,
+              !state.isLoadingMore,
+              let cursor = state.items.last else { return }
+        state.isLoadingMore = true
+        let requestKey = MemberProfileConnectionRequestKey(profileID: profileID, direction: direction)
+        let requestID = UUID()
+        memberProfileConnectionRequestIDs[requestKey] = requestID
+        shelves.connections[direction] = state
+        publicProfileShelves[profileID] = shelves
+        defer {
+            if memberProfileConnectionRequestIDs[requestKey] == requestID {
+                publicProfileShelves[profileID]?.connections[direction]?.isLoadingMore = false
+                memberProfileConnectionRequestIDs.removeValue(forKey: requestKey)
+            }
+        }
+        do {
+            let page = try await collaborationRepository.memberProfileConnectionsPage(
+                profileID: profileID,
+                direction: direction,
+                afterDisplayName: cursor.displayName,
+                afterID: cursor.profileID,
+                limit: socialShelfPageSize + 1
+            )
+            guard memberProfileConnectionRequestIDs[requestKey] == requestID,
+                  publicProfileShelves[profileID] != nil else { return }
+            let existingIDs = Set(state.items.map(\.profileID))
+            publicProfileShelves[profileID]?.connections[direction]?.items.append(
+                contentsOf: page.prefix(socialShelfPageSize).filter { !existingIDs.contains($0.profileID) }
+            )
+            publicProfileShelves[profileID]?.connections[direction]?.hasMore = page.count > socialShelfPageSize
+        } catch {
+            guard memberProfileConnectionRequestIDs[requestKey] == requestID else { return }
+            handleMemberProfileLoadFailure(error, profileID: profileID)
+        }
+    }
+
     func publicProfileRatingDistribution(for profileID: UUID, scope: String) -> MyRatingDistribution? {
         publicProfileShelves[profileID]?.ratingDistributions[normalizedMemberMusicScope(scope)]
     }
@@ -2499,6 +2610,7 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     func clearPublicProfileShelves(for profileID: UUID) {
+        invalidateMemberProfileConnectionRequests(for: profileID)
         publicProfileShelves.removeValue(forKey: profileID)
         unavailableMemberProfileIDs.remove(profileID)
     }
@@ -2517,11 +2629,28 @@ final class HarmonySessionStore: ObservableObject {
 
     private func handleMemberProfileLoadFailure(_ error: Error, profileID: UUID) {
         if collaborationRepository.isProfileAuthorizationFailure(error) {
+            invalidateMemberProfileConnectionRequests(for: profileID)
             publicProfileShelves.removeValue(forKey: profileID)
             unavailableMemberProfileIDs.insert(profileID)
             collaborationMessage = "This profile is no longer available to you."
         } else {
             collaborationMessage = "Could not load this member's profile."
+        }
+    }
+
+    private func invalidateMemberProfileConnectionRequests(for profileID: UUID) {
+        memberProfileConnectionRequestIDs = memberProfileConnectionRequestIDs.filter {
+            $0.key.profileID != profileID
+        }
+    }
+
+    private func invalidateAllMemberProfileConnectionRequests() {
+        memberProfileConnectionRequestIDs.removeAll()
+        for ownerID in Array(publicProfileShelves.keys) {
+            for direction in MemberProfileGraphDirection.allCases {
+                publicProfileShelves[ownerID]?.connections[direction]?.isRefreshing = false
+                publicProfileShelves[ownerID]?.connections[direction]?.isLoadingMore = false
+            }
         }
     }
 
@@ -3333,7 +3462,9 @@ final class HarmonySessionStore: ObservableObject {
             musicListCount: 0,
             ratingCount: 2,
             averageRating: 4.25,
-            ratingsVisible: true
+            ratingsVisible: true,
+            followerCount: 2,
+            followingCount: 1
         )
         shelves.reviews.items = [review]
         shelves.diary.items = [entry]
@@ -3386,6 +3517,33 @@ final class HarmonySessionStore: ObservableObject {
         shelves.ratingDistributions["album"] = Self.fixtureRatingDistribution(
             scope: "album", counts: [4.5: 1], total: 1, average: 4.5
         )
+        let mutualProfileID = UUID(uuidString: "83000000-0000-0000-0000-000000000008")!
+        let followerProfileID = UUID(uuidString: "84000000-0000-0000-0000-000000000008")!
+        shelves.connections[.followers] = PaginatedShelfState(items: [
+            RemoteMemberProfileConnection(
+                profileID: mutualProfileID,
+                displayName: "Mutual Listener",
+                avatarURL: nil,
+                outgoingFollowState: "accepted",
+                incomingFollowState: "accepted"
+            ),
+            RemoteMemberProfileConnection(
+                profileID: followerProfileID,
+                displayName: "Follower Listener",
+                avatarURL: nil,
+                outgoingFollowState: nil,
+                incomingFollowState: "accepted"
+            )
+        ])
+        shelves.connections[.following] = PaginatedShelfState(items: [
+            RemoteMemberProfileConnection(
+                profileID: mutualProfileID,
+                displayName: "Mutual Listener",
+                avatarURL: nil,
+                outgoingFollowState: "accepted",
+                incomingFollowState: "accepted"
+            )
+        ])
         publicProfileShelves[entry.profileID] = shelves
         let requestProfileID = UUID(uuidString: "81000000-0000-0000-0000-000000000008")!
         let discoveryProfileID = UUID(uuidString: "82000000-0000-0000-0000-000000000008")!
@@ -3818,6 +3976,10 @@ final class HarmonySessionStore: ObservableObject {
         }?.state
     }
 
+    func isAuthenticatedSocialProfile(_ profileID: UUID) -> Bool {
+        profileID == authenticatedProfileID
+    }
+
     func incomingSocialFollowState(with profileID: UUID) -> String? {
         guard let authenticatedProfileID else { return nil }
         return socialFollows.first {
@@ -3854,8 +4016,18 @@ final class HarmonySessionStore: ObservableObject {
             try await self.collaborationRepository.blockSocialProfile(profileID)
         }
         if didBlock {
+            invalidateMemberProfileConnectionRequests(for: profileID)
             publicProfileShelves.removeValue(forKey: profileID)
+            invalidateAllMemberProfileConnectionRequests()
+            for ownerID in Array(publicProfileShelves.keys) {
+                for direction in MemberProfileGraphDirection.allCases {
+                    publicProfileShelves[ownerID]?.connections[direction]?.items.removeAll {
+                        $0.profileID == profileID
+                    }
+                }
+            }
             unavailableMemberProfileIDs.insert(profileID)
+            await refreshCachedMemberProfileRelationships()
         }
     }
 
@@ -3880,6 +4052,7 @@ final class HarmonySessionStore: ObservableObject {
             collaborationMessage = successMessage
             await refreshSocialProfiles()
             await refreshSocialDiscovery(search: socialDiscoveryQuery)
+            await refreshCachedMemberProfileRelationships()
             return true
         } catch {
             collaborationMessage = "Follower action failed: \(error.localizedDescription)"

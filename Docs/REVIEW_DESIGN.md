@@ -56,6 +56,7 @@ The product pattern Harmony transfers is therefore:
 | Optional review, tags, and spoiler metadata | Reviews keep spoiler metadata; manual listens accept music-context tags |
 | Dedicated review detail with likes/comments | Review detail with reaction and comment thread |
 | Member Reviews, Diary, and Likes surfaces | Member profile shelves for Reviews, Diary, and opt-in Loved music |
+| Separate Followers and Following member pages, with profiles discoverable through those lists | Separate accepted-only graph pages whose rows open another Harmony member overview |
 | Following activity feed | Durable, typed manual Diary and first-publication Review events |
 | Review pages filter and sort authored opinions | Loaded owner reviews can be searched and scoped by Songs, Albums, or Loved, then sorted by date or rating |
 
@@ -74,6 +75,10 @@ product and first-party help pages:
 - Profile overview acts as an index into the deeper shelves and includes a
   rating distribution, recent reviews/activity, lists, favorites, tags, and
   network links.
+- Followers and Following are separate member-profile destinations, and each
+  listed identity is itself a route into another account. Harmony adopts this
+  legible social-discovery path without copying Letterboxd's presentation or
+  assuming anything about its internal graph implementation.
 - Search spans subjects, reviews, lists, and people. Discovery is reinforced by
   understandable popular/highly-rated/friend activity paths rather than one
   opaque recommendation feed.
@@ -257,6 +262,16 @@ one eagerly loaded profile payload. The overview count RPC is exhaustive and
 viewer-relative. Each collection then pages its own typed data, so loading one
 shelf cannot truncate another or imply that a loaded page is a total.
 
+The overview also has separate **Followers** and **Following** network links,
+matching the navigational pattern verified in Letterboxd's current member
+profiles and first-party [FAQ](https://letterboxd.com/about/faq/). Harmony
+adapts the concept to its request/accept privacy model:
+these pages contain accepted relationships only. Pending requests remain in
+Connections management, and mutually following members correctly appear in
+both lists. Opening a row navigates to that person's member overview, so users
+can find accounts through a comprehensible graph rather than only through the
+global account search.
+
 Current Ratings remain authoritative owner subject state. Migration 058 adds
 `rating_visibility` as a distinct Only me / Followers decision with **Only
 me** as the database default. Review visibility, Diary visibility, Loved shelf
@@ -275,6 +290,40 @@ uses a fixed ten-bucket distribution with an exhaustive total and average; a
 private shelf returns no rows rather than leaking its size. Missing profiles
 and either direction of a block share the same unavailable response, so the
 profile API is not an account-existence oracle.
+
+Migration `202608030059_member_profile_social_graph.sql` adds authoritative
+`follower_count` and `following_count` fields to
+`get_member_profile_overview` and introduces
+`list_member_profile_connections(profile_id, direction,
+after_display_name, after_id, limit)`. The direction is `followers` or
+`following`; edges must be accepted; and ascending
+`lower(display_name), profile_id` ordering supplies the paired keyset cursor.
+Both the overview totals and the list filter out graph members blocked in
+either direction with the current viewer. Missing and blocked graph owners use
+the same neutral `profile unavailable` response.
+
+Migration `202608030060_member_profile_overview_table_return.sql` re-expresses
+the extended overview as an explicit one-row table result. This keeps the
+Letterboxd-style counts unchanged while avoiding named-composite coercion at
+the hosted PostgREST boundary.
+
+Graph rows return only profile identity plus incoming/outgoing follow state
+relative to the viewer. Consequently row actions remain correct even when the
+viewer is browsing someone else's network: Follow, Follow back, cancel a
+request, unfollow, Accept/Decline, remove a follower, and Block are determined
+from the viewer's edges, not inferred from list membership. Relationship
+mutations refresh cached overview totals and loaded graph pages. Social
+Realtime invalidates visited profiles and repopulates the graph directions
+that were already open; a local block also evicts that identity from every
+cached graph immediately.
+
+The same migration hardens block privacy. Client roles can execute neither the
+raw `social_accounts_are_blocked(left, right)` helper nor the viewer-bound
+helper, so neither arbitrary account pairs nor missing-versus-blocked targets
+can be probed through RPC. RLS calls the non-exposed
+`private.viewer_social_account_is_blocked(profile_id)` helper, while trusted
+security-definer routines may still compare the two accounts required by their
+operation.
 
 Letterboxd's current composer also exposes Draft and more granular audience
 choices. Harmony will not overload Only me as a draft. A later draft slice must

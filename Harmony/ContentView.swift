@@ -2159,6 +2159,7 @@ struct MemberProfileView: View {
     @State private var attemptedDestinations: Set<String> = []
     @State private var ratingScope = MemberMusicScope.all
     @State private var lovedScope = MemberMusicScope.all
+    @State private var profileGraphDestination: MemberProfileGraphDirection?
 
     private var shelfState: PublicProfileShelfState? { store.publicProfileShelves[profileID] }
     private var overview: RemoteMemberProfileOverview? { shelfState?.overview }
@@ -2193,6 +2194,7 @@ struct MemberProfileView: View {
                                 .foregroundColor(.secondary)
                         }
                     }
+                    profileGraphCounts
                     relationshipControls
                     Label("Only content this listener has shared with you appears here.", systemImage: "person.2.fill")
                         .font(.footnote)
@@ -2237,6 +2239,59 @@ struct MemberProfileView: View {
         .accessibilityIdentifier("member-profile-page-\(profileID.uuidString)")
         .task { await refreshOverviewContent() }
         .refreshable { await refreshOverviewContent() }
+    }
+
+    private var profileGraphCounts: some View {
+        HStack(spacing: 0) {
+            profileGraphLink(
+                direction: .followers,
+                count: overview?.followerCount
+            )
+            Divider().frame(height: 32)
+            profileGraphLink(
+                direction: .following,
+                count: overview?.followingCount
+            )
+        }
+        .frame(maxWidth: .infinity)
+        .background {
+            ForEach(MemberProfileGraphDirection.allCases) { direction in
+                NavigationLink(
+                    tag: direction,
+                    selection: $profileGraphDestination
+                ) {
+                    MemberProfileConnectionsView(
+                        ownerProfileID: profileID,
+                        ownerDisplayName: resolvedDisplayName,
+                        direction: direction
+                    )
+                } label: {
+                    EmptyView()
+                }
+                .hidden()
+            }
+        }
+    }
+
+    private func profileGraphLink(
+        direction: MemberProfileGraphDirection,
+        count: Int?
+    ) -> some View {
+        Button {
+            profileGraphDestination = direction
+        } label: {
+            VStack(spacing: 2) {
+                Text(count.map(String.init) ?? "—")
+                    .font(.headline.monospacedDigit())
+                Text(direction.title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("member-profile-\(direction.rawValue)")
     }
 
     @ViewBuilder
@@ -2712,6 +2767,196 @@ struct MemberProfileView: View {
             incomingState: incomingFollowState,
             isBlocked: store.socialRelationship(with: profileID) == .blocked
         )
+    }
+}
+
+private struct MemberProfileConnectionsView: View {
+    @EnvironmentObject private var store: HarmonySessionStore
+    let ownerProfileID: UUID
+    let ownerDisplayName: String
+    let direction: MemberProfileGraphDirection
+
+    private var state: PaginatedShelfState<RemoteMemberProfileConnection> {
+        store.memberProfileConnections(for: ownerProfileID, direction: direction)
+    }
+
+    var body: some View {
+        List {
+            if store.isMemberProfileUnavailable(ownerProfileID) {
+                Section {
+                    Label("This profile is no longer available to you.", systemImage: "person.crop.circle.badge.xmark")
+                        .foregroundStyle(.secondary)
+                }
+            } else if state.isRefreshing && state.items.isEmpty {
+                ProgressView("Loading \(direction.title.lowercased())…")
+                    .accessibilityIdentifier("member-profile-\(direction.rawValue)-loading")
+            } else if state.items.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "person.2")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text("No \(direction.title.lowercased()) yet")
+                        .font(.headline)
+                    Text(emptyDescription)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 24)
+                .accessibilityIdentifier("member-profile-\(direction.rawValue)-empty")
+            } else {
+                Section {
+                    ForEach(state.items) { connection in
+                        connectionRow(connection)
+                    }
+                    if state.hasMore {
+                        Button {
+                            Task {
+                                await store.loadMoreMemberProfileConnections(
+                                    for: ownerProfileID,
+                                    direction: direction
+                                )
+                            }
+                        } label: {
+                            if state.isLoadingMore {
+                                ProgressView("Loading more…")
+                            } else {
+                                Text("Load more \(direction.title.lowercased())")
+                            }
+                        }
+                        .disabled(state.isLoadingMore)
+                        .accessibilityIdentifier("member-profile-\(direction.rawValue)-load-more")
+                    }
+                }
+            }
+        }
+        .navigationTitle(direction.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            if state.items.isEmpty {
+                await store.refreshMemberProfileConnections(
+                    for: ownerProfileID,
+                    direction: direction
+                )
+            }
+        }
+        .refreshable {
+            await store.refreshMemberProfileConnections(
+                for: ownerProfileID,
+                direction: direction
+            )
+        }
+        .accessibilityIdentifier("member-profile-\(direction.rawValue)-page")
+    }
+
+    private var emptyDescription: String {
+        direction == .followers
+            ? "Nobody follows \(ownerDisplayName) yet."
+            : "\(ownerDisplayName) is not following anyone yet."
+    }
+
+    private func connectionRow(_ connection: RemoteMemberProfileConnection) -> some View {
+        HStack(spacing: 12) {
+            NavigationLink {
+                MemberProfileView(
+                    profileID: connection.profileID,
+                    displayName: connection.displayName
+                )
+            } label: {
+                HStack(spacing: 10) {
+                    connectionAvatar(connection)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(connection.displayName).font(.headline)
+                        Text(memberProfileRelationshipDescription(
+                            outgoingState: connection.outgoingFollowState,
+                            incomingState: connection.incomingFollowState,
+                            isBlocked: store.socialRelationship(with: connection.profileID) == .blocked
+                        ))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    }
+                }
+            }
+            .accessibilityIdentifier("member-profile-\(direction.rawValue)-row-\(connection.profileID.uuidString)")
+            Spacer()
+            if !store.isAuthenticatedSocialProfile(connection.profileID) {
+                relationshipControl(connection)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func connectionAvatar(_ connection: RemoteMemberProfileConnection) -> some View {
+        if let url = connection.avatarURL {
+            AsyncImage(url: url) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFill()
+                } else {
+                    ProfileInitials(displayName: connection.displayName, size: 38)
+                }
+            }
+            .frame(width: 38, height: 38)
+            .clipShape(Circle())
+        } else {
+            ProfileInitials(displayName: connection.displayName, size: 38)
+        }
+    }
+
+    @ViewBuilder
+    private func relationshipControl(_ connection: RemoteMemberProfileConnection) -> some View {
+        if store.socialProfileActionIDs.contains(connection.profileID) {
+            ProgressView().controlSize(.small)
+        } else if connection.incomingFollowState == "requested" {
+            Menu("Respond") {
+                Button("Accept") {
+                    Task { await store.respondToSocialFollow(from: connection.profileID, accept: true) }
+                }
+                Button("Decline", role: .destructive) {
+                    Task { await store.respondToSocialFollow(from: connection.profileID, accept: false) }
+                }
+                blockButton(connection.profileID)
+            }
+            .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("member-profile-\(direction.rawValue)-action-\(connection.profileID.uuidString)")
+        } else if connection.outgoingFollowState == "requested" {
+            Menu("Requested") {
+                Button("Cancel request", role: .destructive) {
+                    Task { await store.removeSocialFollow(connection.profileID) }
+                }
+                blockButton(connection.profileID)
+            }
+            .accessibilityIdentifier("member-profile-\(direction.rawValue)-action-\(connection.profileID.uuidString)")
+        } else if connection.outgoingFollowState == "accepted" {
+            Menu("Following") {
+                Button("Unfollow", role: .destructive) {
+                    Task { await store.removeSocialFollow(connection.profileID) }
+                }
+                blockButton(connection.profileID)
+            }
+            .accessibilityIdentifier("member-profile-\(direction.rawValue)-action-\(connection.profileID.uuidString)")
+        } else {
+            Menu(connection.incomingFollowState == "accepted" ? "Follows you" : "Follow") {
+                Button(connection.incomingFollowState == "accepted" ? "Follow back" : "Follow") {
+                    Task { await store.requestSocialFollow(connection.profileID) }
+                }
+                if connection.incomingFollowState == "accepted" {
+                    Button("Remove follower", role: .destructive) {
+                        Task { await store.removeSocialFollower(connection.profileID) }
+                    }
+                }
+                blockButton(connection.profileID)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityIdentifier("member-profile-\(direction.rawValue)-action-\(connection.profileID.uuidString)")
+        }
+    }
+
+    private func blockButton(_ profileID: UUID) -> some View {
+        Button("Block", role: .destructive) {
+            Task { await store.blockSocialProfile(profileID) }
+        }
     }
 }
 

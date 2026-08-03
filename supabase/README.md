@@ -76,6 +76,16 @@ profile RLS intentionally hides blocked accounts; `list_my_blocked_profiles()`
 is a narrow owner-only projection used by Manage blocked and never reveals an
 account merely because it blocked the caller.
 
+Migration `202608030059_member_profile_social_graph.sql` removes authenticated
+execution of the raw `social_accounts_are_blocked(left, right)` helper so a
+client cannot probe arbitrary account pairs. The viewer-bound helper is also
+not an exposed RPC: RLS uses
+`private.viewer_social_account_is_blocked(profile_id)` from the non-exposed
+schema, while trusted security-definer routines retain the raw helper for
+comparisons their operation actually requires. Authenticated clients can
+execute neither helper and cannot distinguish a missing target from a blocked
+one through them.
+
 `get_member_profile_overview(profile_id)` is the authoritative entry point for
 a Letterboxd-style member profile. It returns identity, independent incoming
 and outgoing requested/accepted relationship state, and exhaustive counts of
@@ -84,6 +94,31 @@ to open. The UI presents those as five separate Reviews, Ratings, Diary,
 Loved, and Lists pages rather than one unbounded profile payload. A nonexistent
 profile and either direction of a block return the same `profile unavailable`
 error, avoiding an exact-ID existence oracle.
+
+The same overview now includes viewer-relative `follower_count` and
+`following_count`. `list_member_profile_connections(profile_id, direction,
+after_display_name, after_id, limit)` backs separate Followers and Following
+pages inspired by Letterboxd's member-profile graph navigation. It accepts
+only `followers|following`, returns accepted relationships only, excludes
+pending requests, and filters out every listed identity blocked in either
+direction with the current viewer. Mutual follows appear in both directions.
+Rows order by `lower(display_name), profile_id` and use the display name plus ID
+as one paired keyset cursor. Missing and blocked owners share the neutral
+`profile unavailable` error. `request_social_follow(profile_id)` now returns
+that same error for a missing or blocked target rather than distinguishing the
+two cases.
+
+Connection rows contain minimal identity and viewer-relative outgoing/incoming
+states, allowing correct Follow, Follow back, Requested, Following,
+Accept/Decline, Remove follower, and Block actions even while browsing another
+member's graph. Successful mutations and social Realtime refresh cached
+overview totals and loaded directions; a new block immediately removes the
+identity from every cached graph page.
+
+Migration `202608030060_member_profile_overview_table_return.sql` returns the
+overview through explicit table columns rather than an extended named
+composite. The API shape is unchanged, but the explicit boundary prevents
+hosted PostgREST from attempting an invalid composite-to-UUID coercion.
 
 `rating_visibility` is independent of review and Loved-shelf visibility and
 defaults to `private`. `list_profile_ratings(profile_id, subject_kind,
@@ -231,8 +266,10 @@ Supabase Realtime. The database/RLS suite still runs when Node is unavailable.
 
 It exercises anonymous authentication, social follow/block enforcement,
 private profile defaults, authoritative member overview counts and relationship
-states, unified song/album Ratings and Loved pagination, rating distributions,
-missing/blocked privacy, optional social Realtime delivery, session
+states, accepted-only Followers/Following counts and keyset pages, pending and
+mutual-edge behavior, viewer-relative row states, unified song/album Ratings
+and Loved pagination, rating distributions, missing/blocked privacy, raw block
+and viewer-bound helper execute denial, optional social Realtime delivery, session
 creation/joining, provider-track canonicalization, member-role reads,
 Conductor-only invite-permission updates, collaborator add/remove ownership,
 queue-only playback rejection, Conductor-only reorder/playback/lifecycle

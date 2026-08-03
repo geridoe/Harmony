@@ -1184,7 +1184,9 @@ final class HarmonyTests: XCTestCase {
           "music_list_count": 6,
           "rating_count": 20,
           "average_rating": 4.25,
-          "ratings_visible": true
+          "ratings_visible": true,
+          "follower_count": 42,
+          "following_count": 17
         }
         """
 
@@ -1200,6 +1202,34 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(overview.ratingCount, 20)
         XCTAssertEqual(overview.averageRating, 4.25)
         XCTAssertTrue(overview.ratingsVisible)
+        XCTAssertEqual(overview.followerCount, 42)
+        XCTAssertEqual(overview.followingCount, 17)
+    }
+
+    func testMemberProfileConnectionDecodesViewerRelativeRelationshipState() throws {
+        let profileID = UUID()
+        let payload = """
+        {
+          "profile_id": "\(profileID.uuidString)",
+          "display_name": "Graph Listener",
+          "avatar_url": "https://example.com/graph.jpg",
+          "outgoing_follow_state": "accepted",
+          "incoming_follow_state": "requested"
+        }
+        """
+
+        let connection = try JSONDecoder().decode(
+            RemoteMemberProfileConnection.self,
+            from: Data(payload.utf8)
+        )
+
+        XCTAssertEqual(connection.id, profileID)
+        XCTAssertEqual(connection.displayName, "Graph Listener")
+        XCTAssertEqual(connection.avatarURL?.absoluteString, "https://example.com/graph.jpg")
+        XCTAssertEqual(connection.outgoingFollowState, "accepted")
+        XCTAssertEqual(connection.incomingFollowState, "requested")
+        XCTAssertEqual(MemberProfileGraphDirection.followers.title, "Followers")
+        XCTAssertEqual(MemberProfileGraphDirection.following.title, "Following")
     }
 
     func testProfileRatingDecodesCanonicalTrackAndExactProviderMapping() throws {

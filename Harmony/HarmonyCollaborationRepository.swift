@@ -325,6 +325,13 @@ private struct MyRatingDistributionParameters: Encodable {
     let p_subject_kind: String?
 }
 private struct MemberProfileOverviewParameters: Encodable { let p_profile_id: UUID }
+private struct MemberProfileConnectionsPageParameters: Encodable {
+    let p_profile_id: UUID
+    let p_direction: String
+    let p_after_display_name: String?
+    let p_after_id: UUID?
+    let p_limit: Int
+}
 private struct ProfileMusicPageParameters: Encodable {
     let p_profile_id: UUID
     let p_subject_kind: String?
@@ -991,6 +998,8 @@ struct RemoteMemberProfileOverview: Decodable, Equatable {
     let ratingCount: Int
     let averageRating: Double?
     let ratingsVisible: Bool
+    let followerCount: Int
+    let followingCount: Int
 
     enum CodingKeys: String, CodingKey {
         case profileID = "profile_id"
@@ -1008,6 +1017,34 @@ struct RemoteMemberProfileOverview: Decodable, Equatable {
         case ratingCount = "rating_count"
         case averageRating = "average_rating"
         case ratingsVisible = "ratings_visible"
+        case followerCount = "follower_count"
+        case followingCount = "following_count"
+    }
+}
+
+enum MemberProfileGraphDirection: String, CaseIterable, Identifiable {
+    case followers
+    case following
+
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+}
+
+struct RemoteMemberProfileConnection: Decodable, Identifiable, Equatable {
+    let profileID: UUID
+    let displayName: String
+    let avatarURL: URL?
+    let outgoingFollowState: String?
+    let incomingFollowState: String?
+
+    var id: UUID { profileID }
+
+    enum CodingKeys: String, CodingKey {
+        case profileID = "profile_id"
+        case displayName = "display_name"
+        case avatarURL = "avatar_url"
+        case outgoingFollowState = "outgoing_follow_state"
+        case incomingFollowState = "incoming_follow_state"
     }
 }
 
@@ -2167,6 +2204,26 @@ final class HarmonyCollaborationRepository {
             throw HarmonyRepositoryError.profileUnavailable
         }
         return overview
+    }
+
+    func memberProfileConnectionsPage(
+        profileID: UUID,
+        direction: MemberProfileGraphDirection,
+        afterDisplayName: String? = nil,
+        afterID: UUID? = nil,
+        limit: Int = 51
+    ) async throws -> [RemoteMemberProfileConnection] {
+        try await authenticate()
+        return try await client.rpc(
+            "list_member_profile_connections",
+            params: MemberProfileConnectionsPageParameters(
+                p_profile_id: profileID,
+                p_direction: direction.rawValue,
+                p_after_display_name: afterDisplayName,
+                p_after_id: afterID,
+                p_limit: limit
+            )
+        ).execute().value
     }
 
     func publicProfileRatingsPage(
