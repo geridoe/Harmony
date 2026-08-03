@@ -45,7 +45,7 @@ struct CanonicalAlbumDetailView: View {
     @State private var savedDraft: AlbumSubjectStateDraft
     @State private var saveMessage: String?
     @State private var isComposingReview = false
-    @State private var reviewRating: Double
+    @State private var reviewRating: Double?
     @State private var reviewBody = ""
     @State private var reviewIsLoved: Bool
     @State private var reviewContainsSpoilers = false
@@ -56,7 +56,7 @@ struct CanonicalAlbumDetailView: View {
         let draft = AlbumSubjectStateDraft(state: initialState)
         _draft = State(initialValue: draft)
         _savedDraft = State(initialValue: draft)
-        _reviewRating = State(initialValue: initialState?.defaultRating ?? 4)
+        _reviewRating = State(initialValue: initialState?.defaultRating)
         _reviewIsLoved = State(initialValue: initialState?.isLoved ?? false)
     }
 
@@ -267,7 +267,7 @@ struct CanonicalAlbumDetailView: View {
     private var reviewActionSection: some View {
         Section("Review") {
             Button {
-                reviewRating = draft.defaultRating ?? reviewRating
+                reviewRating = draft.defaultRating
                 reviewIsLoved = draft.isLoved
                 reviewVisibility = store.reviewsSocialVisibility
                 isComposingReview = true
@@ -276,7 +276,7 @@ struct CanonicalAlbumDetailView: View {
             }
             .disabled(reviewableAlbum == nil)
             .accessibilityIdentifier("canonical-album-write-review")
-            Text("Your review keeps its own rating and Loved snapshot. Saving it also makes that latest opinion your current album rating.")
+            Text("A review may be unrated. When included, its rating and Loved state become your latest album opinion.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -290,7 +290,10 @@ struct CanonicalAlbumDetailView: View {
                     Text(album.artist ?? "Unknown artist").foregroundStyle(.secondary)
                 }
                 Section("Rating") {
-                    RatingPicker(rating: $reviewRating)
+                    OptionalReviewRatingControl(
+                        rating: $reviewRating,
+                        accessibilityPrefix: "canonical-album-review"
+                    )
                     TextField("Write a review (optional)", text: $reviewBody, axis: .vertical)
                         .lineLimit(3...10)
                     Toggle("Loved", isOn: $reviewIsLoved)
@@ -328,7 +331,11 @@ struct CanonicalAlbumDetailView: View {
                             }
                         }
                     }
-                    .disabled(store.isPublishingMusicReview || reviewableAlbum == nil)
+                    .disabled(
+                        store.isPublishingMusicReview
+                            || reviewableAlbum == nil
+                            || (reviewRating == nil && reviewBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    )
                 }
             }
         }

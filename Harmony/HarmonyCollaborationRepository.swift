@@ -95,7 +95,7 @@ private struct CreateTrackReviewParameters: Encodable {
     let p_canonical_track_id: UUID
     let p_provider: String?
     let p_provider_subject_id: String?
-    let p_rating: Double
+    let p_rating: Double?
     let p_body: String
     let p_visibility: String
     let p_contains_spoilers: Bool
@@ -110,7 +110,7 @@ private struct CreateAlbumReviewParameters: Encodable {
     let p_subject_artist: String
     let p_subject_artwork_url: String?
     let p_subject_deep_link: String?
-    let p_rating: Double
+    let p_rating: Double?
     let p_body: String
     let p_visibility: String
     let p_contains_spoilers: Bool
@@ -125,7 +125,7 @@ private struct CreateCanonicalAlbumReviewParameters: Encodable {
     let p_subject_artist: String
     let p_subject_artwork_url: String?
     let p_subject_deep_link: String?
-    let p_rating: Double
+    let p_rating: Double?
     let p_body: String
     let p_visibility: String
     let p_contains_spoilers: Bool
@@ -150,7 +150,7 @@ private struct CommentIDParameters: Encodable { let p_comment_id: UUID }
 private struct NotificationIDParameters: Encodable { let p_notification_id: UUID? }
 private struct UpdateReviewParameters: Encodable {
     let p_review_id: UUID
-    let p_rating: Double
+    let p_rating: Double?
     let p_body: String
     let p_visibility: String
     let p_contains_spoilers: Bool
@@ -181,7 +181,7 @@ private struct CreateTrackReviewWithDiaryParameters: Encodable {
     let p_canonical_track_id: UUID
     let p_provider: String?
     let p_provider_subject_id: String?
-    let p_rating: Double
+    let p_rating: Double?
     let p_body: String
     let p_review_visibility: String
     let p_contains_spoilers: Bool
@@ -842,7 +842,7 @@ struct RemotePublicLovedTrack: Decodable, Identifiable {
 struct RemoteMusicReview: Decodable, Identifiable {
     let id: UUID
     let profileID: UUID
-    let rating: Double
+    let rating: Double?
     let body: String
     let createdAt: Date
     let visibility: SocialVisibilityOption
@@ -2248,7 +2248,7 @@ final class HarmonyCollaborationRepository {
 
     func createTrackReview(
         track: HarmonyTrack,
-        rating: Double,
+        rating: Double?,
         body: String,
         visibility: SocialVisibilityOption,
         isLoved: Bool,
@@ -2292,7 +2292,7 @@ final class HarmonyCollaborationRepository {
         }
     }
 
-    func createAlbumReview(album: ReviewableAlbum, rating: Double, body: String, visibility: SocialVisibilityOption, isLoved: Bool = false, containsSpoilers: Bool = false) async throws {
+    func createAlbumReview(album: ReviewableAlbum, rating: Double?, body: String, visibility: SocialVisibilityOption, isLoved: Bool = false, containsSpoilers: Bool = false) async throws {
         try await authenticate()
         let provider = album.provider == .spotify ? "spotify" : "apple_music"
         let legacyParameters = CreateAlbumReviewParameters(
@@ -2348,7 +2348,7 @@ final class HarmonyCollaborationRepository {
         guard deleted else { throw HarmonyRepositoryError.reviewCommentDeletionUnavailable }
     }
 
-    func updateReview(_ reviewID: UUID, rating: Double, body: String, visibility: SocialVisibilityOption, isLoved: Bool, containsSpoilers: Bool = false) async throws {
+    func updateReview(_ reviewID: UUID, rating: Double?, body: String, visibility: SocialVisibilityOption, isLoved: Bool, containsSpoilers: Bool = false) async throws {
         try await authenticate()
         _ = try await client.rpc("update_music_review", params: UpdateReviewParameters(
             p_review_id: reviewID,

@@ -404,6 +404,10 @@ func reviewCommentCanBeDeleted(
     return viewerID == commentAuthorID || viewerID == reviewOwnerID
 }
 
+func reviewContentIsValid(rating: Double?, body: String) -> Bool {
+    rating != nil || !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+}
+
 struct PaginatedShelfState<Item> {
     var items: [Item] = []
     var isRefreshing = false
@@ -3394,7 +3398,7 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     @discardableResult
-    func publishTrackReview(rating: Double, body: String, isLoved: Bool = false, containsSpoilers: Bool = false, visibility: SocialVisibilityOption? = nil) async -> Bool {
+    func publishTrackReview(rating: Double?, body: String, isLoved: Bool = false, containsSpoilers: Bool = false, visibility: SocialVisibilityOption? = nil) async -> Bool {
         guard let track = nowPlaying?.track else { return false }
         return await publishTrackReview(track, rating: rating, body: body, isLoved: isLoved, containsSpoilers: containsSpoilers, visibility: visibility)
     }
@@ -3402,7 +3406,7 @@ final class HarmonySessionStore: ObservableObject {
     @discardableResult
     func publishTrackReview(
         _ track: HarmonyTrack,
-        rating: Double,
+        rating: Double?,
         body: String,
         isLoved: Bool = false,
         containsSpoilers: Bool = false,
@@ -3410,6 +3414,10 @@ final class HarmonySessionStore: ObservableObject {
         diary: TrackReviewDiaryRequest? = nil
     ) async -> Bool {
         guard !isPublishingMusicReview else { return false }
+        guard reviewContentIsValid(rating: rating, body: body) else {
+            collaborationMessage = "Add a rating or write a review before saving."
+            return false
+        }
         let resolvedVisibility = visibility ?? reviewsSocialVisibility
         isPublishingMusicReview = true
         defer { isPublishingMusicReview = false }
@@ -3442,8 +3450,12 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     @discardableResult
-    func publishAlbumReview(_ album: ReviewableAlbum, rating: Double, body: String, isLoved: Bool = false, containsSpoilers: Bool = false, visibility: SocialVisibilityOption? = nil) async -> Bool {
+    func publishAlbumReview(_ album: ReviewableAlbum, rating: Double?, body: String, isLoved: Bool = false, containsSpoilers: Bool = false, visibility: SocialVisibilityOption? = nil) async -> Bool {
         guard !isPublishingMusicReview else { return false }
+        guard reviewContentIsValid(rating: rating, body: body) else {
+            collaborationMessage = "Add a rating or write a review before saving."
+            return false
+        }
         let resolvedVisibility = visibility ?? reviewsSocialVisibility
         isPublishingMusicReview = true
         defer { isPublishingMusicReview = false }
@@ -3535,7 +3547,11 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     @discardableResult
-    func updateReview(_ reviewID: UUID, rating: Double, body: String, visibility: SocialVisibilityOption, isLoved: Bool, containsSpoilers: Bool = false) async -> Bool {
+    func updateReview(_ reviewID: UUID, rating: Double?, body: String, visibility: SocialVisibilityOption, isLoved: Bool, containsSpoilers: Bool = false) async -> Bool {
+        guard reviewContentIsValid(rating: rating, body: body) else {
+            collaborationMessage = "Add a rating or write a review before saving."
+            return false
+        }
         let updatesTrackState = review(withID: reviewID).map {
             $0.id == reviewID && $0.subjectKind == "track" && $0.canonicalTrack?.id != nil
         } ?? false

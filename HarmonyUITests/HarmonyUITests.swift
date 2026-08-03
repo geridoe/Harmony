@@ -139,6 +139,10 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(reviewSong.waitForExistence(timeout: 5))
         reviewSong.tap()
         XCTAssertTrue(app.switches["Contains spoilers"].waitForExistence(timeout: 5))
+        let optionalReviewRating = app.switches["review-composer-rating-toggle"]
+        XCTAssertTrue(optionalReviewRating.waitForExistence(timeout: 5))
+        XCTAssertEqual(optionalReviewRating.value as? String, "0")
+        XCTAssertTrue(app.descendants(matching: .any)["review-composer-no-rating"].exists)
         XCTAssertTrue(app.staticTexts["Audience"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Only me"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Choose different music"].waitForExistence(timeout: 5))
@@ -153,6 +157,7 @@ class HarmonyUITests: XCTestCase {
         for _ in 0..<2 where !app.staticTexts["Listened on"].exists { app.swipeUp() }
         XCTAssertTrue(app.staticTexts["Listened on"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.switches["Relisten"].exists)
+        for _ in 0..<4 where !app.textFields["review-diary-tags"].exists { app.swipeUp() }
         XCTAssertTrue(app.textFields["review-diary-tags"].exists)
         app.swipeUp()
         XCTAssertTrue(app.buttons["Publish review and log listen"].exists)

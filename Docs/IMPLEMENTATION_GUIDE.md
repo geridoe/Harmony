@@ -83,8 +83,9 @@ playback/catalog interaction.
 - A review can concern a canonical track or canonical album. Album reviews keep
   their authored provider snapshot while exact provider identity resolves to a
   canonical release; only trusted server ingestion may bridge providers by
-  UPC/EAN. It supports 0.5–5.0 ratings, an independent Loved affinity signal,
-  review text, spoiler flag, visibility, editing, soft deletion, comments, and reactions.
+  UPC/EAN. It supports written-only reviews or optional 0.5–5.0 half-star
+  ratings, an independent Loved affinity signal, spoiler flag, visibility,
+  editing, soft deletion, comments, and reactions.
   A dated journal listen remains separate from the listener's current opinion,
   so repeat listens do not overwrite a rating or review.
 - Durable in-app notifications cover follow requests/acceptance, review
@@ -554,7 +555,7 @@ too close; that is not a current correctness concern.
 | `listening_history_entries` | owner-removable history; manual rows support dated diary metadata, editing, and optional review links |
 | `profile_track_subject_states` | private per-owner track state for Listened, default rating, Loved, and Want to listen |
 | `social_activity_events` | append-only typed pointers for intentional Diary/Review follower activity |
-| `music_reviews` | canonical track/album opinion with retained provider snapshot, rating, Loved signal, visibility, soft delete |
+| `music_reviews` | canonical track/album opinion with retained provider snapshot, optional rating, Loved signal, visibility, soft delete |
 | `review_comments` | comments with author deletion and review-owner moderation |
 | `review_reactions` | one reaction per viewer/review/kind |
 | `social_notifications` | recipient-owned in-app inbox and read state |

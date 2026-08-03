@@ -458,6 +458,37 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(review.subjectTitle, "Legacy Album")
     }
 
+    func testMusicReviewDecodesUnratedWrittenReview() throws {
+        let json = """
+        {
+          "id": "10000000-0000-0000-0000-000000000001",
+          "profile_id": "30000000-0000-0000-0000-000000000003",
+          "subject_kind": "album",
+          "subject_title": "Unrated Album",
+          "subject_artist": "The Artist",
+          "subject_artwork_url": null,
+          "subject_deep_link": null,
+          "rating": null,
+          "body": "The sequencing is the whole argument.",
+          "visibility": "followers",
+          "contains_spoilers": false,
+          "is_loved": false,
+          "heart_count": 0,
+          "comment_count": 0,
+          "created_at": "2026-08-03T12:00:00Z",
+          "canonical_tracks": null,
+          "profiles": {"display_name": "Listener"}
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let review = try decoder.decode(RemoteMusicReview.self, from: Data(json.utf8))
+
+        XCTAssertNil(review.rating)
+        XCTAssertEqual(review.body, "The sequencing is the whole argument.")
+    }
+
     func testReviewEngagementDecodesHeartOnlyReaderAffinity() throws {
         let json = """
         {
@@ -569,6 +600,26 @@ final class HarmonyTests: XCTestCase {
         draft.addToDiary = true
         draft.subject = .album(reviewAlbum(title: "Album only"))
         XCTAssertNil(draft.diaryRequest, "Album reviews cannot create a track Diary entry")
+    }
+
+    func testReviewDraftStartsUnratedAndCanUseReviewRatingForDiary() {
+        var draft = ReviewDraft(
+            subject: .track(reviewTrack(title: "Unrated opinion")),
+            body: "The writing stands on its own.",
+            addToDiary: true
+        )
+
+        XCTAssertNil(draft.rating)
+        XCTAssertNil(draft.diaryRequest?.rating)
+
+        draft.rating = 4.0
+        XCTAssertEqual(draft.diaryRequest?.rating, 4.0)
+    }
+
+    func testReviewContentRequiresRatingOrNonemptyWriting() {
+        XCTAssertFalse(reviewContentIsValid(rating: nil, body: "  \n "))
+        XCTAssertTrue(reviewContentIsValid(rating: 0.5, body: ""))
+        XCTAssertTrue(reviewContentIsValid(rating: nil, body: "Worth hearing in sequence."))
     }
 
     func testReviewDraftSupportsUnratedAndCustomDiarySnapshots() {
@@ -947,6 +998,22 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(
             browseMusicReviews(reviews, using: ReviewBrowseFilter(sort: .lowestRated)).map(\.id),
             [low.id, newestHigh.id, oldestHigh.id]
+        )
+    }
+
+    func testReviewBrowseKeepsUnratedWritingAfterRatedReviewsForRatingSorts() {
+        let high = musicReview(title: "High", rating: 5)
+        let low = musicReview(title: "Low", rating: 1)
+        let unrated = musicReview(title: "Unrated", body: "Words without stars", rating: nil)
+        let reviews = [unrated, high, low]
+
+        XCTAssertEqual(
+            browseMusicReviews(reviews, using: ReviewBrowseFilter(sort: .highestRated)).map(\.id),
+            [high.id, low.id, unrated.id]
+        )
+        XCTAssertEqual(
+            browseMusicReviews(reviews, using: ReviewBrowseFilter(sort: .lowestRated)).map(\.id),
+            [low.id, high.id, unrated.id]
         )
     }
 
@@ -1400,7 +1467,7 @@ final class HarmonyTests: XCTestCase {
         artist: String = "Test artist",
         album: String = "Test album",
         body: String = "Fixture review",
-        rating: Double = 4,
+        rating: Double? = 4,
         createdAt: Date = Date(timeIntervalSince1970: 1_700_000_000),
         subjectKind: String = "track",
         isLoved: Bool = false

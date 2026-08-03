@@ -72,7 +72,7 @@ listening_history_entries
 
 reviews
   profile_id, subject_kind (track | album), canonical_track_id?,
-  provider, provider_subject_id?, rating (0.5...5.0), body, visibility,
+  provider, provider_subject_id?, rating? (0.5...5.0), body, visibility,
   spoiler, created_at, updated_at
 
 comments

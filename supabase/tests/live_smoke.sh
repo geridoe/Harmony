@@ -668,6 +668,22 @@ rest_get "$collaborator_token" \
   "profile_album_subject_states?select=has_listened,default_rating,is_loved,want_to_listen&canonical_album_id=eq.$album_canonical_id" \
   "$smoke_tmp/updated-album-review-state.json"
 jq -e 'length == 1 and .[0].has_listened == true and .[0].default_rating == 3.5 and .[0].is_loved == true and .[0].want_to_listen == false' "$smoke_tmp/updated-album-review-state.json" >/dev/null
+rpc "$collaborator_token" update_music_review \
+  "{\"p_review_id\":\"$album_review_id\",\"p_rating\":null,\"p_body\":\"A written-only album review.\",\"p_visibility\":\"followers\",\"p_contains_spoilers\":false,\"p_is_loved\":true}" \
+  "$smoke_tmp/unrated-album-review.json"
+rpc "$collaborator_token" get_canonical_album_state_aggregate \
+  "{\"p_canonical_album_id\":\"$album_canonical_id\"}" \
+  "$smoke_tmp/unrated-album-review-aggregate.json"
+jq -e 'length == 1 and .[0].rating_count == 0 and .[0].average_rating == null and .[0].listened_count == 1 and .[0].loved_count == 1' \
+  "$smoke_tmp/unrated-album-review-aggregate.json" >/dev/null
+rest_get "$collaborator_token" \
+  "profile_album_subject_states?select=has_listened,default_rating,is_loved&canonical_album_id=eq.$album_canonical_id" \
+  "$smoke_tmp/unrated-album-subject-state.json"
+jq -e 'length == 1 and .[0].has_listened == true and .[0].default_rating == null and .[0].is_loved == true' \
+  "$smoke_tmp/unrated-album-subject-state.json" >/dev/null
+rpc "$collaborator_token" update_music_review \
+  "{\"p_review_id\":\"$album_review_id\",\"p_rating\":3.5,\"p_body\":\"An updated album diary entry.\",\"p_visibility\":\"followers\",\"p_contains_spoilers\":false,\"p_is_loved\":true}" \
+  "$smoke_tmp/restored-album-review.json"
 invalid_album_rating_status="$(rpc_status "$collaborator_token" set_my_album_subject_state \
   "{\"p_canonical_album_id\":\"$album_canonical_id\",\"p_has_listened\":true,\"p_default_rating\":4.2,\"p_is_loved\":false,\"p_want_to_listen\":false}" \
   "$smoke_tmp/invalid-album-rating.json")"
@@ -969,6 +985,54 @@ rest_get "$collaborator_token" \
   "listening_history_entries?select=rating&id=eq.$history_entry_id" \
   "$smoke_tmp/review-independent-diary-rating.json"
 jq -e 'length == 1 and .[0].rating == 2.5' "$smoke_tmp/review-independent-diary-rating.json" >/dev/null
+
+stage="optional review ratings"
+rpc "$collaborator_token" create_music_review \
+  "{\"p_subject_kind\":\"track\",\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_body\":\"Created without assigning stars.\",\"p_visibility\":\"private\"}" \
+  "$smoke_tmp/created-unrated-review.json"
+created_unrated_review_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/created-unrated-review.json")"
+rest_get "$collaborator_token" \
+  "music_reviews?select=id,rating,body&id=eq.$created_unrated_review_id" \
+  "$smoke_tmp/created-unrated-review-row.json"
+jq -e 'length == 1 and .[0].rating == null and .[0].body == "Created without assigning stars."' \
+  "$smoke_tmp/created-unrated-review-row.json" >/dev/null
+rpc "$collaborator_token" delete_music_review \
+  "{\"p_review_id\":\"$created_unrated_review_id\"}" \
+  "$smoke_tmp/created-unrated-review-delete.json"
+[[ "$(jq -er '.' "$smoke_tmp/created-unrated-review-delete.json")" == "true" ]]
+rpc "$collaborator_token" update_music_review \
+  "{\"p_review_id\":\"$review_id\",\"p_body\":\"Written insight without a star rating.\",\"p_visibility\":\"followers\",\"p_contains_spoilers\":false,\"p_is_loved\":false}" \
+  "$smoke_tmp/unrated-review-update.json"
+rest_get "$collaborator_token" \
+  "music_reviews?select=id,rating,body&id=eq.$review_id" \
+  "$smoke_tmp/unrated-review.json"
+jq -e 'length == 1 and .[0].rating == null and .[0].body == "Written insight without a star rating."' \
+  "$smoke_tmp/unrated-review.json" >/dev/null
+rest_get "$collaborator_token" \
+  "profile_track_subject_states?select=default_rating,is_loved,has_listened&canonical_track_id=eq.$canonical_track_id" \
+  "$smoke_tmp/unrated-review-subject-state.json"
+jq -e 'length == 1 and .[0].default_rating == null and .[0].is_loved == false and .[0].has_listened == true' \
+  "$smoke_tmp/unrated-review-subject-state.json" >/dev/null
+rpc "$collaborator_token" get_my_music_review_stats '{}' \
+  "$smoke_tmp/optional-rating-owner-stats.json"
+jq -e 'length == 1 and .[0].review_count == 2 and .[0].average_rating == 3.5' \
+  "$smoke_tmp/optional-rating-owner-stats.json" >/dev/null
+rest_get "$collaborator_token" \
+  "listening_history_entries?select=rating&id=eq.$history_entry_id" \
+  "$smoke_tmp/unrated-review-independent-diary.json"
+jq -e 'length == 1 and .[0].rating == 2.5' "$smoke_tmp/unrated-review-independent-diary.json" >/dev/null
+empty_unrated_update_status="$(rpc_status "$collaborator_token" update_music_review \
+  "{\"p_review_id\":\"$review_id\",\"p_rating\":null,\"p_body\":\"   \",\"p_visibility\":\"followers\",\"p_contains_spoilers\":false,\"p_is_loved\":false}" \
+  "$smoke_tmp/empty-unrated-review-update.json")"
+[[ "$empty_unrated_update_status" == "400" ]]
+invalid_optional_rating_status="$(rpc_status "$collaborator_token" update_music_review \
+  "{\"p_review_id\":\"$review_id\",\"p_rating\":4.2,\"p_body\":\"Invalid rating.\",\"p_visibility\":\"followers\",\"p_contains_spoilers\":false,\"p_is_loved\":false}" \
+  "$smoke_tmp/invalid-optional-review-rating.json")"
+[[ "$invalid_optional_rating_status" == "400" ]]
+# Restore the long-lived fixture for the remaining reaction and delete checks.
+rpc "$collaborator_token" update_music_review \
+  "{\"p_review_id\":\"$review_id\",\"p_rating\":5.0,\"p_body\":\"Updated Harmony smoke review.\",\"p_visibility\":\"followers\",\"p_contains_spoilers\":false,\"p_is_loved\":false}" \
+  "$smoke_tmp/restored-rated-review.json"
 # The review owner may moderate another member's comment.
 rpc "$collaborator_token" delete_review_comment \
   "{\"p_comment_id\":\"$comment_id\"}" \
@@ -1214,6 +1278,35 @@ rpc "$collaborator_token" delete_music_list_comment \
 
 stage="atomic review and optional Diary authoring"
 atomic_played_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+rpc "$collaborator_token" create_track_review_with_optional_diary \
+  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_body\":\"Atomic written-only review.\",\"p_review_visibility\":\"private\",\"p_diary_played_at\":\"$atomic_played_at\",\"p_diary_visibility\":\"private\",\"p_diary_rating\":1.5}" \
+  "$smoke_tmp/atomic-unrated-review.json"
+atomic_unrated_review_id="$(jq -er 'if type == "array" then .[0].review_id else .review_id end' "$smoke_tmp/atomic-unrated-review.json")"
+atomic_unrated_diary_id="$(jq -er 'if type == "array" then .[0].diary_entry_id else .diary_entry_id end' "$smoke_tmp/atomic-unrated-review.json")"
+rest_get "$collaborator_token" \
+  "music_reviews?select=id,rating,body&id=eq.$atomic_unrated_review_id" \
+  "$smoke_tmp/atomic-unrated-review-row.json"
+jq -e 'length == 1 and .[0].rating == null and .[0].body == "Atomic written-only review."' \
+  "$smoke_tmp/atomic-unrated-review-row.json" >/dev/null
+rest_get "$collaborator_token" \
+  "listening_history_entries?select=id,rating,review_id&id=eq.$atomic_unrated_diary_id" \
+  "$smoke_tmp/atomic-unrated-diary-row.json"
+jq -e --arg review "$atomic_unrated_review_id" \
+  'length == 1 and .[0].rating == 1.5 and .[0].review_id == $review' \
+  "$smoke_tmp/atomic-unrated-diary-row.json" >/dev/null
+empty_atomic_review_status="$(rpc_status "$collaborator_token" create_track_review_with_optional_diary \
+  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_rating\":null,\"p_body\":\"  \"}" \
+  "$smoke_tmp/atomic-empty-unrated-review.json")"
+[[ "$empty_atomic_review_status" == "400" ]]
+rpc "$collaborator_token" delete_music_review \
+  "{\"p_review_id\":\"$atomic_unrated_review_id\"}" \
+  "$smoke_tmp/atomic-unrated-review-delete.json"
+[[ "$(jq -er '.' "$smoke_tmp/atomic-unrated-review-delete.json")" == "true" ]]
+rest_get "$collaborator_token" \
+  "listening_history_entries?select=id,rating,review_id&id=eq.$atomic_unrated_diary_id" \
+  "$smoke_tmp/atomic-unrated-diary-after-review-delete.json"
+jq -e 'length == 1 and .[0].rating == 1.5 and .[0].review_id == null' \
+  "$smoke_tmp/atomic-unrated-diary-after-review-delete.json" >/dev/null
 rpc "$collaborator_token" create_track_review_with_optional_diary \
   "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_provider\":\"apple_music\",\"p_provider_subject_id\":\"harmony-cross-isrc-apple\",\"p_rating\":4.5,\"p_body\":\"One action, two independent Harmony records.\",\"p_review_visibility\":\"followers\",\"p_contains_spoilers\":false,\"p_is_loved\":true,\"p_diary_played_at\":\"$atomic_played_at\",\"p_diary_visibility\":\"private\",\"p_is_relisten\":true,\"p_tags\":[\" Road Trip \",\"road trip\",\"NIGHT\"],\"p_diary_rating\":2.0}" \
   "$smoke_tmp/atomic-review-diary.json"

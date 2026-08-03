@@ -58,7 +58,7 @@ supabase functions deploy spotify-token-exchange
 
 `publish_listening_presence(...)` writes a single user-owned, short-lived eavesdrop card. It must expire within ten minutes and is hidden by RLS unless its owner allows the viewer. `stop_listening_presence()` removes it. `record_listening_history(...)` is the user-owned history path; `record_harmony_plays` is a separate default-off consent setting, and history visibility remains independently private or follower-visible. Harmony never imports a provider’s data without an explicit user choice.
 
-`create_music_review(...)` creates a follower/private/public review of a canonical track or provider-addressed album. Owners can edit or soft-delete it through `update_music_review(...)` and `delete_music_review(...)`. Visible viewers can use `add_review_comment(...)` and `toggle_review_reaction(...)`; comment authors or the parent-review owner can soft-delete a comment through the guarded RPC. RLS reevaluates the review’s visibility and blocks before granting access.
+`create_music_review(...)` creates a follower/private/public review of a canonical track or provider-addressed album. Its rating is optional; a row must contain either a valid half-star rating or nonblank writing. Clearing a review rating intentionally clears the current subject rating, while any linked Diary rating remains an independent historical snapshot. Owners can edit or soft-delete it through `update_music_review(...)` and `delete_music_review(...)`. Visible viewers can use `add_review_comment(...)` and `toggle_review_reaction(...)`; comment authors or the parent-review owner can soft-delete a comment through the guarded RPC. RLS reevaluates the review’s visibility and blocks before granting access.
 
 Review collections read transactionally maintained `heart_count` and
 `comment_count` columns instead of embedding every child row.
@@ -71,8 +71,8 @@ and recheck parent-review visibility; comment/reaction mutations remain RPC-only
 `create_track_review_with_optional_diary(...)` is the combined track-authoring
 contract. It always creates a review and may atomically create a separately
 visible manual Diary entry linked to that review. Review and Diary ratings are
-independent snapshots; the Diary can be unrated. The review is written after
-the Diary so the review rating/Loved values become current track state, and any
+independent snapshots; either may be unrated. The review is written after
+the Diary so the optional review rating/Loved values become current track state, and any
 late review/link failure rolls the whole transaction back.
 
 Review deletion is a soft delete. `delete_music_review(...)` also clears the

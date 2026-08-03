@@ -151,7 +151,7 @@ tags, lists, or stats already exist.
 | --- | --- | --- |
 | Playing now | queue/provider playback | ephemeral; not automatically a social post |
 | Listening journal | `listening_history_entries` | dated and repeatable; manual entries may carry Relisten/tags and a historical rating, while provider imports are deduplicated |
-| Opinion | `music_reviews` | authored 0.5–5.0 rating/Loved snapshot and optional review text |
+| Opinion | `music_reviews` | independently addressable writing with an optional 0.5–5.0 half-star rating and Loved snapshot; rating-only legacy/adaptation records remain valid |
 | Track state | `profile_track_subject_states` | authoritative private current Listened, default rating, Loved, and Want to listen state |
 | Album state | `profile_album_subject_states` | authoritative private current Listened, default rating, Loved, and Want to listen state for a canonical release |
 | Review affinity snapshot | `music_reviews.is_loved` | the Loved value submitted with that review; saving a canonical track or album review also updates its current subject state |
@@ -173,8 +173,10 @@ The fifth iOS tab is a focused Reviews page with two peer shelves:
 
 The top-right **Write review** action opens the subject-first composer from
 either shelf. Review composition is modal so the selected shelf and scroll
-position survive dismissal. The rating control supports half-star steps, and
-Loved remains independent of the score. Diary, Activity, Music shelf, and
+position survive dismissal. It begins unrated; **Add a rating** reveals the
+half-star control. At least a rating or nonblank written body is required, and
+Loved remains independent of the score. Unrated reviews stay in Reviews but do
+not appear as a score in Ratings or rating distributions. Diary, Activity, Music shelf, and
 Lists are separate full-page destinations under Listen rather than sections in
 the Reviews page.
 
@@ -182,7 +184,9 @@ For a track review, **Also add to Diary** expands the same composer with date,
 Relisten, tags, Diary rating, and a separate Diary audience. This is one user
 action but remains two domain records. `create_track_review_with_optional_diary`
 creates the optional historical listen first, creates the review second so its
-rating/Loved values remain the current subject state, then links the records.
+optional rating/Loved values remain the current subject state, then links the records.
+An unrated review intentionally clears the subject's current rating while the
+Diary may independently copy no rating or retain a custom historical score.
 Any validation or persistence failure rolls back both records and their
 activity/state side effects. Album reviews do not show the Diary option because
 Harmony has not yet defined what a dated album listen means.
@@ -611,7 +615,7 @@ Creation state is represented by one `ReviewDraft` value:
 
 ```text
 subject: track(HarmonyTrack) | album(ReviewableAlbum)
-rating: Double                 // 0.5...5.0, half-star increment
+rating: Double?                // nil or 0.5...5.0, half-star increment
 body: String
 isLoved: Bool
 visibility: SocialVisibilityOption

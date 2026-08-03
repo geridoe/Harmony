@@ -941,7 +941,7 @@ enum ReviewDiaryRatingMode: String, CaseIterable, Identifiable {
 
 struct ReviewDraft: Equatable {
     var subject: ReviewDraftSubject?
-    var rating = 4.0
+    var rating: Double?
     var isLoved = false
     var containsSpoilers = false
     var body = ""
@@ -1108,13 +1108,23 @@ func browseMusicReviews(
                 if left.createdAt == right.createdAt { return left.id.uuidString > right.id.uuidString }
                 return left.createdAt > right.createdAt
             }
-            return left.rating > right.rating
+            switch (left.rating, right.rating) {
+            case (.some(let leftRating), .some(let rightRating)): return leftRating > rightRating
+            case (.some, .none): return true
+            case (.none, .some): return false
+            case (.none, .none): return false
+            }
         case .lowestRated:
             if left.rating == right.rating {
                 if left.createdAt == right.createdAt { return left.id.uuidString > right.id.uuidString }
                 return left.createdAt > right.createdAt
             }
-            return left.rating < right.rating
+            switch (left.rating, right.rating) {
+            case (.some(let leftRating), .some(let rightRating)): return leftRating < rightRating
+            case (.some, .none): return true
+            case (.none, .some): return false
+            case (.none, .none): return false
+            }
         }
     }
 }
@@ -1214,7 +1224,7 @@ struct ReviewsView: View {
     @State private var reviewBrowseFilter = ReviewBrowseFilter()
     @State private var ratingsSubjectScope = RatingsSubjectScope.all
     @State private var editingReview: RemoteMusicReview?
-    @State private var editingRating = 4.0
+    @State private var editingRating: Double?
     @State private var editingBody = ""
     @State private var editingVisibility = SocialVisibilityOption.privateOnly
     @State private var editingIsLoved = false
@@ -1295,7 +1305,10 @@ struct ReviewsView: View {
             NavigationStack {
                 Form {
                     Section("Rating") {
-                        RatingPicker(rating: $editingRating)
+                        OptionalReviewRatingControl(
+                            rating: $editingRating,
+                            accessibilityPrefix: "edit-review"
+                        )
                     }
                     Section("Review") {
                         TextField("Review text", text: $editingBody, axis: .vertical)
@@ -1330,6 +1343,7 @@ struct ReviewsView: View {
                                 if didSave { editingReview = nil }
                             }
                         }
+                        .disabled(editingRating == nil && editingBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
             }
@@ -1383,7 +1397,10 @@ struct ReviewsView: View {
                         Text(subject.kind).font(.caption).foregroundColor(.secondary)
                     }
                 }
-                RatingPicker(rating: $draft.rating)
+                OptionalReviewRatingControl(
+                    rating: $draft.rating,
+                    accessibilityPrefix: "review-composer"
+                )
                 Toggle(isOn: $draft.isLoved) {
                     Label("Loved", systemImage: draft.isLoved ? "heart.fill" : "heart")
                 }
@@ -1429,7 +1446,9 @@ struct ReviewsView: View {
                                 Text(visibility.title).tag(visibility)
                             }
                         }
-                        Text("The Diary entry keeps this rating as a historical snapshot and links back to the review.")
+                        Text(draft.resolvedDiaryRating == nil
+                            ? "The Diary entry will be unrated and link back to this review."
+                            : "The Diary entry keeps this rating as a historical snapshot and links back to the review.")
                             .font(.footnote)
                             .foregroundColor(.secondary)
                     }
@@ -1473,6 +1492,7 @@ struct ReviewsView: View {
                 }
                 .disabled(
                     store.isPublishingMusicReview
+                        || (draft.rating == nil && draft.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         || (draft.addToDiary && draft.diaryDraft.tagValidationMessage != nil)
                 )
             } else {
@@ -1678,11 +1698,13 @@ struct ReviewsView: View {
 
     private var ratingsSummary: some View {
         let stats = store.ownerReviewStats
-        let average = stats.averageRating ?? 0
+        let averageLabel = stats.averageRating.map { String(format: "%.1f", $0) } ?? "—"
         return HStack(spacing: 18) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(String(format: "%.1f", average)).font(.title2.weight(.bold))
-                Text("Average rating").font(.caption).foregroundColor(.secondary)
+                Text(averageLabel).font(.title2.weight(.bold))
+                Text(stats.averageRating == nil ? "No rated reviews" : "Average rating")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
             Divider()
             VStack(alignment: .leading, spacing: 2) {
@@ -1699,7 +1721,11 @@ struct ReviewsView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(stats.reviewCount) reviews, average rating \(String(format: "%.1f", average)) out of 5, \(stats.lovedCount) loved")
+        .accessibilityLabel(
+            stats.averageRating.map {
+                "\(stats.reviewCount) reviews, average rating \(String(format: "%.1f", $0)) out of 5, \(stats.lovedCount) loved"
+            } ?? "\(stats.reviewCount) reviews, no rated reviews, \(stats.lovedCount) loved"
+        )
         .accessibilityIdentifier("reviews-ratings-summary")
     }
 
@@ -1773,7 +1799,11 @@ private struct FollowingActivityCard: View {
                     VStack(alignment: .leading, spacing: 7) {
                         ReviewSubjectSummary(review: review)
                         HStack(spacing: 7) {
-                            Label(String(format: "%.1f", review.rating), systemImage: "star.fill")
+                            if let rating = review.rating {
+                                Label(String(format: "%.1f", rating), systemImage: "star.fill")
+                            } else {
+                                Text("No rating")
+                            }
                             if review.isLoved { Label("Loved", systemImage: "heart.fill") }
                         }
                         .font(.caption.weight(.semibold))
@@ -2785,7 +2815,7 @@ private struct DiaryEntryEditor: View {
                     Picker("Linked opinion", selection: $draft.linkedReviewID) {
                         Text("No linked opinion").tag(UUID?.none)
                         ForEach(compatibleReviews) { review in
-                            Text("\(String(format: "%.1f", review.rating)) ★ · \(review.subjectTitle ?? review.canonicalTrack?.title ?? "Song review")")
+                            Text("\(review.rating.map { String(format: "%.1f ★", $0) } ?? "No rating") · \(review.subjectTitle ?? review.canonicalTrack?.title ?? "Song review")")
                                 .tag(Optional(review.id))
                         }
                     }
@@ -2833,6 +2863,40 @@ private struct DiaryEntryEditor: View {
                     .disabled(draft.tagValidationMessage != nil || store.isSavingDiaryEntry)
                 }
             }
+        }
+    }
+}
+
+struct OptionalReviewRatingControl: View {
+    @Binding var rating: Double?
+    let accessibilityPrefix: String
+
+    private var isRating: Binding<Bool> {
+        Binding(
+            get: { rating != nil },
+            set: { enabled in rating = enabled ? (rating ?? 4.0) : nil }
+        )
+    }
+
+    private var selectedRating: Binding<Double> {
+        Binding(
+            get: { rating ?? 4.0 },
+            set: { rating = $0 }
+        )
+    }
+
+    var body: some View {
+        Toggle("Add a rating", isOn: isRating)
+            .accessibilityIdentifier("\(accessibilityPrefix)-rating-toggle")
+        if rating != nil {
+            RatingPicker(rating: selectedRating)
+                .accessibilityLabel("Review rating")
+                .accessibilityIdentifier("\(accessibilityPrefix)-rating")
+        } else {
+            Text("No rating")
+                .font(.footnote)
+                .foregroundColor(.secondary)
+                .accessibilityIdentifier("\(accessibilityPrefix)-no-rating")
         }
     }
 }
@@ -3078,8 +3142,17 @@ private struct ReviewSummary: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Text("\(review.profile.displayName) · \(String(format: "%.1f", review.rating)) ★")
+                Text(review.profile.displayName)
                     .font(.headline)
+                if let rating = review.rating {
+                    Text("\(String(format: "%.1f", rating)) ★")
+                        .font(.headline)
+                        .foregroundColor(.orange)
+                } else {
+                    Text("No rating")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
                 if review.isLoved {
                     Image(systemName: "heart.fill")
                         .foregroundColor(.pink)
@@ -3184,8 +3257,13 @@ private struct ReviewDetailView: View {
                             .font(.headline)
                     }
                     .accessibilityIdentifier("review-author-\(review.profileID.uuidString)")
-                    Text("\(String(format: "%.1f", review.rating)) ★")
-                        .foregroundColor(.orange)
+                    if let rating = review.rating {
+                        Text("\(String(format: "%.1f", rating)) ★")
+                            .foregroundColor(.orange)
+                    } else {
+                        Text("No rating")
+                            .foregroundColor(.secondary)
+                    }
                     if review.isLoved {
                         Label("Loved", systemImage: "heart.fill")
                             .font(.caption.weight(.semibold))

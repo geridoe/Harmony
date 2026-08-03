@@ -88,7 +88,7 @@ write a state on behalf of a different profile by changing request JSON.
 after rating, Loved, or deletion-marker updates. It ignores non-album,
 non-canonical, and deleted review rows. For an active canonical review it uses
 the same owner/album advisory lock as the setter, then atomically sets
-Listened=true, the review rating as `default_rating`, the review's `is_loved`,
+Listened=true, the optional review rating as `default_rating`, the review's `is_loved`,
 and Want-to-listen=false. A deletion invokes no rollback; the last established
 current state survives.
 
