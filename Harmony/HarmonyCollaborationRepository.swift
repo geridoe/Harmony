@@ -117,6 +117,7 @@ private struct UpdateSocialSettings: Encodable {
     let live_visibility: String
     let history_visibility: String
     let reviews_visibility: String
+    let shelf_visibility: String
     let record_harmony_plays: Bool
 }
 private struct RecordListeningHistoryParameters: Encodable {
@@ -152,6 +153,29 @@ private struct ListeningDiaryPageParameters: Encodable {
     let p_limit: Int
 }
 private struct TrackSubjectStatePageParameters: Encodable {
+    let p_before_updated_at: Date?
+    let p_before_canonical_track_id: UUID?
+    let p_limit: Int
+}
+private struct FollowingActivityPageParameters: Encodable {
+    let p_before_published_at: Date?
+    let p_before_id: UUID?
+    let p_limit: Int
+}
+private struct ProfileReviewsPageParameters: Encodable {
+    let p_profile_id: UUID
+    let p_before_created_at: Date?
+    let p_before_id: UUID?
+    let p_limit: Int
+}
+private struct ProfileDiaryPageParameters: Encodable {
+    let p_profile_id: UUID
+    let p_before_played_at: Date?
+    let p_before_id: UUID?
+    let p_limit: Int
+}
+private struct ProfileLovedPageParameters: Encodable {
+    let p_profile_id: UUID
     let p_before_updated_at: Date?
     let p_before_canonical_track_id: UUID?
     let p_limit: Int
@@ -211,14 +235,58 @@ struct RemoteSocialSettings: Decodable {
     let liveVisibility: SocialVisibilityOption
     let historyVisibility: SocialVisibilityOption
     let reviewsVisibility: SocialVisibilityOption
+    let shelfVisibility: SocialVisibilityOption
     let recordHarmonyPlays: Bool
     enum CodingKeys: String, CodingKey {
         case profileID = "profile_id"
         case liveVisibility = "live_visibility"
         case historyVisibility = "history_visibility"
         case reviewsVisibility = "reviews_visibility"
+        case shelfVisibility = "shelf_visibility"
         case recordHarmonyPlays = "record_harmony_plays"
     }
+}
+
+private struct RemoteSocialActivityEvent: Decodable, Identifiable {
+    let id: UUID
+    let actorID: UUID
+    let kind: String
+    let diaryEntryID: UUID?
+    let reviewID: UUID?
+    let publishedAt: Date
+    let actor: RemoteProfile
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, actor
+        case actorID = "actor_id"
+        case diaryEntryID = "diary_entry_id"
+        case reviewID = "review_id"
+        case publishedAt = "published_at"
+    }
+}
+
+enum RemoteFollowingActivityPayload {
+    case diary(RemoteListeningHistoryEntry)
+    case review(RemoteMusicReview)
+}
+
+struct RemoteFollowingActivityItem: Identifiable {
+    let id: UUID
+    let actorID: UUID
+    let publishedAt: Date
+    let actor: RemoteProfile
+    let payload: RemoteFollowingActivityPayload
+}
+
+struct RemoteFollowingActivityCursor {
+    let publishedAt: Date
+    let id: UUID
+}
+
+struct RemoteFollowingActivityPage {
+    let items: [RemoteFollowingActivityItem]
+    let cursor: RemoteFollowingActivityCursor?
+    let hasMore: Bool
 }
 
 struct RemoteSocialProfile: Decodable, Identifiable {
@@ -416,6 +484,22 @@ struct RemoteTrackSubjectState: Decodable, Identifiable {
             updatedAt: updatedAt,
             canonicalTrack: canonicalTrack ?? fallback
         )
+    }
+}
+
+struct RemotePublicLovedTrack: Decodable, Identifiable {
+    let profileID: UUID
+    let canonicalTrackID: UUID
+    let updatedAt: Date
+    let canonicalTrack: RemoteCatalogTrack?
+
+    var id: UUID { canonicalTrackID }
+
+    enum CodingKeys: String, CodingKey {
+        case profileID = "profile_id"
+        case canonicalTrackID = "canonical_track_id"
+        case updatedAt = "updated_at"
+        case canonicalTrack = "canonical_tracks"
     }
 }
 
@@ -650,7 +734,7 @@ final class HarmonyCollaborationRepository {
         try await authenticate()
         let userID = try await currentUserID()
         return try await client.from("profile_social_settings")
-            .select("profile_id,live_visibility,history_visibility,reviews_visibility,record_harmony_plays")
+            .select("profile_id,live_visibility,history_visibility,reviews_visibility,shelf_visibility,record_harmony_plays")
             .eq("profile_id", value: userID.uuidString)
             .single().execute().value
     }
@@ -663,10 +747,11 @@ final class HarmonyCollaborationRepository {
                 live_visibility: settings.liveVisibility.rawValue,
                 history_visibility: settings.historyVisibility.rawValue,
                 reviews_visibility: settings.reviewsVisibility.rawValue,
+                shelf_visibility: settings.shelfVisibility.rawValue,
                 record_harmony_plays: settings.recordHarmonyPlays
             ))
             .eq("profile_id", value: userID.uuidString)
-            .select("profile_id,live_visibility,history_visibility,reviews_visibility,record_harmony_plays")
+            .select("profile_id,live_visibility,history_visibility,reviews_visibility,shelf_visibility,record_harmony_plays")
             .single().execute().value
     }
 
@@ -806,6 +891,137 @@ final class HarmonyCollaborationRepository {
         )
         .select("profile_id,canonical_track_id,has_listened,default_rating,is_loved,want_to_listen,created_at,updated_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit)")
         .execute().value
+    }
+
+    func followingActivityPage(
+        beforePublishedAt: Date? = nil,
+        beforeID: UUID? = nil,
+        limit: Int = 50
+    ) async throws -> RemoteFollowingActivityPage {
+        try await authenticate()
+        let pageSize = min(max(limit, 1), 99)
+        let rawEvents: [RemoteSocialActivityEvent] = try await client.rpc(
+            "list_following_activity",
+            params: FollowingActivityPageParameters(
+                p_before_published_at: beforePublishedAt,
+                p_before_id: beforeID,
+                p_limit: pageSize + 1
+            )
+        )
+        .select("id,actor_id,kind,diary_entry_id,review_id,published_at,actor:profiles!social_activity_events_actor_id_fkey(display_name)")
+        .execute().value
+
+        let cursorEvents = Array(rawEvents.prefix(pageSize))
+        let reviewIDs = cursorEvents.compactMap(\.reviewID)
+        let diaryIDs = cursorEvents.compactMap(\.diaryEntryID)
+        let reviews = try await activityReviews(ids: reviewIDs)
+        let diaryEntries = try await activityDiaryEntries(ids: diaryIDs)
+        let reviewsByID = Dictionary(uniqueKeysWithValues: reviews.map { ($0.id, $0) })
+        let diaryByID = Dictionary(uniqueKeysWithValues: diaryEntries.map { ($0.id, $0) })
+        let items = cursorEvents.compactMap { event -> RemoteFollowingActivityItem? in
+            let payload: RemoteFollowingActivityPayload
+            switch event.kind {
+            case "review_published":
+                guard let id = event.reviewID, let review = reviewsByID[id] else { return nil }
+                payload = .review(review)
+            case "diary_logged":
+                guard let id = event.diaryEntryID, let entry = diaryByID[id] else { return nil }
+                payload = .diary(entry)
+            default:
+                return nil
+            }
+            return RemoteFollowingActivityItem(
+                id: event.id,
+                actorID: event.actorID,
+                publishedAt: event.publishedAt,
+                actor: event.actor,
+                payload: payload
+            )
+        }
+        let rawCursor = cursorEvents.last.map {
+            RemoteFollowingActivityCursor(publishedAt: $0.publishedAt, id: $0.id)
+        }
+        return RemoteFollowingActivityPage(
+            items: items,
+            cursor: rawCursor,
+            hasMore: rawEvents.count > pageSize
+        )
+    }
+
+    func publicProfileReviewsPage(
+        profileID: UUID,
+        beforeCreatedAt: Date? = nil,
+        beforeID: UUID? = nil,
+        limit: Int = 51
+    ) async throws -> [RemoteMusicReview] {
+        try await authenticate()
+        return try await client.rpc(
+            "list_profile_music_reviews",
+            params: ProfileReviewsPageParameters(
+                p_profile_id: profileID,
+                p_before_created_at: beforeCreatedAt,
+                p_before_id: beforeID,
+                p_limit: limit
+            )
+        )
+        .select("id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,rating,body,visibility,contains_spoilers,is_loved,created_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name),review_comments(id,author_id,body,created_at,profiles(display_name)),review_reactions(profile_id,kind)")
+        .execute().value
+    }
+
+    func publicProfileDiaryPage(
+        profileID: UUID,
+        beforePlayedAt: Date? = nil,
+        beforeID: UUID? = nil,
+        limit: Int = 51
+    ) async throws -> [RemoteListeningHistoryEntry] {
+        try await authenticate()
+        return try await client.rpc(
+            "list_profile_listening_diary",
+            params: ProfileDiaryPageParameters(
+                p_profile_id: profileID,
+                p_before_played_at: beforePlayedAt,
+                p_before_id: beforeID,
+                p_limit: limit
+            )
+        )
+        .select("id,profile_id,played_at,source,visibility,is_relisten,tags,review_id,rating,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)")
+        .execute().value
+    }
+
+    func publicProfileLovedPage(
+        profileID: UUID,
+        beforeUpdatedAt: Date? = nil,
+        beforeCanonicalTrackID: UUID? = nil,
+        limit: Int = 51
+    ) async throws -> [RemotePublicLovedTrack] {
+        try await authenticate()
+        return try await client.rpc(
+            "list_profile_loved_tracks",
+            params: ProfileLovedPageParameters(
+                p_profile_id: profileID,
+                p_before_updated_at: beforeUpdatedAt,
+                p_before_canonical_track_id: beforeCanonicalTrackID,
+                p_limit: limit
+            )
+        )
+        .select("profile_id,canonical_track_id,updated_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit)")
+        .execute().value
+    }
+
+    private func activityReviews(ids: [UUID]) async throws -> [RemoteMusicReview] {
+        guard !ids.isEmpty else { return [] }
+        return try await client.from("music_reviews")
+            .select("id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,rating,body,visibility,contains_spoilers,is_loved,created_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name),review_comments(id,author_id,body,created_at,profiles(display_name)),review_reactions(profile_id,kind)")
+            .in("id", values: ids.map(\.uuidString))
+            .execute().value
+    }
+
+    private func activityDiaryEntries(ids: [UUID]) async throws -> [RemoteListeningHistoryEntry] {
+        guard !ids.isEmpty else { return [] }
+        return try await client.from("listening_history_entries")
+            .select("id,profile_id,played_at,source,visibility,is_relisten,tags,review_id,rating,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)")
+            .in("id", values: ids.map(\.uuidString))
+            .execute().value
     }
 
     func trackSubjectState(for track: HarmonyTrack) async throws -> RemoteTrackSubjectState? {
@@ -1250,6 +1466,8 @@ final class HarmonyCollaborationRepository {
             "review_comments",
             "review_reactions",
             "social_notifications",
+            "social_activity_events",
+            "profile_social_settings",
         ]
         let tokens = tables.map { table in
             channel.onPostgresChange(AnyAction.self, schema: "public", table: table) { _ in

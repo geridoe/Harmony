@@ -26,6 +26,13 @@ struct ContentView: View {
                 .tabItem { Label("Reviews", systemImage: "text.book.closed") }
         }
         .tint(.indigo)
+        .onAppear {
+#if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--ui-test-social-activity") {
+                store.seedSocialActivityUITestFixture()
+            }
+#endif
+        }
     }
 }
 
@@ -39,7 +46,7 @@ struct SocialView: View {
     @EnvironmentObject private var store: HarmonySessionStore
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             List {
                 Section {
                     if store.socialNotifications.isEmpty {
@@ -92,19 +99,27 @@ struct SocialView: View {
                     } else {
                         ForEach(store.socialProfiles) { profile in
                             HStack(spacing: 12) {
-                                Text(initials(for: profile.displayName))
-                                    .font(.caption.bold())
-                                    .foregroundColor(.indigo)
-                                    .frame(width: 38, height: 38)
-                                    .background(Color.indigo.opacity(0.12))
-                                    .clipShape(Circle())
-                                    .accessibilityHidden(true)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(profile.displayName).font(.headline)
-                                    Text(relationshipLabel(for: profile.id))
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
+                                NavigationLink {
+                                    MemberProfileView(profileID: profile.id, displayName: profile.displayName)
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        Text(initials(for: profile.displayName))
+                                            .font(.caption.bold())
+                                            .foregroundColor(.indigo)
+                                            .frame(width: 38, height: 38)
+                                            .background(Color.indigo.opacity(0.12))
+                                            .clipShape(Circle())
+                                            .accessibilityHidden(true)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(profile.displayName).font(.headline)
+                                            Text(relationshipLabel(for: profile.id))
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        }
+                                    }
                                 }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("social-profile-link-\(profile.id.uuidString)")
                                 Spacer()
                                 followerControl(for: profile)
                             }
@@ -339,6 +354,20 @@ private enum ReviewsShelf: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum FollowingActivityPresentationKind: String, Equatable {
+    case diary
+    case review
+}
+
+func followingActivityPresentationKind(
+    for payload: RemoteFollowingActivityPayload
+) -> FollowingActivityPresentationKind {
+    switch payload {
+    case .diary: .diary
+    case .review: .review
+    }
+}
+
 enum ReviewDraftSubject: Hashable {
     case track(HarmonyTrack)
     case album(ReviewableAlbum)
@@ -570,7 +599,7 @@ struct ReviewsView: View {
                 switch shelf {
                 case .activity:
                     personalSummary
-                    communityReviews
+                    followingActivity
                 case .diary:
                     listeningJournal
                 case .reviews:
@@ -606,12 +635,14 @@ struct ReviewsView: View {
                 await store.refreshListeningHistory()
                 await store.refreshJournalEntries()
                 await store.refreshMusicReviews()
+                await store.refreshFollowingActivity()
                 await store.activateSocialRealtime()
             }
             .refreshable {
                 await store.refreshListeningHistory()
                 await store.refreshJournalEntries()
                 await store.refreshMusicReviews()
+                await store.refreshFollowingActivity()
             }
         }
         .sheet(item: $editingReview) { review in
@@ -798,14 +829,30 @@ struct ReviewsView: View {
         }
     }
 
-    private var communityReviews: some View {
+    private var followingActivity: some View {
         Section("Following activity") {
-            if store.isRefreshingMusicReviews && store.musicReviews.isEmpty {
-                ProgressView("Loading reviews…")
-            } else if store.musicReviews.isEmpty {
-                Text("No follower-visible reviews yet.").foregroundColor(.secondary)
+            if store.isRefreshingFollowingActivity && store.followingActivity.isEmpty {
+                ProgressView("Loading activity…")
+            } else if store.followingActivity.isEmpty {
+                Text("No follower-visible diary or review activity yet.")
+                    .foregroundColor(.secondary)
             } else {
-                ForEach(store.musicReviews) { review in reviewCard(review) }
+                ForEach(store.followingActivity) { item in
+                    FollowingActivityCard(item: item)
+                }
+                if store.hasMoreFollowingActivity {
+                    Button {
+                        Task { await store.loadMoreFollowingActivity() }
+                    } label: {
+                        if store.isLoadingMoreFollowingActivity {
+                            ProgressView("Loading more activity…")
+                        } else {
+                            Label("Load more activity", systemImage: "arrow.down.circle")
+                        }
+                    }
+                    .disabled(store.isLoadingMoreFollowingActivity)
+                    .accessibilityIdentifier("following-activity-load-more")
+                }
             }
         }
     }
@@ -1006,6 +1053,298 @@ struct ReviewsView: View {
             editingIsLoved = selected.isLoved
             editingContainsSpoilers = selected.containsSpoilers
         }
+    }
+}
+
+private struct FollowingActivityCard: View {
+    @EnvironmentObject private var store: HarmonySessionStore
+    let item: RemoteFollowingActivityItem
+
+    private var kindIdentifier: String {
+        followingActivityPresentationKind(for: item.payload).rawValue
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            NavigationLink {
+                MemberProfileView(profileID: item.actorID, displayName: item.actor.displayName)
+            } label: {
+                HStack(spacing: 9) {
+                    ProfileInitials(displayName: item.actor.displayName, size: 34)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(item.actor.displayName).font(.subheadline.weight(.semibold))
+                        Text(item.publishedAt, style: .relative)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("activity-actor-\(item.actorID.uuidString)")
+
+            switch item.payload {
+            case .review(let review):
+                NavigationLink {
+                    ReviewDetailView(reviewID: review.id, fallbackReview: review) { _ in }
+                } label: {
+                    VStack(alignment: .leading, spacing: 7) {
+                        ReviewSubjectSummary(review: review)
+                        HStack(spacing: 7) {
+                            Label(String(format: "%.1f", review.rating), systemImage: "star.fill")
+                            if review.isLoved { Label("Loved", systemImage: "heart.fill") }
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.indigo)
+                        if review.containsSpoilers {
+                            Label("Review contains spoilers", systemImage: "eye.slash")
+                                .font(.footnote)
+                                .foregroundColor(.secondary)
+                        } else if !review.body.isEmpty {
+                            Text(review.body).font(.footnote).lineLimit(3)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+            case .diary(let entry):
+                ActivityDiarySummary(entry: entry)
+            }
+
+            Label("Shared with followers", systemImage: "person.2.fill")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .accessibilityIdentifier("activity-privacy-\(item.id.uuidString)")
+        }
+        .accessibilityIdentifier("following-activity-card-\(kindIdentifier)-\(item.id.uuidString)")
+    }
+}
+
+private struct ActivityDiarySummary: View {
+    let entry: RemoteListeningHistoryEntry
+
+    var body: some View {
+        HStack(spacing: 12) {
+            if let track = entry.canonicalTrack {
+                TrackArtwork(track: track.harmonyTrack, size: 48, cornerRadius: 9)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(entry.canonicalTrack?.title ?? "Unavailable track").font(.headline)
+                if let artist = entry.canonicalTrack?.artist {
+                    Text(artist).font(.subheadline).foregroundColor(.secondary)
+                }
+                HStack(spacing: 7) {
+                    Label(entry.isRelisten ? "Listened again" : "Logged a listen", systemImage: entry.isRelisten ? "arrow.clockwise" : "calendar")
+                    if let rating = entry.rating {
+                        Label(String(format: "%.1f", rating), systemImage: "star.fill")
+                            .accessibilityLabel(Text("Rated \(rating, specifier: "%.1f") out of 5"))
+                    }
+                }
+                .font(.caption)
+                .foregroundColor(.indigo)
+                if !entry.tags.isEmpty {
+                    Text(entry.tags.prefix(3).map { "#\($0)" }.joined(separator: "  "))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+    }
+}
+
+private enum MemberProfileShelf: String, CaseIterable, Identifiable {
+    case reviews = "Reviews"
+    case diary = "Diary"
+    case loved = "Loved"
+    var id: String { rawValue }
+}
+
+struct MemberProfileView: View {
+    @EnvironmentObject private var store: HarmonySessionStore
+    let profileID: UUID
+    let displayName: String
+    @State private var shelf = MemberProfileShelf.reviews
+
+    private var shelfState: PublicProfileShelfState? { store.publicProfileShelves[profileID] }
+
+    var body: some View {
+        List {
+            Section {
+                HStack(spacing: 14) {
+                    ProfileInitials(displayName: displayName, size: 54)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(displayName).font(.title3.weight(.semibold))
+                        Text(relationshipDescription)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                Label("Only content this listener shares with approved followers appears here.", systemImage: "person.2.fill")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                    .accessibilityIdentifier("member-profile-privacy")
+            }
+
+            Section {
+                Picker("Profile shelf", selection: $shelf) {
+                    ForEach(MemberProfileShelf.allCases) { option in
+                        Text(option.rawValue).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("member-profile-shelf-picker")
+            }
+
+            switch shelf {
+            case .reviews: reviewsShelf
+            case .diary: diaryShelf
+            case .loved: lovedShelf
+            }
+        }
+        .navigationTitle(displayName)
+        .navigationBarTitleDisplayMode(.inline)
+        .accessibilityIdentifier("member-profile-page-\(profileID.uuidString)")
+        .task(id: shelf) { await refreshSelectedShelf() }
+        .refreshable { await refreshSelectedShelf() }
+    }
+
+    @ViewBuilder
+    private var reviewsShelf: some View {
+        let state = shelfState?.reviews
+        Section("Reviews") {
+            if state?.isRefreshing == true && state?.items.isEmpty != false {
+                ProgressView("Loading reviews…")
+            } else if state?.items.isEmpty != false {
+                Text("No follower-visible reviews.").foregroundColor(.secondary)
+            } else {
+                ForEach(state?.items ?? []) { review in
+                    ReviewCard(review: review) { _ in }
+                        .accessibilityIdentifier("member-profile-review-\(review.id.uuidString)")
+                }
+                profileLoadMore(
+                    title: "Load more reviews",
+                    isLoading: state?.isLoadingMore == true,
+                    hasMore: state?.hasMore == true
+                ) { await store.loadMorePublicProfileReviews(for: profileID) }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var diaryShelf: some View {
+        let state = shelfState?.diary
+        Section("Diary") {
+            if state?.isRefreshing == true && state?.items.isEmpty != false {
+                ProgressView("Loading diary…")
+            } else if state?.items.isEmpty != false {
+                Text("No follower-visible diary entries.").foregroundColor(.secondary)
+            } else {
+                ForEach(state?.items ?? []) { entry in
+                    VStack(alignment: .leading, spacing: 6) {
+                        ActivityDiarySummary(entry: entry)
+                        Text(entry.playedAt, format: .dateTime.month().day().year())
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    .accessibilityIdentifier("member-profile-diary-\(entry.id.uuidString)")
+                }
+                profileLoadMore(
+                    title: "Load more diary entries",
+                    isLoading: state?.isLoadingMore == true,
+                    hasMore: state?.hasMore == true
+                ) { await store.loadMorePublicProfileDiary(for: profileID) }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var lovedShelf: some View {
+        let state = shelfState?.loved
+        Section("Loved") {
+            if state?.isRefreshing == true && state?.items.isEmpty != false {
+                ProgressView("Loading loved tracks…")
+            } else if state?.items.isEmpty != false {
+                Text("This listener has no follower-visible Loved tracks.").foregroundColor(.secondary)
+            } else {
+                ForEach(state?.items ?? []) { loved in
+                    HStack(spacing: 12) {
+                        if let track = loved.canonicalTrack {
+                            TrackArtwork(track: track.harmonyTrack, size: 44, cornerRadius: 8)
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(loved.canonicalTrack?.title ?? "Unavailable track").font(.headline)
+                            Text(loved.canonicalTrack?.artist ?? "Unknown artist")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "heart.fill")
+                            .foregroundColor(.pink)
+                            .accessibilityLabel("Loved")
+                    }
+                    .accessibilityIdentifier("member-profile-loved-\(loved.canonicalTrackID.uuidString)")
+                }
+                profileLoadMore(
+                    title: "Load more loved tracks",
+                    isLoading: state?.isLoadingMore == true,
+                    hasMore: state?.hasMore == true
+                ) { await store.loadMorePublicProfileLoved(for: profileID) }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func profileLoadMore(
+        title: String,
+        isLoading: Bool,
+        hasMore: Bool,
+        action: @escaping () async -> Void
+    ) -> some View {
+        if hasMore {
+            Button {
+                Task { await action() }
+            } label: {
+                if isLoading { ProgressView() } else { Text(title) }
+            }
+            .disabled(isLoading)
+        }
+    }
+
+    private func refreshSelectedShelf() async {
+        switch shelf {
+        case .reviews: await store.refreshPublicProfileReviews(for: profileID)
+        case .diary: await store.refreshPublicProfileDiary(for: profileID)
+        case .loved: await store.refreshPublicProfileLoved(for: profileID)
+        }
+    }
+
+    private var relationshipDescription: String {
+        switch store.socialRelationship(with: profileID) {
+        case .none: "Discoverable profile"
+        case .outgoingRequested: "Follow request pending"
+        case .incomingRequested: "Wants to follow you"
+        case .following: "You follow this listener"
+        case .followsYou: "Follows you"
+        case .mutual: "You follow each other"
+        case .blocked: "Blocked"
+        }
+    }
+}
+
+private struct ProfileInitials: View {
+    let displayName: String
+    let size: CGFloat
+
+    private var initials: String {
+        displayName.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined().uppercased()
+    }
+
+    var body: some View {
+        Text(initials)
+            .font(.caption.bold())
+            .foregroundColor(.indigo)
+            .frame(width: size, height: size)
+            .background(Color.indigo.opacity(0.12))
+            .clipShape(Circle())
+            .accessibilityHidden(true)
     }
 }
 

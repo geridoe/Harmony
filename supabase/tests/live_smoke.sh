@@ -149,9 +149,9 @@ jq -e '.error == "spotify_not_connected"' "$smoke_tmp/spotify-presence.json" >/d
 
 stage="private profile defaults and account settings"
 rest_get "$conductor_token" \
-  "profile_social_settings?select=profile_id,live_visibility,history_visibility,reviews_visibility,record_harmony_plays&profile_id=eq.$conductor_id" \
+  "profile_social_settings?select=profile_id,live_visibility,history_visibility,reviews_visibility,shelf_visibility,record_harmony_plays&profile_id=eq.$conductor_id" \
   "$smoke_tmp/private-settings.json"
-jq -e 'length == 1 and .[0].live_visibility == "private" and .[0].history_visibility == "private" and .[0].reviews_visibility == "private" and .[0].record_harmony_plays == false' "$smoke_tmp/private-settings.json" >/dev/null
+jq -e 'length == 1 and .[0].live_visibility == "private" and .[0].history_visibility == "private" and .[0].reviews_visibility == "private" and .[0].shelf_visibility == "private" and .[0].record_harmony_plays == false' "$smoke_tmp/private-settings.json" >/dev/null
 rest_patch "$conductor_token" \
   "profiles?id=eq.$conductor_id" \
   '{"display_name":"Harmony Smoke Conductor"}' \
@@ -159,9 +159,9 @@ rest_patch "$conductor_token" \
 jq -e 'length == 1 and .[0].display_name == "Harmony Smoke Conductor"' "$smoke_tmp/profile-update.json" >/dev/null
 rest_patch "$conductor_token" \
   "profile_social_settings?profile_id=eq.$conductor_id" \
-  '{"live_visibility":"followers","history_visibility":"private","reviews_visibility":"followers","record_harmony_plays":true}' \
+  '{"live_visibility":"followers","history_visibility":"private","reviews_visibility":"followers","shelf_visibility":"followers","record_harmony_plays":true}' \
   "$smoke_tmp/settings-update.json"
-jq -e 'length == 1 and .[0].live_visibility == "followers" and .[0].history_visibility == "private" and .[0].reviews_visibility == "followers" and .[0].record_harmony_plays == true' "$smoke_tmp/settings-update.json" >/dev/null
+jq -e 'length == 1 and .[0].live_visibility == "followers" and .[0].history_visibility == "private" and .[0].reviews_visibility == "followers" and .[0].shelf_visibility == "followers" and .[0].record_harmony_plays == true' "$smoke_tmp/settings-update.json" >/dev/null
 
 stage="social follow enforcement"
 rpc "$conductor_token" request_social_follow \
@@ -255,6 +255,18 @@ rest_get "$conductor_token" \
   "listening_history_entries?select=id,profile_id,played_at,source,visibility,rating,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)&id=eq.$history_entry_id" \
   "$smoke_tmp/history-detail.json"
 jq -e 'length == 1 and .[0].rating == 4.0 and .[0].canonical_tracks.title == "Harmony Smoke Track" and (.[] | .profiles.display_name | length) > 0' "$smoke_tmp/history-detail.json" >/dev/null
+rest_get "$conductor_token" \
+  "social_activity_events?select=id,kind,actor_id,diary_entry_id,review_id&diary_entry_id=eq.$history_entry_id" \
+  "$smoke_tmp/manual-diary-activity.json"
+jq -e --arg actor "$collaborator_id" --arg entry "$history_entry_id" 'length == 1 and .[0].kind == "diary_logged" and .[0].actor_id == $actor and .[0].diary_entry_id == $entry and .[0].review_id == null' "$smoke_tmp/manual-diary-activity.json" >/dev/null
+rpc "$collaborator_token" record_listening_history \
+  "{\"p_canonical_track_id\":\"$canonical_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-smoke-apple-track\",\"p_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_source\":\"harmony_room\",\"p_visibility\":\"followers\"}" \
+  "$smoke_tmp/harmony-room-history.json"
+harmony_room_history_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/harmony-room-history.json")"
+rest_get "$conductor_token" \
+  "social_activity_events?select=id&diary_entry_id=eq.$harmony_room_history_id" \
+  "$smoke_tmp/harmony-room-activity.json"
+[[ "$(jq 'length' "$smoke_tmp/harmony-room-activity.json")" -eq 0 ]]
 
 stage="independent track subject state and diary rating"
 rest_get "$collaborator_token" \
@@ -337,6 +349,40 @@ rest_get "$conductor_token" \
   "$smoke_tmp/follower-review.json"
 jq -e --arg profile "$collaborator_id" 'length == 1 and .[0].profile_id == $profile and .[0].subject_kind == "track" and .[0].subject_title == "Harmony Smoke Track" and .[0].rating == 4.5 and .[0].contains_spoilers == true and .[0].is_loved == true' "$smoke_tmp/follower-review.json" >/dev/null
 
+stage="following activity keyset and current visibility"
+rpc "$conductor_token" list_following_activity \
+  '{"p_before_published_at":null,"p_before_id":null,"p_limit":1}' \
+  "$smoke_tmp/activity-first-page.json"
+activity_first_id="$(jq -er '.[0].id' "$smoke_tmp/activity-first-page.json")"
+activity_first_published_at="$(jq -er '.[0].published_at' "$smoke_tmp/activity-first-page.json")"
+jq -e --arg review "$review_id" 'length == 1 and .[0].kind == "review_published" and .[0].review_id == $review' "$smoke_tmp/activity-first-page.json" >/dev/null
+rpc "$conductor_token" list_following_activity \
+  "{\"p_before_published_at\":\"$activity_first_published_at\",\"p_before_id\":\"$activity_first_id\",\"p_limit\":10}" \
+  "$smoke_tmp/activity-second-page.json"
+jq -e --arg entry "$history_entry_id" 'length == 1 and .[0].kind == "diary_logged" and .[0].diary_entry_id == $entry' "$smoke_tmp/activity-second-page.json" >/dev/null
+rpc "$collaborator_token" list_following_activity \
+  '{"p_before_published_at":null,"p_before_id":null,"p_limit":10}' \
+  "$smoke_tmp/own-activity-page.json"
+jq -e 'length == 2' "$smoke_tmp/own-activity-page.json" >/dev/null
+partial_activity_cursor_status="$(rpc_status "$conductor_token" list_following_activity \
+  "{\"p_before_published_at\":\"$activity_first_published_at\",\"p_before_id\":null,\"p_limit\":50}" \
+  "$smoke_tmp/partial-activity-cursor.json")"
+[[ "$partial_activity_cursor_status" == "400" ]]
+rpc "$collaborator_token" update_music_review \
+  "{\"p_review_id\":\"$review_id\",\"p_rating\":4.5,\"p_body\":\"A great Harmony smoke review.\",\"p_visibility\":\"private\",\"p_contains_spoilers\":true,\"p_is_loved\":true}" \
+  "$smoke_tmp/private-review.json"
+rest_get "$conductor_token" \
+  "social_activity_events?select=id&review_id=eq.$review_id" \
+  "$smoke_tmp/private-review-activity.json"
+[[ "$(jq 'length' "$smoke_tmp/private-review-activity.json")" -eq 0 ]]
+rpc "$collaborator_token" update_music_review \
+  "{\"p_review_id\":\"$review_id\",\"p_rating\":4.5,\"p_body\":\"A great Harmony smoke review.\",\"p_visibility\":\"followers\",\"p_contains_spoilers\":true,\"p_is_loved\":true}" \
+  "$smoke_tmp/republished-review.json"
+rest_get "$conductor_token" \
+  "social_activity_events?select=id&review_id=eq.$review_id" \
+  "$smoke_tmp/republished-review-activity.json"
+jq -e --arg event "$activity_first_id" 'length == 1 and .[0].id == $event' "$smoke_tmp/republished-review-activity.json" >/dev/null
+
 stage="owner diary editing and review linkage"
 unauthorized_diary_update_status="$(rpc_status "$conductor_token" update_listening_diary_entry \
   "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_visibility\":\"private\",\"p_is_relisten\":false,\"p_tags\":[],\"p_review_id\":null}" \
@@ -403,6 +449,28 @@ oversized_track_state_page_status="$(rpc_status "$collaborator_token" list_my_tr
   '{"p_before_updated_at":null,"p_before_canonical_track_id":null,"p_limit":101}' \
   "$smoke_tmp/oversized-track-state-page.json")"
 [[ "$oversized_track_state_page_status" == "400" ]]
+stage="first follower publication is idempotent"
+rpc "$collaborator_token" update_listening_diary_entry \
+  "{\"p_entry_id\":\"$tied_history_entry_id\",\"p_played_at\":\"$history_played_at\",\"p_visibility\":\"followers\",\"p_is_relisten\":true,\"p_tags\":[\"same-time\"],\"p_review_id\":null}" \
+  "$smoke_tmp/published-tied-diary.json"
+rest_get "$conductor_token" \
+  "social_activity_events?select=id&diary_entry_id=eq.$tied_history_entry_id" \
+  "$smoke_tmp/published-tied-diary-activity.json"
+tied_activity_id="$(jq -er '.[0].id' "$smoke_tmp/published-tied-diary-activity.json")"
+rpc "$collaborator_token" update_listening_diary_entry \
+  "{\"p_entry_id\":\"$tied_history_entry_id\",\"p_played_at\":\"$history_played_at\",\"p_visibility\":\"private\",\"p_is_relisten\":true,\"p_tags\":[\"same-time\"],\"p_review_id\":null}" \
+  "$smoke_tmp/private-tied-diary.json"
+rest_get "$conductor_token" \
+  "social_activity_events?select=id&diary_entry_id=eq.$tied_history_entry_id" \
+  "$smoke_tmp/private-tied-diary-activity.json"
+[[ "$(jq 'length' "$smoke_tmp/private-tied-diary-activity.json")" -eq 0 ]]
+rpc "$collaborator_token" update_listening_diary_entry \
+  "{\"p_entry_id\":\"$tied_history_entry_id\",\"p_played_at\":\"$history_played_at\",\"p_visibility\":\"followers\",\"p_is_relisten\":true,\"p_tags\":[\"same-time\"],\"p_review_id\":null}" \
+  "$smoke_tmp/republished-tied-diary.json"
+rest_get "$conductor_token" \
+  "social_activity_events?select=id&diary_entry_id=eq.$tied_history_entry_id" \
+  "$smoke_tmp/republished-tied-diary-activity.json"
+jq -e --arg event "$tied_activity_id" 'length == 1 and .[0].id == $event' "$smoke_tmp/republished-tied-diary-activity.json" >/dev/null
 stage="owner diary editing and review linkage"
 invalid_album_link_status="$(rpc_status "$collaborator_token" create_music_review \
   '{"p_subject_kind":"album","p_provider":"spotify","p_provider_subject_id":"spotify:album:invalid","p_subject_title":"Invalid Link Album","p_subject_deep_link":"https://example.com/not-spotify","p_rating":3.0}' \
@@ -420,6 +488,52 @@ album_diary_link_status="$(rpc_status "$collaborator_token" update_listening_dia
   "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_visibility\":\"followers\",\"p_is_relisten\":true,\"p_tags\":[\"atomic\",\"night\"],\"p_review_id\":\"$album_review_id\",\"p_rating\":2.5}" \
   "$smoke_tmp/album-diary-link.json")"
 [[ "$album_diary_link_status" == "400" ]]
+
+stage="visible profile shelves keyset and privacy"
+rpc "$collaborator_token" set_my_track_subject_state \
+  "{\"p_canonical_track_id\":\"$spotify_url_track_id\",\"p_has_listened\":false,\"p_default_rating\":null,\"p_is_loved\":true,\"p_want_to_listen\":true}" \
+  "$smoke_tmp/loved-want-to-listen-state.json"
+rpc "$conductor_token" list_profile_loved_tracks \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_before_updated_at\":null,\"p_before_canonical_track_id\":null,\"p_limit\":50}" \
+  "$smoke_tmp/private-loved-shelf.json"
+[[ "$(jq 'length' "$smoke_tmp/private-loved-shelf.json")" -eq 0 ]]
+rpc "$collaborator_token" list_profile_loved_tracks \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_before_updated_at\":null,\"p_before_canonical_track_id\":null,\"p_limit\":50}" \
+  "$smoke_tmp/owner-loved-shelf.json"
+jq -e 'length == 2' "$smoke_tmp/owner-loved-shelf.json" >/dev/null
+rest_patch "$collaborator_token" \
+  "profile_social_settings?profile_id=eq.$collaborator_id" \
+  '{"shelf_visibility":"followers"}' \
+  "$smoke_tmp/follower-visible-shelf-setting.json"
+jq -e 'length == 1 and .[0].shelf_visibility == "followers"' "$smoke_tmp/follower-visible-shelf-setting.json" >/dev/null
+rpc "$conductor_token" list_profile_loved_tracks \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_before_updated_at\":null,\"p_before_canonical_track_id\":null,\"p_limit\":1}" \
+  "$smoke_tmp/loved-shelf-first-page.json"
+loved_first_track_id="$(jq -er '.[0].canonical_track_id' "$smoke_tmp/loved-shelf-first-page.json")"
+loved_first_updated_at="$(jq -er '.[0].updated_at' "$smoke_tmp/loved-shelf-first-page.json")"
+rpc "$conductor_token" list_profile_loved_tracks \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_before_updated_at\":\"$loved_first_updated_at\",\"p_before_canonical_track_id\":\"$loved_first_track_id\",\"p_limit\":10}" \
+  "$smoke_tmp/loved-shelf-second-page.json"
+jq -e --arg first "$loved_first_track_id" 'length == 1 and .[0].canonical_track_id != $first' "$smoke_tmp/loved-shelf-second-page.json" >/dev/null
+rpc "$conductor_token" list_profile_listening_diary \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_before_played_at\":null,\"p_before_id\":null,\"p_limit\":1}" \
+  "$smoke_tmp/profile-diary-first-page.json"
+profile_diary_first_id="$(jq -er '.[0].id' "$smoke_tmp/profile-diary-first-page.json")"
+profile_diary_first_played_at="$(jq -er '.[0].played_at' "$smoke_tmp/profile-diary-first-page.json")"
+rpc "$conductor_token" list_profile_listening_diary \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_before_played_at\":\"$profile_diary_first_played_at\",\"p_before_id\":\"$profile_diary_first_id\",\"p_limit\":10}" \
+  "$smoke_tmp/profile-diary-second-page.json"
+jq -e --arg first "$profile_diary_first_id" 'length == 1 and .[0].id != $first and .[0].source == "manual"' "$smoke_tmp/profile-diary-second-page.json" >/dev/null
+rpc "$conductor_token" list_profile_music_reviews \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_before_created_at\":null,\"p_before_id\":null,\"p_limit\":1}" \
+  "$smoke_tmp/profile-review-first-page.json"
+profile_review_first_id="$(jq -er '.[0].id' "$smoke_tmp/profile-review-first-page.json")"
+profile_review_first_created_at="$(jq -er '.[0].created_at' "$smoke_tmp/profile-review-first-page.json")"
+[[ "$profile_review_first_id" == "$album_review_id" ]]
+rpc "$conductor_token" list_profile_music_reviews \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_before_created_at\":\"$profile_review_first_created_at\",\"p_before_id\":\"$profile_review_first_id\",\"p_limit\":10}" \
+  "$smoke_tmp/profile-review-second-page.json"
+jq -e --arg review "$review_id" 'length == 1 and .[0].id == $review' "$smoke_tmp/profile-review-second-page.json" >/dev/null
 rpc "$conductor_token" add_review_comment \
   "{\"p_review_id\":\"$review_id\",\"p_body\":\"Agreed.\"}" \
   "$smoke_tmp/review-comment.json"
@@ -484,6 +598,22 @@ rest_get "$conductor_token" \
   "music_reviews?select=id&id=eq.$album_review_id" \
   "$smoke_tmp/blocked-album-review.json"
 [[ "$(jq 'length' "$smoke_tmp/blocked-album-review.json")" -eq 0 ]]
+rpc "$conductor_token" list_following_activity \
+  '{"p_before_published_at":null,"p_before_id":null,"p_limit":50}' \
+  "$smoke_tmp/blocked-activity-page.json"
+[[ "$(jq 'length' "$smoke_tmp/blocked-activity-page.json")" -eq 0 ]]
+rpc "$conductor_token" list_profile_listening_diary \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_before_played_at\":null,\"p_before_id\":null,\"p_limit\":50}" \
+  "$smoke_tmp/blocked-profile-diary.json"
+[[ "$(jq 'length' "$smoke_tmp/blocked-profile-diary.json")" -eq 0 ]]
+rpc "$conductor_token" list_profile_music_reviews \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_before_created_at\":null,\"p_before_id\":null,\"p_limit\":50}" \
+  "$smoke_tmp/blocked-profile-reviews.json"
+[[ "$(jq 'length' "$smoke_tmp/blocked-profile-reviews.json")" -eq 0 ]]
+rpc "$conductor_token" list_profile_loved_tracks \
+  "{\"p_profile_id\":\"$collaborator_id\",\"p_before_updated_at\":null,\"p_before_canonical_track_id\":null,\"p_limit\":50}" \
+  "$smoke_tmp/blocked-profile-loved.json"
+[[ "$(jq 'length' "$smoke_tmp/blocked-profile-loved.json")" -eq 0 ]]
 rest_get "$collaborator_token" \
   "social_notifications?select=id&actor_id=eq.$conductor_id" \
   "$smoke_tmp/blocked-notifications.json"

@@ -1,6 +1,6 @@
 # Harmony implementation guide
 
-**Last verified against the repository:** 2 August 2026. This guide describes
+**Last verified against the repository:** 3 August 2026. This guide describes
 the implementation that is in source control, rather than the older MVP plan.
 It is intended to answer two questions: *what does Harmony do?* and *where is
 each decision enforced?*
@@ -84,6 +84,10 @@ playback/catalog interaction.
 - Durable in-app notifications cover follow requests/acceptance, review
   comments, and reactions. Their data is the future source for APNs delivery;
   APNs is not yet enabled.
+- Reviews is also the home of the durable following Activity feed and member
+  profiles. Intentional manual Diary logs and first-published Reviews appear as
+  typed events; each member profile has independently paginated Reviews,
+  Diary, and opt-in Loved shelves.
 
 ## 3. iOS implementation
 
@@ -422,6 +426,35 @@ Migration `202608030030_paginated_track_subject_states.sql` deploys
 validation, a 1–100 limit, and a matching owner-first index. Hosted smoke covers
 owner isolation, continuation, partial-cursor rejection, and limit validation.
 
+### Implemented: typed following Activity and member shelves
+
+Reviews → Activity is now a durable following feed rather than a snapshot of
+the current review query. `social_activity_events` records only the first
+follower-visible publication of a Review or an intentional manual Diary log.
+Provider imports, Harmony-room history, historical rows, edits, ratings, and
+Loved/Want-to-listen state changes do not emit. The referenced Review or Diary
+row remains authoritative, so its current visibility, soft deletion, accepted
+follow relationship, and either-direction blocks are enforced at read time.
+
+The repository pages raw event cursors, then batch-hydrates typed payloads in
+at most one Review and one Diary query. It advances with the raw cursor even
+if an object becomes invisible between those reads, preventing a raced delete
+from trapping pagination. Swift presents distinct cards and routes actor
+identity into `MemberProfileView`.
+
+Member profiles expose independently paginated **Reviews**, **Diary**, and
+**Loved** shelves. Their state is keyed by member ID and does not reuse the
+owner's editable review, diary, or subject-state caches. Review and Diary
+audiences remain per object. Loved is an aggregate shelf with a separate
+Only me/Followers setting in Connections; it defaults to private.
+
+Migration `202608030031_social_activity_and_profile_shelves.sql` adds the
+append-only event table, first-publication triggers, `shelf_visibility`,
+Realtime publication, and the feed/profile RPCs. Pages use paired keyset
+cursors and accept 1–100 rows. Hosted smoke covers idempotent republishing,
+non-emitting imports, visibility changes, blocks, object deletion, follower
+isolation, cursor ties, and Loved shelf opt-in.
+
 ## 4. Supabase data model
 
 ### Collaboration tables
@@ -446,12 +479,13 @@ too close; that is not a current correctness concern.
 
 | Table | Role |
 | --- | --- |
-| `profile_social_settings` | per-owner live/history/review visibility plus consent |
+| `profile_social_settings` | per-owner live/history/review/Loved-shelf visibility plus consent |
 | `social_follows` | request/accepted follower edges |
 | `profile_blocks` | directional blocks; visibility helper treats either direction as blocked |
 | `listening_presence` | one expiring now-listening record per profile |
 | `listening_history_entries` | owner-removable history; manual rows support dated diary metadata, editing, and optional review links |
 | `profile_track_subject_states` | private per-owner track state for Listened, default rating, Loved, and Want to listen |
+| `social_activity_events` | append-only typed pointers for intentional Diary/Review follower activity |
 | `music_reviews` | track or provider-album opinion, rating, Loved signal, visibility, soft delete |
 | `review_comments` | comments with author-owned soft deletion |
 | `review_reactions` | one reaction per viewer/review/kind |
@@ -528,6 +562,8 @@ The main social RPCs are `request_social_follow`,
 `update_listening_diary_entry_with_rating`,
 `set_listening_diary_rating`, `set_my_track_subject_state`,
 `list_my_track_subject_states`,
+`list_following_activity`, `list_profile_listening_diary`,
+`list_profile_music_reviews`, `list_profile_loved_tracks`,
 `create_music_review`, `update_music_review`, `delete_music_review`,
 `add_review_comment`, `delete_review_comment`, `toggle_review_reaction`, and
 `mark_social_notifications_read`.
@@ -541,6 +577,7 @@ single server-owned event stream to consume later.
 
 The `supabase_realtime` publication includes rooms, members, queue items,
 queue events, follower graph, blocks, settings, listening activity/history,
+typed social activity events,
 reviews, comments, reactions, and notifications. Postgres Changes still uses
 RLS. Ephemeral room attendance should use Supabase Realtime Presence rather
 than a durable member row. The app refreshes materialized snapshots when a
@@ -636,6 +673,15 @@ and the filtered empty state without hosted data. Backend coverage must prove
 owner/manual-only pagination, cursor tie behavior, page-size/cursor validation,
 and isolation from follower-visible history.
 
+Following-activity coverage verifies typed Diary/Review presentation and the
+member-profile route. The deterministic DEBUG fixture
+`--ui-test-social-activity` supplies both event types without depending on a
+hosted account. A focused UI test navigates through the actor into Reviews,
+Diary, and Loved shelves; a second test verifies the separate Connections
+privacy control. Hosted smoke is the authority for first-publication
+idempotency, no import/backfill emission, current object visibility, blocks,
+profile shelf isolation, and stable keyset pagination.
+
 ### Local development and deployment
 
 ```bash
@@ -712,7 +758,10 @@ MusicKit library/playback authorization.
 7. Add production operational work: error reporting, scheduled cleanup of
    expired presence, rate limiting/abuse reporting, privacy-policy copy,
    TestFlight build settings, and device-pair collaboration tests.
-8. If public discovery is desired, design moderation/reporting, profile
+8. Add member Collections/favorites and richer Activity filters only after the
+   current typed feed and profile shelves have been exercised with multiple
+   real accounts; do not turn provider imports into follower posts.
+9. If public discovery is desired, design moderation/reporting, profile
    discovery queries, rate limits, and explicit migration from follower-only
    UI before exposing the existing `public` data value.
 

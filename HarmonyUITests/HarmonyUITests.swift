@@ -55,6 +55,17 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Your listening services"].waitForExistence(timeout: 5))
     }
 
+    func testConnectionsExposesMusicShelfPrivacy() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        app.tabBars.buttons["Connections"].tap()
+        let privacy = app.descendants(matching: .any)["music-shelf-privacy"]
+        for _ in 0..<4 where !privacy.exists { app.swipeUp() }
+        XCTAssertTrue(privacy.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Music shelf"].exists || app.buttons["Music shelf"].exists)
+    }
+
     func testListenTabLoadsSocialSections() throws {
         let app = XCUIApplication()
         app.launch()
@@ -156,6 +167,45 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Want to listen"].exists)
         XCTAssertTrue(app.buttons["Rated"].exists)
         XCTAssertTrue(app.buttons["Listened"].exists)
+    }
+
+    func testTypedFollowingActivityNavigatesToMemberShelves() throws {
+        let app = XCUIApplication()
+        app.launchArguments.append("--ui-test-social-activity")
+        app.launch()
+
+        let reviewsTab = app.tabBars.buttons["Reviews"]
+        XCTAssertTrue(reviewsTab.waitForExistence(timeout: 5))
+        reviewsTab.tap()
+        let reviewsNavigation = app.navigationBars["Reviews"]
+        if !reviewsNavigation.waitForExistence(timeout: 3) { reviewsTab.tap() }
+        XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
+
+        XCTAssertTrue(app.descendants(matching: .any)["following-activity-card-review-50000000-0000-0000-0000-000000000005"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["following-activity-card-diary-60000000-0000-0000-0000-000000000006"].exists)
+        XCTAssertTrue(app.staticTexts["Shared with followers"].exists)
+
+        let actor = app.staticTexts["UI Test Listener"].firstMatch
+        XCTAssertTrue(actor.waitForExistence(timeout: 5))
+        actor.tap()
+
+        // A fast Simulator can finish the profile push under the synthesized
+        // touch and activate its first review row. Return to the profile if so.
+        if !app.navigationBars["UI Test Listener"].waitForExistence(timeout: 1),
+           app.navigationBars["Afterglow"].exists {
+            app.navigationBars["Afterglow"].buttons["UI Test Listener"].tap()
+        }
+        XCTAssertTrue(app.navigationBars["UI Test Listener"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["member-profile-privacy"].exists)
+        let shelves = app.segmentedControls["member-profile-shelf-picker"]
+        XCTAssertTrue(shelves.exists)
+        XCTAssertTrue(app.staticTexts["Afterglow"].exists)
+
+        shelves.buttons["Diary"].tap()
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'member-profile-diary-'")).firstMatch.waitForExistence(timeout: 5))
+
+        shelves.buttons["Loved"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["member-profile-loved-20000000-0000-0000-0000-000000000002"].waitForExistence(timeout: 5))
     }
 
     func testJournalComposerCapturesDatedRelistenContext() throws {

@@ -524,6 +524,14 @@ final class HarmonyTests: XCTestCase {
         )
     }
 
+    func testFollowingActivityPayloadsKeepTheirTypedPresentation() {
+        let diary = journalEntry(title: "Diary track")
+        let review = musicReview(title: "Reviewed track")
+
+        XCTAssertEqual(followingActivityPresentationKind(for: .diary(diary)), .diary)
+        XCTAssertEqual(followingActivityPresentationKind(for: .review(review)), .review)
+    }
+
     func testClearingSessionRemovesRoomStateAndRestoresLocalOwnership() {
         let store = HarmonySessionStore()
 
@@ -618,6 +626,37 @@ final class HarmonyTests: XCTestCase {
                 isExplicit: false,
                 providerTracks: nil
             )
+        )
+    }
+
+    private func musicReview(title: String) -> RemoteMusicReview {
+        RemoteMusicReview(
+            id: UUID(),
+            profileID: UUID(),
+            rating: 4.0,
+            body: "Fixture review",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            visibility: .followers,
+            containsSpoilers: false,
+            isLoved: true,
+            subjectKind: "track",
+            subjectTitle: title,
+            subjectArtist: "Test artist",
+            subjectArtworkURL: nil,
+            subjectDeepLink: nil,
+            canonicalTrack: RemoteCatalogTrack(
+                id: UUID(),
+                title: title,
+                artist: "Test artist",
+                album: "Test album",
+                durationMilliseconds: 180_000,
+                artworkURL: nil,
+                isExplicit: false,
+                providerTracks: nil
+            ),
+            profile: RemoteProfile(displayName: "Test listener"),
+            comments: [],
+            reactions: []
         )
     }
 }

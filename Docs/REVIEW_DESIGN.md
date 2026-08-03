@@ -1,7 +1,7 @@
 # Reviews and listening journal design
 
 **Decision date:** 2 August 2026  
-**Status:** first-class Reviews experience, owner-paginated Diary, historical ratings, and independent track-state foundation deployed
+**Status:** first-class Reviews experience, owner and member profile shelves, typed following activity, historical ratings, and independent track-state foundation deployed
 
 ## Why this is a separate product surface
 
@@ -55,8 +55,8 @@ The product pattern Harmony transfers is therefore:
 | Rewatch flag | Relisten context on an individual manual listen |
 | Optional review, tags, and spoiler metadata | Reviews keep spoiler metadata; manual listens accept music-context tags |
 | Dedicated review detail with likes/comments | Review detail with reaction and comment thread |
-| Member Reviews, Diary, and Likes surfaces | Future profile shelves for Reviews, Journal, and Loved music |
-| Following activity feed | Follower-visible review activity now; broader typed activity later |
+| Member Reviews, Diary, and Likes surfaces | Member profile shelves for Reviews, Diary, and opt-in Loved music |
+| Following activity feed | Durable, typed manual Diary and first-publication Review events |
 
 The information hierarchy matters as much as the fields. Harmony's Reviews
 experience remains the fifth root tab, with its own feed, composer, and review
@@ -82,11 +82,12 @@ Only the first stage should be described as implemented:
    Diary entries, while Listened, default rating, Loved, and Want to listen are
    independent owner/track state. A private Music shelf exposes those states
    with search, scopes, and stable pagination.
-5. **Next:** a deliberate create-time opinion-linking interaction if the
+5. **Current:** a durable typed following feed and follower member profiles
+   with independent Reviews, Diary, and opt-in Loved shelves. Imported provider
+   history and Harmony-room playback never generate feed events.
+6. **Next:** a deliberate create-time opinion-linking interaction if the
    edit-first workflow proves too hidden, plus server-side filtered search if
    exhaustive results are required.
-6. **Later:** profile Reviews/Journal/Loved shelves and a richer typed following
-   activity feed. Bulk provider-history imports must not flood that feed.
 7. **After moderation and ranking policy:** popular/community discovery,
    shareable lists/collections, and listening statistics/year summaries.
 
@@ -475,10 +476,39 @@ the entire authored draft. Only confirmed publication resets it.
 
 1. Expand the implemented detail page with additional reaction choices,
    comment moderation/reporting, and deep links from notifications.
-2. Add profile shelves for Journal, Reviews, Loved, and Collections.
+2. Add Collections and optional profile favorites; Reviews, Diary, and Loved
+   member shelves are implemented.
 3. Extend dated-log context with structured first-listen/live/setting fields
    without requiring them for a quick log.
 4. Move journal search/scope filters server-side if product requirements call
    for exhaustive results across unloaded pages.
 5. Add discovery only after report/block/moderation and ranking policies are
    defined; bulk history imports should not flood follower activity.
+
+## Typed following activity and member profiles
+
+Migration `202608030031_social_activity_and_profile_shelves.sql` makes the
+social journal durable. `social_activity_events` is an append-only index of a
+manual Diary log or the first publication of a Review. It stores the actor,
+kind, referenced object ID, and publication cursor; the object itself remains
+the source of truth. Feed reads therefore apply the object's current audience,
+deletion state, accepted-follow relationship, and blocks. Making an item
+private or deleting it removes it from readers immediately, while making it
+visible again does not manufacture a second event.
+
+Only intentional manual logs and reviews enter the feed. Provider imports,
+Harmony-room history, historical backfills, subject-state changes, and review
+edits do not create activity. This preserves Letterboxd's distinction between
+recording a back catalog and deliberately publishing current activity.
+
+The Reviews tab's **Activity** shelf now renders typed Review and Diary cards.
+Actor identity navigates to a member profile with three independent shelves:
+**Reviews**, **Diary**, and **Loved**. Each shelf has its own loading, error,
+empty, and keyset-pagination state, keyed by profile ID so navigating between
+members cannot mix results. Profile reads never populate the signed-in
+owner's editable caches.
+
+Review and Diary visibility continue to belong to each object. Loved is an
+aggregate profile shelf and is separately opt-in through Connections using
+`profile_social_settings.shelf_visibility`; it defaults to Only me and can be
+shared with accepted followers. There is no public profile discovery surface.

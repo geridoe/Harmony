@@ -201,6 +201,8 @@ struct ConnectionsView: View {
                     privacyPicker("Live listening", selection: store.liveSocialVisibility, category: .liveListening)
                     privacyPicker("Listening history", selection: store.historySocialVisibility, category: .listeningHistory)
                     privacyPicker("Reviews", selection: store.reviewsSocialVisibility, category: .reviews)
+                    privacyPicker("Music shelf", selection: store.shelfSocialVisibility, category: .musicShelf)
+                        .accessibilityIdentifier("music-shelf-privacy")
                     if store.providerState(for: .spotify) == .connected {
                         Button {
                             Task { await store.importRecentSpotifyHistory() }
@@ -222,7 +224,7 @@ struct ConnectionsView: View {
                             }
                         }
                     }
-                    Text("When enabled, skipping to the next track logs the completed Harmony track. Only approved followers can see follower-visible activity. New accounts begin with logging off and every category set to Only me.")
+                    Text("When enabled, skipping to the next track logs the completed Harmony track. Only approved followers can see follower-visible activity or your Loved shelf. New accounts begin with logging off and every category set to Only me.")
                         .font(.footnote)
                         .foregroundColor(.secondary)
                 }

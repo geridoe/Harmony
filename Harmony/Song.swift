@@ -153,6 +153,20 @@ enum SocialPrivacyCategory: Equatable {
     case liveListening
     case listeningHistory
     case reviews
+    case musicShelf
+}
+
+struct PaginatedShelfState<Item> {
+    var items: [Item] = []
+    var isRefreshing = false
+    var isLoadingMore = false
+    var hasMore = false
+}
+
+struct PublicProfileShelfState {
+    var reviews = PaginatedShelfState<RemoteMusicReview>()
+    var diary = PaginatedShelfState<RemoteListeningHistoryEntry>()
+    var loved = PaginatedShelfState<RemotePublicLovedTrack>()
 }
 
 enum CatalogSearchPurpose: Hashable {
@@ -220,6 +234,11 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var isRefreshingMusicReviews = false
     @Published private(set) var isPublishingMusicReview = false
     @Published private(set) var mutatingReviewIDs: Set<UUID> = []
+    @Published private(set) var followingActivity: [RemoteFollowingActivityItem] = []
+    @Published private(set) var isRefreshingFollowingActivity = false
+    @Published private(set) var isLoadingMoreFollowingActivity = false
+    @Published private(set) var hasMoreFollowingActivity = false
+    @Published private(set) var publicProfileShelves: [UUID: PublicProfileShelfState] = [:]
     @Published private(set) var socialProfiles: [RemoteSocialProfile] = []
     @Published private(set) var socialNotifications: [RemoteSocialNotification] = []
     @Published private(set) var isRefreshingSocialProfiles = false
@@ -246,6 +265,8 @@ final class HarmonySessionStore: ObservableObject {
     private var spotifyLoadedProviderID: String?
     private let journalPageSize = 50
     private let trackSubjectShelfPageSize = 50
+    private let socialShelfPageSize = 50
+    private var followingActivityCursor: RemoteFollowingActivityCursor?
 #if DEBUG
     private var isDiaryEditorUITestFixtureActive = false
 #endif
@@ -307,6 +328,7 @@ final class HarmonySessionStore: ObservableObject {
     var liveSocialVisibility: SocialVisibilityOption { socialSettings?.liveVisibility ?? .privateOnly }
     var historySocialVisibility: SocialVisibilityOption { socialSettings?.historyVisibility ?? .privateOnly }
     var reviewsSocialVisibility: SocialVisibilityOption { socialSettings?.reviewsVisibility ?? .privateOnly }
+    var shelfSocialVisibility: SocialVisibilityOption { socialSettings?.shelfVisibility ?? .privateOnly }
     var recordsHarmonyPlays: Bool { socialSettings?.recordHarmonyPlays ?? false }
     var unreadSocialNotificationCount: Int { socialNotifications.lazy.filter { $0.readAt == nil }.count }
     func providerState(for provider: MusicProvider) -> ProviderAccountStatus { providerStates[provider] ?? .notConnected }
@@ -400,6 +422,7 @@ final class HarmonySessionStore: ObservableObject {
             liveVisibility: category == .liveListening ? visibility : current.liveVisibility,
             historyVisibility: category == .listeningHistory ? visibility : current.historyVisibility,
             reviewsVisibility: category == .reviews ? visibility : current.reviewsVisibility,
+            shelfVisibility: category == .musicShelf ? visibility : current.shelfVisibility,
             recordHarmonyPlays: current.recordHarmonyPlays
         )
         isUpdatingAccountSettings = true
@@ -424,6 +447,7 @@ final class HarmonySessionStore: ObservableObject {
             liveVisibility: current.liveVisibility,
             historyVisibility: current.historyVisibility,
             reviewsVisibility: current.reviewsVisibility,
+            shelfVisibility: current.shelfVisibility,
             recordHarmonyPlays: enabled
         )
         isUpdatingAccountSettings = true
@@ -866,7 +890,8 @@ final class HarmonySessionStore: ObservableObject {
             async let journal: Void = self.refreshJournalEntries()
             async let reviews: Void = self.refreshMusicReviews()
             async let notifications: Void = self.refreshSocialNotifications()
-            _ = await (profiles, feed, history, journal, reviews, notifications)
+            async let followingActivity: Void = self.refreshFollowingActivity()
+            _ = await (profiles, feed, history, journal, reviews, notifications, followingActivity)
         }
     }
 
@@ -1131,6 +1156,190 @@ final class HarmonySessionStore: ObservableObject {
         )
     }
 
+    func refreshFollowingActivity() async {
+#if DEBUG
+        guard !isDiaryEditorUITestFixtureActive else { return }
+#endif
+        guard !isRefreshingFollowingActivity, !isLoadingMoreFollowingActivity else { return }
+        isRefreshingFollowingActivity = true
+        defer { isRefreshingFollowingActivity = false }
+        do {
+            let page = try await collaborationRepository.followingActivityPage(limit: socialShelfPageSize)
+            followingActivity = page.items
+            followingActivityCursor = page.cursor
+            hasMoreFollowingActivity = page.hasMore
+        } catch {
+            collaborationMessage = "Could not refresh following activity."
+        }
+    }
+
+    func loadMoreFollowingActivity() async {
+        guard hasMoreFollowingActivity,
+              !isRefreshingFollowingActivity,
+              !isLoadingMoreFollowingActivity,
+              let cursor = followingActivityCursor else { return }
+        isLoadingMoreFollowingActivity = true
+        defer { isLoadingMoreFollowingActivity = false }
+        do {
+            let page = try await collaborationRepository.followingActivityPage(
+                beforePublishedAt: cursor.publishedAt,
+                beforeID: cursor.id,
+                limit: socialShelfPageSize
+            )
+            let existingIDs = Set(followingActivity.map(\.id))
+            followingActivity.append(contentsOf: page.items.filter { !existingIDs.contains($0.id) })
+            followingActivityCursor = page.cursor
+            hasMoreFollowingActivity = page.hasMore
+        } catch {
+            collaborationMessage = "Could not load more following activity."
+        }
+    }
+
+    func refreshPublicProfileReviews(for profileID: UUID) async {
+#if DEBUG
+        guard !isDiaryEditorUITestFixtureActive else { return }
+#endif
+        var shelves = publicProfileShelves[profileID] ?? PublicProfileShelfState()
+        guard !shelves.reviews.isRefreshing, !shelves.reviews.isLoadingMore else { return }
+        shelves.reviews.isRefreshing = true
+        publicProfileShelves[profileID] = shelves
+        defer { publicProfileShelves[profileID]?.reviews.isRefreshing = false }
+        do {
+            let page = try await collaborationRepository.publicProfileReviewsPage(
+                profileID: profileID,
+                limit: socialShelfPageSize + 1
+            )
+            publicProfileShelves[profileID]?.reviews.items = Array(page.prefix(socialShelfPageSize))
+            publicProfileShelves[profileID]?.reviews.hasMore = page.count > socialShelfPageSize
+        } catch {
+            collaborationMessage = "Could not load this member's reviews."
+        }
+    }
+
+    func loadMorePublicProfileReviews(for profileID: UUID) async {
+        guard var shelves = publicProfileShelves[profileID],
+              shelves.reviews.hasMore,
+              !shelves.reviews.isRefreshing,
+              !shelves.reviews.isLoadingMore,
+              let cursor = shelves.reviews.items.last else { return }
+        shelves.reviews.isLoadingMore = true
+        publicProfileShelves[profileID] = shelves
+        defer { publicProfileShelves[profileID]?.reviews.isLoadingMore = false }
+        do {
+            let page = try await collaborationRepository.publicProfileReviewsPage(
+                profileID: profileID,
+                beforeCreatedAt: cursor.createdAt,
+                beforeID: cursor.id,
+                limit: socialShelfPageSize + 1
+            )
+            let existingIDs = Set(shelves.reviews.items.map(\.id))
+            publicProfileShelves[profileID]?.reviews.items.append(
+                contentsOf: page.prefix(socialShelfPageSize).filter { !existingIDs.contains($0.id) }
+            )
+            publicProfileShelves[profileID]?.reviews.hasMore = page.count > socialShelfPageSize
+        } catch {
+            collaborationMessage = "Could not load more reviews."
+        }
+    }
+
+    func refreshPublicProfileDiary(for profileID: UUID) async {
+#if DEBUG
+        guard !isDiaryEditorUITestFixtureActive else { return }
+#endif
+        var shelves = publicProfileShelves[profileID] ?? PublicProfileShelfState()
+        guard !shelves.diary.isRefreshing, !shelves.diary.isLoadingMore else { return }
+        shelves.diary.isRefreshing = true
+        publicProfileShelves[profileID] = shelves
+        defer { publicProfileShelves[profileID]?.diary.isRefreshing = false }
+        do {
+            let page = try await collaborationRepository.publicProfileDiaryPage(
+                profileID: profileID,
+                limit: socialShelfPageSize + 1
+            )
+            publicProfileShelves[profileID]?.diary.items = Array(page.prefix(socialShelfPageSize))
+            publicProfileShelves[profileID]?.diary.hasMore = page.count > socialShelfPageSize
+        } catch {
+            collaborationMessage = "Could not load this member's diary."
+        }
+    }
+
+    func loadMorePublicProfileDiary(for profileID: UUID) async {
+        guard var shelves = publicProfileShelves[profileID],
+              shelves.diary.hasMore,
+              !shelves.diary.isRefreshing,
+              !shelves.diary.isLoadingMore,
+              let cursor = shelves.diary.items.last else { return }
+        shelves.diary.isLoadingMore = true
+        publicProfileShelves[profileID] = shelves
+        defer { publicProfileShelves[profileID]?.diary.isLoadingMore = false }
+        do {
+            let page = try await collaborationRepository.publicProfileDiaryPage(
+                profileID: profileID,
+                beforePlayedAt: cursor.playedAt,
+                beforeID: cursor.id,
+                limit: socialShelfPageSize + 1
+            )
+            let existingIDs = Set(shelves.diary.items.map(\.id))
+            publicProfileShelves[profileID]?.diary.items.append(
+                contentsOf: page.prefix(socialShelfPageSize).filter { !existingIDs.contains($0.id) }
+            )
+            publicProfileShelves[profileID]?.diary.hasMore = page.count > socialShelfPageSize
+        } catch {
+            collaborationMessage = "Could not load more diary entries."
+        }
+    }
+
+    func refreshPublicProfileLoved(for profileID: UUID) async {
+#if DEBUG
+        guard !isDiaryEditorUITestFixtureActive else { return }
+#endif
+        var shelves = publicProfileShelves[profileID] ?? PublicProfileShelfState()
+        guard !shelves.loved.isRefreshing, !shelves.loved.isLoadingMore else { return }
+        shelves.loved.isRefreshing = true
+        publicProfileShelves[profileID] = shelves
+        defer { publicProfileShelves[profileID]?.loved.isRefreshing = false }
+        do {
+            let page = try await collaborationRepository.publicProfileLovedPage(
+                profileID: profileID,
+                limit: socialShelfPageSize + 1
+            )
+            publicProfileShelves[profileID]?.loved.items = Array(page.prefix(socialShelfPageSize))
+            publicProfileShelves[profileID]?.loved.hasMore = page.count > socialShelfPageSize
+        } catch {
+            collaborationMessage = "Could not load this member's Loved shelf."
+        }
+    }
+
+    func loadMorePublicProfileLoved(for profileID: UUID) async {
+        guard var shelves = publicProfileShelves[profileID],
+              shelves.loved.hasMore,
+              !shelves.loved.isRefreshing,
+              !shelves.loved.isLoadingMore,
+              let cursor = shelves.loved.items.last else { return }
+        shelves.loved.isLoadingMore = true
+        publicProfileShelves[profileID] = shelves
+        defer { publicProfileShelves[profileID]?.loved.isLoadingMore = false }
+        do {
+            let page = try await collaborationRepository.publicProfileLovedPage(
+                profileID: profileID,
+                beforeUpdatedAt: cursor.updatedAt,
+                beforeCanonicalTrackID: cursor.canonicalTrackID,
+                limit: socialShelfPageSize + 1
+            )
+            let existingIDs = Set(shelves.loved.items.map(\.id))
+            publicProfileShelves[profileID]?.loved.items.append(
+                contentsOf: page.prefix(socialShelfPageSize).filter { !existingIDs.contains($0.id) }
+            )
+            publicProfileShelves[profileID]?.loved.hasMore = page.count > socialShelfPageSize
+        } catch {
+            collaborationMessage = "Could not load more Loved tracks."
+        }
+    }
+
+    func clearPublicProfileShelves(for profileID: UUID) {
+        publicProfileShelves.removeValue(forKey: profileID)
+    }
+
 #if DEBUG
     /// Keeps editor UI tests deterministic and independent of a developer's
     /// signed-in account or hosted journal contents.
@@ -1187,6 +1396,46 @@ final class HarmonySessionStore: ObservableObject {
         )
         listeningHistory = [entry]
         journalEntries = [entry]
+    }
+
+    func seedSocialActivityUITestFixture() {
+        seedDiaryEditorUITestFixture()
+        guard let review = musicReviews.first,
+              let entry = journalEntries.first,
+              let track = entry.canonicalTrack,
+              let canonicalTrackID = track.id else { return }
+        let actor = RemoteProfile(displayName: "UI Test Listener")
+        followingActivity = [
+            RemoteFollowingActivityItem(
+                id: UUID(uuidString: "50000000-0000-0000-0000-000000000005")!,
+                actorID: entry.profileID,
+                publishedAt: Date(),
+                actor: actor,
+                payload: .review(review)
+            ),
+            RemoteFollowingActivityItem(
+                id: UUID(uuidString: "60000000-0000-0000-0000-000000000006")!,
+                actorID: entry.profileID,
+                publishedAt: entry.playedAt,
+                actor: actor,
+                payload: .diary(entry)
+            )
+        ]
+        followingActivityCursor = RemoteFollowingActivityCursor(
+            publishedAt: entry.playedAt,
+            id: followingActivity[1].id
+        )
+        hasMoreFollowingActivity = false
+        var shelves = PublicProfileShelfState()
+        shelves.reviews.items = [review]
+        shelves.diary.items = [entry]
+        shelves.loved.items = [RemotePublicLovedTrack(
+            profileID: entry.profileID,
+            canonicalTrackID: canonicalTrackID,
+            updatedAt: Date(),
+            canonicalTrack: track
+        )]
+        publicProfileShelves[entry.profileID] = shelves
     }
 #endif
 
