@@ -198,6 +198,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var isPublishingMusicReview = false
     @Published private(set) var mutatingReviewIDs: Set<UUID> = []
     @Published private(set) var socialProfiles: [RemoteSocialProfile] = []
+    @Published private(set) var socialNotifications: [RemoteSocialNotification] = []
     @Published private(set) var isRefreshingSocialProfiles = false
     @Published private(set) var socialProfileActionIDs: Set<UUID> = []
     @Published private(set) var accountProfile: RemoteAccountProfile?
@@ -250,6 +251,7 @@ final class HarmonySessionStore: ObservableObject {
     var historySocialVisibility: SocialVisibilityOption { socialSettings?.historyVisibility ?? .privateOnly }
     var reviewsSocialVisibility: SocialVisibilityOption { socialSettings?.reviewsVisibility ?? .privateOnly }
     var recordsHarmonyPlays: Bool { socialSettings?.recordHarmonyPlays ?? false }
+    var unreadSocialNotificationCount: Int { socialNotifications.lazy.filter { $0.readAt == nil }.count }
     func providerState(for provider: MusicProvider) -> ProviderAccountStatus { providerStates[provider] ?? .notConnected }
     func canRemove(_ item: QueueItem) -> Bool { currentMember.role == .conductor || item.addedBy.id == currentMember.id }
     func contains(_ track: HarmonyTrack) -> Bool { queue.contains { Self.representsSameRecording($0.track, track) } }
@@ -712,7 +714,8 @@ final class HarmonySessionStore: ObservableObject {
             async let feed: Void = self.refreshListeningFeed()
             async let history: Void = self.refreshListeningHistory()
             async let reviews: Void = self.refreshMusicReviews()
-            _ = await (profiles, feed, history, reviews)
+            async let notifications: Void = self.refreshSocialNotifications()
+            _ = await (profiles, feed, history, reviews, notifications)
         }
     }
 
@@ -786,6 +789,18 @@ final class HarmonySessionStore: ObservableObject {
         } catch {
             collaborationMessage = "Could not refresh people: \(error.localizedDescription)"
         }
+    }
+
+    func refreshSocialNotifications() async {
+        do { socialNotifications = try await collaborationRepository.socialNotifications() }
+        catch { collaborationMessage = "Could not refresh social notifications." }
+    }
+
+    func markSocialNotificationsRead(_ notificationID: UUID? = nil) async {
+        do {
+            try await collaborationRepository.markSocialNotificationsRead(notificationID)
+            await refreshSocialNotifications()
+        } catch { collaborationMessage = "Could not update social notifications." }
     }
 
     func socialRelationship(with profileID: UUID) -> SocialRelationshipState {

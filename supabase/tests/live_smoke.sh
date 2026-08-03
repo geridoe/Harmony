@@ -167,9 +167,26 @@ stage="social follow enforcement"
 rpc "$conductor_token" request_social_follow \
   "{\"p_profile_id\":\"$collaborator_id\"}" \
   "$smoke_tmp/follow-request.json"
+rest_get "$collaborator_token" \
+  "social_notifications?select=id,kind,actor_id,read_at&kind=eq.follow_request&actor_id=eq.$conductor_id&order=created_at.desc&limit=1" \
+  "$smoke_tmp/follow-notification.json"
+follow_notification_id="$(jq -er '.[0].id' "$smoke_tmp/follow-notification.json")"
+jq -e --arg actor "$conductor_id" 'length == 1 and .[0].kind == "follow_request" and .[0].actor_id == $actor and .[0].read_at == null' "$smoke_tmp/follow-notification.json" >/dev/null
+rest_get "$collaborator_token" \
+  "social_notifications?select=id,kind,created_at,read_at,actor:profiles!social_notifications_actor_id_fkey(display_name),review:music_reviews!social_notifications_review_id_fkey(subject_title,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit))&id=eq.$follow_notification_id" \
+  "$smoke_tmp/follow-notification-client-shape.json"
+jq -e 'length == 1 and .[0].actor.display_name == "Harmony Smoke Conductor" and .[0].review == null' "$smoke_tmp/follow-notification-client-shape.json" >/dev/null
 rpc "$collaborator_token" respond_to_social_follow \
   "{\"p_requester_id\":\"$conductor_id\",\"p_accept\":true}" \
   "$smoke_tmp/follow-accept.json"
+rest_get "$conductor_token" \
+  "social_notifications?select=id,kind,actor_id&kind=eq.follow_accepted&actor_id=eq.$collaborator_id&order=created_at.desc&limit=1" \
+  "$smoke_tmp/accepted-notification.json"
+jq -e --arg actor "$collaborator_id" 'length == 1 and .[0].kind == "follow_accepted" and .[0].actor_id == $actor' "$smoke_tmp/accepted-notification.json" >/dev/null
+rpc "$collaborator_token" mark_social_notifications_read \
+  "{\"p_notification_id\":\"$follow_notification_id\"}" \
+  "$smoke_tmp/notification-read.json"
+[[ "$(jq -er '.' "$smoke_tmp/notification-read.json")" == "1" ]]
 rest_get "$conductor_token" \
   "social_follows?select=follower_id,followed_id,state&follower_id=eq.$conductor_id&followed_id=eq.$collaborator_id" \
   "$smoke_tmp/follows.json"
@@ -255,6 +272,10 @@ rpc "$conductor_token" toggle_review_reaction \
   "{\"p_review_id\":\"$review_id\",\"p_kind\":\"heart\"}" \
   "$smoke_tmp/review-reaction.json"
 [[ "$(jq -er '.' "$smoke_tmp/review-reaction.json")" == "true" ]]
+rest_get "$collaborator_token" \
+  "social_notifications?select=kind,actor_id,review_id&actor_id=eq.$conductor_id&review_id=eq.$review_id&order=created_at.asc" \
+  "$smoke_tmp/review-notifications.json"
+jq -e 'length == 2 and ([.[].kind] | sort) == ["review_comment","review_reaction"]' "$smoke_tmp/review-notifications.json" >/dev/null
 rest_get "$conductor_token" \
   "music_reviews?select=id,review_comments(id,author_id,body,created_at,profiles(display_name)),review_reactions(profile_id,kind)&id=eq.$review_id" \
   "$smoke_tmp/review-social-detail.json"
@@ -299,6 +320,10 @@ rest_get "$conductor_token" \
   "music_reviews?select=id&id=eq.$album_review_id" \
   "$smoke_tmp/blocked-album-review.json"
 [[ "$(jq 'length' "$smoke_tmp/blocked-album-review.json")" -eq 0 ]]
+rest_get "$collaborator_token" \
+  "social_notifications?select=id&actor_id=eq.$conductor_id" \
+  "$smoke_tmp/blocked-notifications.json"
+[[ "$(jq 'length' "$smoke_tmp/blocked-notifications.json")" -eq 0 ]]
 blocked_follow_status="$(rpc_status "$conductor_token" request_social_follow \
   "{\"p_profile_id\":\"$collaborator_id\"}" \
   "$smoke_tmp/blocked-follow.json")"

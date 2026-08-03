@@ -14,6 +14,9 @@ small group. Social listening extends that experience between rooms:
   and explicitly imported provider history to followers.
 - **Reviews**: a Letterboxd-style diary entry for a track or album, with rating,
   optional review text, comments, and reactions.
+- **Notifications**: a durable, unread in-app inbox for follow requests,
+  accepted follows, review comments, and reactions. APNs can later deliver the
+  same server-owned events without becoming the source of truth.
 
 ## Non-negotiable privacy defaults
 

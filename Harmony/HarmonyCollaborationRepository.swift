@@ -99,6 +99,7 @@ private struct ReviewReactionParameters: Encodable { let p_review_id: UUID; let 
 private struct ReviewCommentParameters: Encodable { let p_review_id: UUID; let p_body: String }
 private struct ReviewIDParameters: Encodable { let p_review_id: UUID }
 private struct CommentIDParameters: Encodable { let p_comment_id: UUID }
+private struct NotificationIDParameters: Encodable { let p_notification_id: UUID? }
 private struct UpdateReviewParameters: Encodable {
     let p_review_id: UUID
     let p_rating: Double
@@ -209,6 +210,29 @@ struct RemoteSocialFollow: Decodable, Identifiable {
 struct RemoteSocialBlock: Decodable {
     let blockedID: UUID
     enum CodingKeys: String, CodingKey { case blockedID = "blocked_id" }
+}
+
+struct RemoteNotificationReview: Decodable {
+    let subjectTitle: String?
+    let canonicalTrack: RemoteCatalogTrack?
+    enum CodingKeys: String, CodingKey {
+        case subjectTitle = "subject_title"
+        case canonicalTrack = "canonical_tracks"
+    }
+}
+
+struct RemoteSocialNotification: Decodable, Identifiable {
+    let id: UUID
+    let kind: String
+    let createdAt: Date
+    let readAt: Date?
+    let actor: RemoteProfile
+    let review: RemoteNotificationReview?
+    enum CodingKeys: String, CodingKey {
+        case id, kind, actor, review
+        case createdAt = "created_at"
+        case readAt = "read_at"
+    }
 }
 
 struct RemoteCatalogTrack: Decodable {
@@ -559,6 +583,22 @@ final class HarmonyCollaborationRepository {
         return try await client.from("profile_blocks")
             .select("blocked_id")
             .execute().value
+    }
+
+    func socialNotifications() async throws -> [RemoteSocialNotification] {
+        try await authenticate()
+        return try await client.from("social_notifications")
+            .select("id,kind,created_at,read_at,actor:profiles!social_notifications_actor_id_fkey(display_name),review:music_reviews!social_notifications_review_id_fkey(subject_title,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit))")
+            .order("created_at", ascending: false)
+            .limit(50).execute().value
+    }
+
+    func markSocialNotificationsRead(_ notificationID: UUID?) async throws {
+        try await authenticate()
+        _ = try await client.rpc(
+            "mark_social_notifications_read",
+            params: NotificationIDParameters(p_notification_id: notificationID)
+        ).execute()
     }
 
     func requestSocialFollow(_ profileID: UUID) async throws {
@@ -936,6 +976,7 @@ final class HarmonyCollaborationRepository {
             "music_reviews",
             "review_comments",
             "review_reactions",
+            "social_notifications",
         ]
         let tokens = tables.map { table in
             channel.onPostgresChange(AnyAction.self, schema: "public", table: table) { _ in

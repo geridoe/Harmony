@@ -55,6 +55,7 @@ class HarmonyUITests: XCTestCase {
         listenTab.tap()
 
         XCTAssertTrue(app.navigationBars["Listen"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Notifications"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["People"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Eavesdrop"].waitForExistence(timeout: 5))
         let listeningHistory = app.staticTexts["Listening history"]

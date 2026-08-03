@@ -7,6 +7,7 @@
 
 import SwiftUI
 struct ContentView: View {
+    @EnvironmentObject private var store: HarmonySessionStore
     @State private var selection = 0
     var body: some View {
         TabView(selection: $selection) {
@@ -20,6 +21,7 @@ struct ContentView: View {
                 .tabItem { Label("Connections", systemImage: "dot.radiowaves.left.and.right") }
             SocialView().tag(3)
                 .tabItem { Label("Listen", systemImage: "ear") }
+                .badge(store.unreadSocialNotificationCount)
         }
         .tint(.indigo)
     }
@@ -43,6 +45,48 @@ struct SocialView: View {
     var body: some View {
         NavigationView {
             List {
+                Section {
+                    if store.socialNotifications.isEmpty {
+                        Text("No social notifications yet.").foregroundColor(.secondary)
+                    } else {
+                        ForEach(store.socialNotifications) { notification in
+                            Button {
+                                guard notification.readAt == nil else { return }
+                                Task { await store.markSocialNotificationsRead(notification.id) }
+                            } label: {
+                                HStack(alignment: .top, spacing: 10) {
+                                    Image(systemName: notificationIcon(notification.kind))
+                                        .foregroundColor(.indigo)
+                                        .frame(width: 22)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(notificationMessage(notification))
+                                            .foregroundColor(.primary)
+                                            .font(notification.readAt == nil ? .subheadline.weight(.semibold) : .subheadline)
+                                        Text(notification.createdAt, style: .relative)
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    Spacer()
+                                    if notification.readAt == nil {
+                                        Circle().fill(Color.indigo).frame(width: 8, height: 8)
+                                            .accessibilityLabel("Unread")
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Text("Notifications")
+                        Spacer()
+                        if store.unreadSocialNotificationCount > 0 {
+                            Button("Mark all read") { Task { await store.markSocialNotificationsRead() } }
+                                .font(.caption)
+                        }
+                    }
+                }
+
                 Section("People") {
                     if store.isRefreshingSocialProfiles && store.socialProfiles.isEmpty {
                         ProgressView("Loading people…")
@@ -237,6 +281,7 @@ struct SocialView: View {
             .navigationTitle("Listen")
             .task {
                 await store.refreshAccountSettings()
+                await store.refreshSocialNotifications()
                 await store.refreshSocialProfiles()
                 await store.refreshListeningFeed()
                 await store.refreshListeningHistory()
@@ -244,6 +289,7 @@ struct SocialView: View {
                 await store.activateSocialRealtime()
             }
             .refreshable {
+                await store.refreshSocialNotifications()
                 await store.refreshSocialProfiles()
                 await store.refreshListeningFeed()
                 await store.refreshListeningHistory()
@@ -351,6 +397,30 @@ struct SocialView: View {
 
     private func initials(for displayName: String) -> String {
         displayName.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined().uppercased()
+    }
+
+    private func notificationIcon(_ kind: String) -> String {
+        switch kind {
+        case "follow_request": "person.badge.plus"
+        case "follow_accepted": "person.crop.circle.badge.checkmark"
+        case "review_comment": "bubble.left.fill"
+        case "review_reaction": "heart.fill"
+        default: "bell.fill"
+        }
+    }
+
+    private func notificationMessage(_ notification: RemoteSocialNotification) -> String {
+        let actor = notification.actor.displayName
+        let reviewTitle = notification.review?.subjectTitle
+            ?? notification.review?.canonicalTrack?.title
+            ?? "your review"
+        switch notification.kind {
+        case "follow_request": return "\(actor) wants to follow you"
+        case "follow_accepted": return "\(actor) accepted your follow request"
+        case "review_comment": return "\(actor) commented on \(reviewTitle)"
+        case "review_reaction": return "\(actor) reacted to \(reviewTitle)"
+        default: return "New activity from \(actor)"
+        }
     }
 }
 
