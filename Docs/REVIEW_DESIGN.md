@@ -103,17 +103,128 @@ These points were verified against Letterboxd's current official
 The conclusions about Harmony's event-noise policy and music-specific layouts
 are product-design inferences, not claims about Letterboxd internals.
 
+### Current primary-source UX audit
+
+This inventory was refreshed on 3 August 2026 against Letterboxd's public web
+product and current first-party descriptions. It distinguishes observable
+interface behavior from Harmony product decisions:
+
+| Observable Letterboxd pattern | Primary evidence | Harmony consequence |
+| --- | --- | --- |
+| Watched status, a dated Diary log, a rating, a Like, and a written review are related but distinct actions | [FAQ: general use, watched vs logged, Like vs rating, historical ratings](https://letterboxd.com/about/faq/) | Keep Listened/current Rating/Loved, repeatable Diary listens, and authored Reviews as separate records and destinations. |
+| The app's `+` flow can combine date, rating, review, tags, and Like, but rating is also available without a dated log | [Welcome guide](https://letterboxd.com/welcome/), [App Store feature list](https://apps.apple.com/us/app/letterboxd/id1054271011) | Keep Harmony's subject-first composer modular: no field other than a valid subject plus rating or prose is universally required; an optional dated listen remains a separate atomic record. |
+| Diary is chronological and grouped by month/day, with rating, Like, rewatch, and review-link context | [Public Diary page](https://letterboxd.com/crew/diary/), [FAQ](https://letterboxd.com/about/faq/) | Add year/month grouping to Harmony Diary without merging it into Reviews or provider history. |
+| Member Reviews and subject Reviews expose sort/filter controls such as recency, review activity, rating, unrated, rating range, and Diary year | [Public member Reviews page](https://letterboxd.com/shortcut/films/reviews/), [public subject Reviews page](https://letterboxd.com/film/liked/reviews/) | My Reviews should eventually filter on the server across the complete library; the first useful server contract is query + subject + Loved + score/range + year + sort. |
+| Profile navigation gives Activity, Diary, Reviews, Lists, Likes, Tags, Network, and Stats independent destinations; overview summarizes recent/popular reviews and a ten-bucket rating distribution | [Public member profile](https://letterboxd.com/film_reviewer/), [Welcome guide](https://letterboxd.com/welcome/) | Keep Harmony's member overview as an index into separate shelves. Add favorites/tags/stats only as explicit future pages, not as unrelated cards inside Listen. |
+| Review rows carry author, subject, watched/rewatched context, date, rating, Like count, and a spoiler gate; review detail supports Likes and comments | [Public subject Reviews](https://letterboxd.com/film/liked/reviews/), [Apps overview](https://letterboxd.com/apps/), [App Store feature list](https://apps.apple.com/us/app/letterboxd/id1054271011) | A Harmony review card is a compact route, while reactions, comments, spoiler reveal, edit/delete, report, author profile, and provider actions belong on review detail. |
+| Activity shows followed members' watching, liking, listing, reviewing, and discussion; old bulk activity is throttled so it does not swamp followers | [Apps overview](https://letterboxd.com/apps/), [FAQ: following and Activity](https://letterboxd.com/about/faq/) | Publish only intentional Harmony Diary/Review/List events. Never turn every imported or automatic provider play into a follower post. |
+| Reviews, lists, comments, and members have reporting/blocking paths backed by a community policy | [FAQ: blocking/reporting](https://letterboxd.com/about/faq/), [Community policy](https://letterboxd.com/legal/community-policy/) | Reporting and abuse triage are prerequisites for public review discovery or popularity ranking; blocking alone is insufficient. |
+
+The App Store listing also confirms that search spans subjects, authored
+content, and people; profile pages expose reviews, Diary, tags, stats, and more;
+and activity can be filtered. These are useful discovery patterns, but they do
+not imply that Harmony should expose private music activity or adopt
+Letterboxd's public-by-default policy.
+
+### Harmony first-class Reviews page contract
+
+The primary Reviews tab owns durable music opinion. It must remain independent
+from the Session controls and from Listen's ephemeral Eavesdrop/history jobs.
+
+**Root information architecture**
+
+1. **Following** — default, keyset-paginated written reviews from accepted
+   follows. A compact card shows author, square artwork, song/album identity,
+   optional half-star rating, Loved, spoiler state, publication context, and
+   heart/comment totals. The entire card opens exact review detail.
+2. **My Reviews** — the owner's authored library, independent of the bounded
+   social feed. It supports Songs / Albums / Loved scope, text search, Newest /
+   Highest / Lowest ordering, edit/delete, and explicit Load More. Until search
+   moves server-side, the UI must say filters apply to loaded results.
+3. **Ratings** — the owner's current song and album scores even when no prose
+   review exists. It shows All / Songs / Albums and ten half-star buckets;
+   selecting an item opens its canonical subject page.
+4. **Write review** — a persistent top-level action available from every root
+   shelf. Diary, Loved, Lists, Followers, and Following remain separate full
+   destinations reachable from profile/Listen navigation rather than becoming
+   small sections in the Reviews feed.
+
+**Primary flows**
+
+- **Compose:** choose Song or Album first; then independently set rating,
+  Loved, prose, spoiler flag, and audience. A track may additionally create a
+  dated Diary listen with its own date, Relisten, tags, historical rating, and
+  audience. Publish is atomic when both objects are requested, and a failure
+  retains every draft field.
+- **Read and discuss:** open an exact review; reveal spoiler text only after
+  consent; open the canonical subject or author profile; heart or comment if
+  still authorized; paginate the thread; let comment author or review owner
+  remove a comment; route notifications back to this durable review identity.
+- **Manage:** the owner edits or soft-deletes from review detail. Editing the
+  current opinion may update current subject state but never rewrites an older
+  Diary rating snapshot.
+- **Browse ratings:** render exhaustive owner totals and distribution; filter
+  by subject kind; support rating-only state without manufacturing an empty
+  social review.
+- **Subject discovery:** canonical song/album detail combines the viewer's own
+  state, provider-open actions, visible rating aggregate/distribution, and
+  paginated visible written reviews. Popular/community ordering stays absent
+  until reporting, rate limits, moderation operations, and an explainable rank
+  policy exist.
+
+**Emulate**
+
+- strong separation between status, dated history, current score, affinity,
+  prose, lists, and social activity;
+- a fast subject-first composer with optional fields that can coexist;
+- ten-position half-star ratings and an independent binary Loved signal;
+- dedicated profile shelves, canonical subject pages, spoiler consent,
+  addressable reviews, author navigation, discussion, filters, and stable
+  pagination;
+- low-noise follower activity driven by explicit authorship.
+
+**Do not emulate**
+
+- Letterboxd branding, colors, poster-grid composition, film terminology, or
+  exact copy;
+- public-by-default profiles/content—Harmony remains private by default and
+  exposes Only me / Followers until a deliberate public launch;
+- a hidden weighted-ranking formula or community popularity before Harmony has
+  enough volume and anti-manipulation policy;
+- subscriber-tier gates, ads, or statistics whose product value has not been
+  established;
+- feed posts for passive Spotify imports, every playback transition, queue
+  reorder, or rating correction;
+- provider IDs as social identity or any implication that Harmony streams the
+  reviewed music.
+
+**Completion evidence for this surface**
+
+- UI tests prove the Reviews tab is first-class, the three shelves do not
+  mutate one another, spoiler text is gated, and exact review/profile/subject
+  routes work from compact cards and notifications.
+- Unit tests prove optional-rating rules, half-star normalization, independent
+  Loved/current/historical state, draft preservation, search-state isolation,
+  and loaded-page filter disclosure.
+- Hosted tests prove owner/follower/block visibility, atomic Review+Diary
+  writes, no imported-play feed spam, pagination/cursor stability, exhaustive
+  aggregates, child-content privacy, notification identity, and direct-DML
+  denial.
+- Physical-device testing is required only for provider open/play behavior;
+  the Reviews data model and simulator flows do not depend on MusicKit access.
+
 The information hierarchy matters as much as the fields. Harmony's Reviews
 experience remains the fifth root tab, with its own composer, owner library,
 Ratings shelf, and review-detail navigation. It must not regress into a small
-Diary section inside Listen. The next navigation slice adds follower-review
-activity as a peer shelf in that root. Listen continues to own ephemeral live
-listening and dated listening history; Reviews owns authored music opinions,
-their discovery, and their conversation.
+Diary section inside Listen. Follower-review activity is the opening peer
+shelf in that root. Listen continues to own ephemeral live listening and dated
+listening history; Reviews owns authored music opinions, their discovery, and
+their conversation.
 
 ### Staged adaptation roadmap
 
-Only the first stage should be described as implemented:
+Stages are labeled explicitly so later discovery work is not mistaken for the
+implemented private/follower product:
 
 1. **Current:** first-class Reviews tab, follower review feed, song/album
    composer, rating/Loved/spoiler/audience controls, compact cards, review
@@ -230,13 +341,26 @@ own typography and colors, and music-specific language such as Listened and
 Relisten. Community-wide popular reviews remain deferred until public audience,
 reporting/moderation, rate limits, and an explainable ranking policy exist.
 
-For the first production model, Harmony should expose one active authored
-review per member and canonical song/album. The author edits that opinion in
-place while Diary listens remain repeatable. This prevents ordinary song
-replays from encouraging dozens of indistinguishable reviews. Explicit review
-editions or revision history can be added later without coupling them to every
-listen. Existing duplicate prototype rows must be audited before a uniqueness
-constraint is introduced; no destructive cleanup is implied by this decision.
+Harmony exposes one active authored review per member and canonical song or
+album. The author edits that opinion in place while Diary listens remain
+repeatable. Migration 062 enforces this with partial unique indexes and a
+serialized insert guard that returns stable `music_review_already_exists`
+conflicts. Deployment aborts rather than choosing among any pre-existing
+duplicates, so authored writing is never silently deleted. Soft-deleting a
+review releases the subject for a later replacement, while the old durable row
+remains. `get_my_active_music_review(...)` lets a subject-first composer route
+directly to Edit without relying on whichever review pages happen to be loaded.
+The iOS composer performs that exact lookup whenever a song or album is chosen,
+then prepopulates the server's rating, Loved, spoiler, prose, and audience values
+and changes the primary action to **Save changes**. Editing never offers the
+Diary opt-in because an existing authored review and a new listening event are
+separate operations. Lookup failures are retryable and keep publication disabled
+until uniqueness is known. Concurrent selections are safe: repository reads may
+finish in either order, while a per-selection request token permits only the
+newest response to update the draft. If another device publishes between lookup
+and insert, the stable `PT409` conflict triggers one exact lookup and transitions
+the same composer into Edit instead of losing the draft or showing a generic
+failure.
 
 ### Implemented member-profile information architecture
 

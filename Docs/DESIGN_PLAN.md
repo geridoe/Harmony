@@ -12,7 +12,8 @@ Harmony coordinates _intent_ and social state; it does not host, transmit, or sy
 
 - A signed-in user creates, joins, and leaves a session.
 - A session has a title, invite code/link, Conductor, roles, presence, queue, revision, and playback intent.
-- Members can add tracks and see Apple Music/Spotify availability before adding.
+- Members can add tracks, arrange the queue when the Conductor permits it,
+  and see Apple Music/Spotify availability before adding.
 - Conductor can reorder, remove, play, pause, and skip.
 - Each client maps a canonical Harmony track to its connected provider.
 - Apple Music and Spotify are both visible, independently connected, and independently fallible.
@@ -30,7 +31,8 @@ Harmony coordinates _intent_ and social state; it does not host, transmit, or sy
 | Create/end session | Yes | No |
 | Invite people | Yes | Yes, if room setting allows |
 | Add track | Yes | Yes |
-| Move/remove any queue item | Yes | No initially |
+| Move any queue item | Yes | Yes, if room setting allows |
+| Remove any queue item | Yes | No |
 | Remove own item | Yes | Yes |
 | Playback controls | Yes | No |
 | Listen on own provider | Yes | Yes |
@@ -49,7 +51,11 @@ Shows active/recent rooms, a “Start a session” button, and a “Join with co
 
 ### Create session
 
-Inputs: title, permission setting (all collaborators can add; Conductor-only reorder), playback mode, and optional expiry. It returns a six/eight-character invite code plus a universal link.
+Inputs: title, collaborator invite permission, collaborator queue-arrangement
+permission, playback mode, and optional expiry. Collaborator arrangement starts
+enabled for a genuinely shared party queue, and the Conductor may disable it
+before or during the room. Creation returns a six/eight-character invite code
+plus a universal link.
 
 ### Live session
 
@@ -57,7 +63,8 @@ The core screen has four regions:
 
 1. Header: room title, Conductor, participant count, invite/share action, and connection health.
 2. Now playing: current canonical item, playback status, provider selected by the device, and Conductor controls.
-3. Queue: ordered items, contributor, provider availability, drag handles for the Conductor, and swipe actions.
+3. Queue: ordered items, contributor, provider availability, drag handles for
+   the Conductor and permitted collaborators, and role-appropriate swipe actions.
 4. Bottom navigation: session, add music, and connections.
 
 ### Add music
@@ -67,6 +74,17 @@ Search each connected catalog concurrently, normalize results into a single cano
 ### Connections
 
 Each provider has states: disconnected, connecting, connected, unavailable, permission denied, subscription required, or open-in-provider only. Include a clear disconnect action and explain that the provider authorizes only the user’s device.
+
+### Reviews
+
+Reviews is a first-class root destination for durable music opinion, separate
+from Session playback and Listen's Eavesdrop/history work. Its root has
+Following, My Reviews, and Ratings peers plus a persistent Write review action.
+Written reviews are addressable song/album posts with optional half-star
+rating, independent Loved state, spoiler consent, comments/reactions, author
+and canonical-subject routes, and owner edit/delete. Ratings also contains
+rating-only current state that must not be turned into an empty social post.
+See `REVIEW_DESIGN.md` for the primary-source pattern audit and complete flow.
 
 ## 5. Queue and playback behavior
 
@@ -84,6 +102,11 @@ QueueCommand
 ```
 
 The client performs optimistic updates. The server wraps validation, event append, and materialized queue update in one database transaction. A conflict returns the latest revision/events; the client replays eligible local commands or shows a resolution prompt.
+
+The iOS client serializes optimistic mutations so concurrent local gestures do
+not reuse one expected revision. It retries one safely rebased conflict after
+an authoritative refresh; if the intent can no longer be preserved, the queue
+stays refreshed and the user receives explicit Retry or Dismiss actions.
 
 ### Playback modes
 
@@ -191,7 +214,7 @@ provider_connections(id, profile_id, provider, encrypted_refresh_token, expires_
 | --- | --- |
 | Domain | Queue ordering, role checks, revision conflicts, track availability |
 | Repository | Event serialization, optimistic rollback, realtime reconnection |
-| UI | Create/join, add track, drag reorder, unavailable mapping state |
+| UI | Create/join, add track, Conductor/permitted-collaborator drag reorder, denied-collaborator state, unavailable mapping state |
 | Devices | Apple Music authorization/playback; Spotify app remote; two-account session |
 | Backend | RLS policies, RPC role validation, replay/idempotency |
 
@@ -213,6 +236,7 @@ provider_connections(id, profile_id, provider, encrypted_refresh_token, expires_
 - [x] Realtime queue updates
 - [x] Conflict/revision recovery
 - [x] Presence / participant list backed by Supabase Realtime
+- [x] Conductor-configurable collaborator queue arrangement
 
 ### Milestone 2 — real services
 

@@ -378,6 +378,222 @@ struct QueueEvent: Identifiable, Hashable {
     }
 }
 
+enum PendingQueueMutation: Equatable {
+    case add(localItem: QueueItem)
+    case remove(queueItemID: UUID)
+    /// The desired neighbors are captured after the optimistic move. Positions
+    /// are deliberately resolved just before execution so a conflict rebase
+    /// never submits a position already occupied by a newer server snapshot.
+    case move(queueItemID: UUID, predecessorID: UUID?, successorID: UUID?)
+
+    var title: String {
+        switch self {
+        case .add: "Add song"
+        case .remove: "Remove song"
+        case .move: "Move song"
+        }
+    }
+}
+
+struct PendingQueueCommand: Identifiable, Equatable {
+    let id: UUID
+    let sessionID: UUID
+    let generation: UUID
+    let mutation: PendingQueueMutation
+    var conflictRetryCount = 0
+}
+
+struct QueueCommandTerminalConflict: Identifiable, Equatable {
+    let command: PendingQueueCommand
+    let message: String
+    var id: UUID { command.id }
+}
+
+enum QueueMutationPreparationError: LocalizedError {
+    case targetUnavailable
+    case destinationChanged
+
+    var errorDescription: String? {
+        switch self {
+        case .targetUnavailable:
+            "The song is no longer in this queue."
+        case .destinationChanged:
+            "The surrounding queue changed, so Harmony could not safely preserve this move."
+        }
+    }
+}
+
+@MainActor
+final class SerializedQueueCommandCoordinator {
+    typealias Execute = @MainActor (PendingQueueCommand, Int, [UUID: UUID]) async throws -> QueueCommandResult
+    typealias Refresh = @MainActor () async throws -> Int
+    typealias Applied = @MainActor (PendingQueueCommand, QueueCommandResult) -> Void
+    typealias Terminal = @MainActor (QueueCommandTerminalConflict?) -> Void
+    typealias PendingChanged = @MainActor ([PendingQueueCommand], [UUID: UUID]) -> Void
+
+    private(set) var sessionID: UUID?
+    private(set) var generation = UUID()
+    private(set) var authoritativeRevision = 0
+    private(set) var pending: [PendingQueueCommand] = []
+    private(set) var localToRemoteItemIDs: [UUID: UUID] = [:]
+    private(set) var terminalConflict: QueueCommandTerminalConflict?
+    private var drainTask: Task<Void, Never>?
+
+    private let execute: Execute
+    private let refresh: Refresh
+    private let applied: Applied
+    private let terminalChanged: Terminal
+    private let pendingChanged: PendingChanged
+
+    init(
+        execute: @escaping Execute,
+        refresh: @escaping Refresh,
+        applied: @escaping Applied = { _, _ in },
+        terminalChanged: @escaping Terminal = { _ in },
+        pendingChanged: @escaping PendingChanged = { _, _ in }
+    ) {
+        self.execute = execute
+        self.refresh = refresh
+        self.applied = applied
+        self.terminalChanged = terminalChanged
+        self.pendingChanged = pendingChanged
+    }
+
+    func beginSession(_ sessionID: UUID, revision: Int) {
+        invalidate()
+        self.sessionID = sessionID
+        authoritativeRevision = revision
+    }
+
+    func updateAuthoritativeRevision(_ revision: Int) {
+        authoritativeRevision = revision
+    }
+
+    @discardableResult
+    func enqueue(_ mutation: PendingQueueMutation, commandID: UUID = UUID()) -> UUID? {
+        guard let sessionID else { return nil }
+        let command = PendingQueueCommand(
+            id: commandID,
+            sessionID: sessionID,
+            generation: generation,
+            mutation: mutation
+        )
+        pending.append(command)
+        publishPending()
+        startDrainIfNeeded()
+        return commandID
+    }
+
+    func retryTerminalConflict() {
+        guard var command = terminalConflict?.command,
+              command.sessionID == sessionID,
+              command.generation == generation else { return }
+        command.conflictRetryCount = 0
+        terminalConflict = nil
+        terminalChanged(nil)
+        pending.insert(command, at: 0)
+        publishPending()
+        startDrainIfNeeded()
+    }
+
+    func dismissTerminalConflict() {
+        terminalConflict = nil
+        pending = []
+        localToRemoteItemIDs = [:]
+        terminalChanged(nil)
+        publishPending()
+    }
+
+    func invalidate() {
+        generation = UUID()
+        sessionID = nil
+        authoritativeRevision = 0
+        pending = []
+        localToRemoteItemIDs = [:]
+        terminalConflict = nil
+        drainTask?.cancel()
+        drainTask = nil
+        terminalChanged(nil)
+        publishPending()
+    }
+
+    func waitUntilIdleForTesting() async {
+        while drainTask != nil {
+            await Task.yield()
+        }
+    }
+
+    private func startDrainIfNeeded() {
+        guard drainTask == nil, terminalConflict == nil, !pending.isEmpty else { return }
+        let activeGeneration = generation
+        drainTask = Task { [weak self] in
+            await self?.drain(generation: activeGeneration)
+        }
+    }
+
+    private func drain(generation activeGeneration: UUID) async {
+        defer {
+            if generation == activeGeneration {
+                drainTask = nil
+                if terminalConflict == nil, !pending.isEmpty { startDrainIfNeeded() }
+            }
+        }
+
+        while !Task.isCancelled,
+              generation == activeGeneration,
+              terminalConflict == nil,
+              var command = pending.first {
+            do {
+                let result = try await execute(command, authoritativeRevision, localToRemoteItemIDs)
+                guard generation == activeGeneration,
+                      sessionID == command.sessionID else { return }
+                authoritativeRevision = result.revision
+                if case .add(let localItem) = command.mutation,
+                   let remoteID = result.queueItemID {
+                    localToRemoteItemIDs[localItem.id] = remoteID
+                }
+                applied(command, result)
+                // A successful add needs the server-generated item ID and
+                // authoritative position before a dependent move/remove can
+                // execute. Refresh every applied command rather than relying
+                // on an eventually delivered Realtime event.
+                authoritativeRevision = max(result.revision, try await refresh())
+                guard generation == activeGeneration,
+                      sessionID == command.sessionID else { return }
+                pending.removeFirst()
+                publishPending()
+            } catch CollaborationError.revisionConflict where command.conflictRetryCount == 0 {
+                do {
+                    let refreshedRevision = try await refresh()
+                    guard generation == activeGeneration,
+                          sessionID == command.sessionID else { return }
+                    authoritativeRevision = refreshedRevision
+                    command.conflictRetryCount = 1
+                    pending[0] = command
+                    publishPending()
+                } catch {
+                    guard generation == activeGeneration else { return }
+                    fail(command, message: "Harmony could not refresh the shared queue. Try this change again.")
+                }
+            } catch {
+                guard generation == activeGeneration else { return }
+                fail(command, message: error.localizedDescription)
+            }
+        }
+    }
+
+    private func fail(_ command: PendingQueueCommand, message: String) {
+        if pending.first?.id == command.id { pending.removeFirst() }
+        terminalConflict = QueueCommandTerminalConflict(command: command, message: message)
+        terminalChanged(terminalConflict)
+        publishPending()
+    }
+
+    private func publishPending() {
+        pendingChanged(pending, localToRemoteItemIDs)
+    }
+}
+
 enum SocialRelationshipState: Equatable {
     case none
     case outgoingRequested
@@ -409,6 +625,12 @@ enum MusicOpinionSubmissionIntent: Equatable {
     case invalid
     case ratingOnly(Double)
     case writtenReview(body: String, rating: Double?)
+}
+
+enum ActiveMusicReviewResolution {
+    case none
+    case existing(RemoteMusicReview)
+    case failed(String)
 }
 
 func musicOpinionSubmissionIntent(rating: Double?, body: String) -> MusicOpinionSubmissionIntent {
@@ -636,6 +858,8 @@ final class HarmonySessionStore: ObservableObject {
     @Published var sessionName = "Friday Night Finds"
     @Published var inviteCode = "HARMONY-8Q4"
     @Published var collaborationMessage = "Local prototype"
+    @Published private(set) var queueCommandConflict: QueueCommandTerminalConflict?
+    @Published private(set) var pendingQueueCommandCount = 0
     @Published private(set) var isConnectingSpotify = false
     @Published private(set) var isConnectingAppleMusic = false
     @Published private(set) var isConnectingSpotifyPlayback = false
@@ -647,7 +871,9 @@ final class HarmonySessionStore: ObservableObject {
     @Published private var catalogSearchStates: [CatalogSearchPurpose: CatalogSearchState] = [:]
     @Published private(set) var isClosingSession = false
     @Published private(set) var isUpdatingInvitePermissions = false
+    @Published private(set) var isUpdatingCollaboratorReordering = false
     @Published var allowsCollaboratorInvites = true
+    @Published var allowsCollaboratorReordering = true
     @Published var selectedPlaybackMode: SessionPlaybackMode = .conductorPlayback
     @Published var selectedSessionExpiry: SessionExpiry = .never
     @Published private(set) var sessionExpiresAt: Date?
@@ -699,6 +925,9 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var isLoadingMoreOwnerReviews = false
     @Published private(set) var hasMoreOwnerReviews = false
     @Published private(set) var isPublishingMusicReview = false
+    @Published private(set) var isResolvingActiveMusicReview = false
+    @Published private(set) var reviewPublicationConflict: RemoteMusicReview?
+    private var activeMusicReviewLookupCount = 0
     @Published private(set) var mutatingReviewIDs: Set<UUID> = []
     @Published private(set) var followingActivity: [RemoteFollowingActivityItem] = []
     @Published private(set) var isRefreshingFollowingActivity = false
@@ -741,6 +970,10 @@ final class HarmonySessionStore: ObservableObject {
     private var blockedSocialProfileIDs: Set<UUID> = []
     private var authenticatedProfileID: UUID?
     private var remoteSessionID: UUID?
+    private var authoritativeQueuePositions: [UUID: Double] = [:]
+    private var pendingQueueCommands: [PendingQueueCommand] = []
+    private var pendingQueueItemIDMappings: [UUID: UUID] = [:]
+    private var needsRemoteQueueRefresh = false
     private var liveQueueSubscription: LiveQueueSubscription?
     private var liveSessionSubscription: LiveSessionSubscription?
     private var livePresenceSubscription: LivePresenceSubscription?
@@ -753,6 +986,39 @@ final class HarmonySessionStore: ObservableObject {
     private let spotifyRemote: any SpotifyPlaybackProviding
     private let appleMusicProvider: any AppleMusicProviding
     private var spotifyLoadedProviderID: String?
+    private lazy var queueCommandCoordinator = SerializedQueueCommandCoordinator(
+        execute: { [weak self] command, revision, mappings in
+            guard let self, self.remoteSessionID == command.sessionID else {
+                throw CancellationError()
+            }
+            return try await self.executeQueueCommand(command, revision: revision, mappings: mappings)
+        },
+        refresh: { [weak self] in
+            guard let self else { throw CancellationError() }
+            guard await self.refreshRemoteQueue(force: true) else {
+                throw CollaborationError.invalidResponse
+            }
+            return self.queueRevision
+        },
+        applied: { [weak self] command, _ in
+            self?.collaborationMessage = "Applied \(command.mutation.title.lowercased())"
+        },
+        terminalChanged: { [weak self] conflict in
+            self?.queueCommandConflict = conflict
+            if let conflict { self?.collaborationMessage = conflict.message }
+        },
+        pendingChanged: { [weak self] commands, mappings in
+            guard let self else { return }
+            self.pendingQueueCommands = commands
+            self.pendingQueueItemIDMappings = mappings
+            self.pendingQueueCommandCount = commands.count
+            self.applyPendingQueueProjection()
+            if commands.isEmpty, self.needsRemoteQueueRefresh {
+                self.needsRemoteQueueRefresh = false
+                Task { @MainActor [weak self] in await self?.refreshRemoteQueue(force: true) }
+            }
+        }
+    )
     private let journalPageSize = 50
     private let trackSubjectShelfPageSize = 50
     private let albumSubjectShelfPageSize = 50
@@ -768,6 +1034,7 @@ final class HarmonySessionStore: ObservableObject {
     private var memberProfileConnectionRequestIDs: [MemberProfileConnectionRequestKey: UUID] = [:]
 #if DEBUG
     private var isDiaryEditorUITestFixtureActive = false
+    private var isCollaboratorReorderingUITestFixtureActive = false
     private var socialDiscoveryFixtureProfiles: [RemoteSocialProfile] = []
 #endif
     @Published private(set) var currentMember: SessionMember
@@ -821,6 +1088,7 @@ final class HarmonySessionStore: ObservableObject {
     var isLiveSession: Bool { remoteSessionID != nil }
     var canShareInvite: Bool { isLiveSession && (currentMember.role == .conductor || allowsCollaboratorInvites) }
     var canControlPlayback: Bool { selectedPlaybackMode != .queueOnly && currentMember.role == .conductor }
+    var canReorderQueue: Bool { currentMember.role == .conductor || (isLiveSession && allowsCollaboratorReordering) }
     var canStartLiveSession: Bool {
         let title = sessionName.trimmingCharacters(in: .whitespacesAndNewlines)
         return (1...120).contains(title.count)
@@ -854,6 +1122,9 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     func bootstrap() async {
+#if DEBUG
+        if isCollaboratorReorderingUITestFixtureActive { return }
+#endif
         guard !hasBootstrapped, !isBootstrapping else { return }
         isBootstrapping = true
         defer { isBootstrapping = false }
@@ -1186,31 +1457,41 @@ final class HarmonySessionStore: ObservableObject {
     }
     func add(_ track: HarmonyTrack) {
         guard !contains(track) else { return }
-        queue.append(QueueItem(track: track, addedBy: currentMember))
-        record(.add)
-        guard let remoteSessionID else { return }
-        let expectedRevision = queueRevision - 1
-        Task { await applyRemoteAdd(track, sessionID: remoteSessionID, expectedRevision: expectedRevision) }
+        let localItem = QueueItem(track: track, addedBy: currentMember)
+        queue.append(localItem)
+        guard remoteSessionID != nil else {
+            record(.add)
+            return
+        }
+        _ = queueCommandCoordinator.enqueue(.add(localItem: localItem))
     }
 
     func remove(_ item: QueueItem) {
         guard canRemove(item) else { return }
         queue.removeAll { $0.id == item.id }
-        record(.remove)
-        guard let remoteSessionID else { return }
-        let expectedRevision = queueRevision - 1
-        Task { await applyRemoteRemove(item.id, sessionID: remoteSessionID, expectedRevision: expectedRevision) }
+        guard remoteSessionID != nil else {
+            record(.remove)
+            return
+        }
+        _ = queueCommandCoordinator.enqueue(.remove(queueItemID: item.id))
     }
 
     func move(from: IndexSet, to: Int) {
-        guard currentMember.role == .conductor else { return }
+        guard canReorderQueue else { return }
         guard let movedItemID = from.first.map({ queue[$0].id }) else { return }
         queue.move(fromOffsets: from, toOffset: to)
-        record(.move)
-        guard let remoteSessionID else { return }
+        guard remoteSessionID != nil else {
+            record(.move)
+            return
+        }
         guard let destination = queue.firstIndex(where: { $0.id == movedItemID }) else { return }
-        let expectedRevision = queueRevision - 1
-        Task { await applyRemoteMove(movedItemID, position: Double(destination + 1) * 1024, sessionID: remoteSessionID, expectedRevision: expectedRevision) }
+        let predecessorID = destination > queue.startIndex ? queue[destination - 1].id : nil
+        let successorID = destination + 1 < queue.endIndex ? queue[destination + 1].id : nil
+        _ = queueCommandCoordinator.enqueue(.move(
+            queueItemID: movedItemID,
+            predecessorID: predecessorID,
+            successorID: successorID
+        ))
     }
 
     func togglePlayback() async {
@@ -1282,6 +1563,7 @@ final class HarmonySessionStore: ObservableObject {
             let remoteSession = try await collaborationRepository.createSession(
                 title: title,
                 allowCollaboratorInvites: allowsCollaboratorInvites,
+                allowCollaboratorReordering: allowsCollaboratorReordering,
                 playbackMode: selectedPlaybackMode,
                 expiresAt: selectedSessionExpiry.date()
             )
@@ -1289,9 +1571,11 @@ final class HarmonySessionStore: ObservableObject {
             inviteCode = remoteSession.inviteCode
             queueRevision = remoteSession.queueRevision
             allowsCollaboratorInvites = remoteSession.allowCollaboratorInvites
+            allowsCollaboratorReordering = remoteSession.allowCollaboratorReordering
             selectedPlaybackMode = remoteSession.playbackMode
             sessionExpiresAt = remoteSession.expiresAt
             remoteSessionID = remoteSession.id
+            queueCommandCoordinator.beginSession(remoteSession.id, revision: remoteSession.queueRevision)
             collaborationMessage = "Live Supabase session"
             var draftRevision = remoteSession.queueRevision
             var draftUploadFailed = false
@@ -1301,7 +1585,7 @@ final class HarmonySessionStore: ObservableObject {
                         track: track,
                         to: remoteSession.id,
                         expectedRevision: draftRevision
-                    )
+                    ).revision
                 } catch {
                     draftUploadFailed = true
                     break
@@ -1330,9 +1614,11 @@ final class HarmonySessionStore: ObservableObject {
             self.inviteCode = remoteSession.inviteCode
             queueRevision = remoteSession.queueRevision
             allowsCollaboratorInvites = remoteSession.allowCollaboratorInvites
+            allowsCollaboratorReordering = remoteSession.allowCollaboratorReordering
             selectedPlaybackMode = remoteSession.playbackMode
             sessionExpiresAt = remoteSession.expiresAt
             remoteSessionID = remoteSession.id
+            queueCommandCoordinator.beginSession(remoteSession.id, revision: remoteSession.queueRevision)
             collaborationMessage = "Joined live Supabase session"
             await refreshRemoteQueue()
             await subscribeToRemoteQueue(remoteSession.id)
@@ -1345,6 +1631,9 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     func refreshRecentSessions() async {
+#if DEBUG
+        if isCollaboratorReorderingUITestFixtureActive { return }
+#endif
         guard !isLoadingRecentSessions else { return }
         isLoadingRecentSessions = true
         defer { isLoadingRecentSessions = false }
@@ -3236,6 +3525,32 @@ final class HarmonySessionStore: ObservableObject {
     }
 
 #if DEBUG
+    func seedCollaboratorReorderingUITestFixture(allowed: Bool) {
+        isCollaboratorReorderingUITestFixtureActive = true
+        let conductor = SessionMember(name: "Queue Host", initials: "QH", role: .conductor, providers: [.spotify])
+        let collaborator = SessionMember(name: "Queue Guest", initials: "QG", role: .collaborator, providers: [.spotify])
+        let first = QueueItem(track: SampleCatalog.tracks[0], addedBy: conductor)
+        let second = QueueItem(track: SampleCatalog.tracks[1], addedBy: collaborator)
+        let fixtureSessionID = UUID()
+        currentMember = collaborator
+        members = [conductor, collaborator]
+        queue = [first, second]
+        queueRevision = 2
+        playbackState = .paused
+        sessionName = "Collaborator Queue Fixture"
+        inviteCode = "QUEUE61"
+        allowsCollaboratorInvites = true
+        allowsCollaboratorReordering = allowed
+        selectedPlaybackMode = .queueOnly
+        remoteSessionID = fixtureSessionID
+        activeMemberIDs = Set(members.map(\.id))
+        authoritativeQueuePositions = [first.id: 1024, second.id: 2048]
+        queueCommandCoordinator.beginSession(fixtureSessionID, revision: queueRevision)
+        collaborationMessage = allowed
+            ? "Collaborators can arrange the queue"
+            : "Only the Conductor can arrange the queue"
+    }
+
     /// Keeps editor UI tests deterministic and independent of a developer's
     /// signed-in account or hosted journal contents.
     func seedDiaryEditorUITestFixture() {
@@ -4119,6 +4434,61 @@ final class HarmonySessionStore: ObservableObject {
         catch { collaborationMessage = "Could not refresh reviews." }
     }
 
+    func resolveActiveMusicReview(for subject: ReviewDraftSubject) async -> ActiveMusicReviewResolution {
+        activeMusicReviewLookupCount += 1
+        isResolvingActiveMusicReview = true
+        defer {
+            activeMusicReviewLookupCount -= 1
+            isResolvingActiveMusicReview = activeMusicReviewLookupCount > 0
+        }
+#if DEBUG
+        if isDiaryEditorUITestFixtureActive {
+            let existing = ownerReviews.first { review in
+                switch subject {
+                case .track(let track):
+                    guard review.subjectKind == "track" else { return false }
+                    if let requestedID = track.canonicalTrackID,
+                       let reviewID = review.canonicalTrack?.id {
+                        return requestedID == reviewID
+                    }
+                    guard let reviewTitle = review.subjectTitle,
+                          let reviewArtist = review.subjectArtist else { return false }
+                    return reviewTitle.caseInsensitiveCompare(track.title) == .orderedSame
+                        && reviewArtist.caseInsensitiveCompare(track.artist) == .orderedSame
+                case .album(let album):
+                    guard review.subjectKind == "album" else { return false }
+                    if let requestedID = album.canonicalAlbumID,
+                       let reviewID = review.canonicalAlbumID {
+                        return requestedID == reviewID
+                    }
+                    guard let reviewTitle = review.subjectTitle,
+                          let reviewArtist = review.subjectArtist else { return false }
+                    return reviewTitle.caseInsensitiveCompare(album.title) == .orderedSame
+                        && reviewArtist.caseInsensitiveCompare(album.artist) == .orderedSame
+                }
+            }
+            return existing.map(ActiveMusicReviewResolution.existing) ?? .none
+        }
+#endif
+        do {
+            let existing: RemoteMusicReview?
+            switch subject {
+            case .track(let track):
+                existing = try await collaborationRepository.activeMusicReview(for: track)
+            case .album(let album):
+                existing = try await collaborationRepository.activeMusicReview(for: album)
+            }
+            return existing.map(ActiveMusicReviewResolution.existing) ?? .none
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+    }
+
+    func consumeReviewPublicationConflict() -> RemoteMusicReview? {
+        defer { reviewPublicationConflict = nil }
+        return reviewPublicationConflict
+    }
+
     func refreshOwnerReviews() async {
 #if DEBUG
         guard !isDiaryEditorUITestFixtureActive else { return }
@@ -4393,6 +4763,7 @@ final class HarmonySessionStore: ObservableObject {
             return false
         }
         let resolvedVisibility = visibility ?? reviewsSocialVisibility
+        reviewPublicationConflict = nil
         isPublishingMusicReview = true
         defer { isPublishingMusicReview = false }
         do {
@@ -4441,6 +4812,12 @@ final class HarmonySessionStore: ObservableObject {
             }
             return true
         } catch {
+            if collaborationRepository.isActiveMusicReviewConflict(error),
+               case .existing(let existing) = await resolveActiveMusicReview(for: .track(track)) {
+                reviewPublicationConflict = existing
+                collaborationMessage = "This song already has your review. Harmony loaded it for editing."
+                return false
+            }
             collaborationMessage = "Could not publish review: \(error.localizedDescription)"
             return false
         }
@@ -4455,6 +4832,7 @@ final class HarmonySessionStore: ObservableObject {
             return false
         }
         let resolvedVisibility = visibility ?? reviewsSocialVisibility
+        reviewPublicationConflict = nil
         isPublishingMusicReview = true
         defer { isPublishingMusicReview = false }
         do {
@@ -4498,6 +4876,12 @@ final class HarmonySessionStore: ObservableObject {
             await refreshMyRatingDistribution(scope: "album")
             return true
         } catch {
+            if collaborationRepository.isActiveMusicReviewConflict(error),
+               case .existing(let existing) = await resolveActiveMusicReview(for: .album(album)) {
+                reviewPublicationConflict = existing
+                collaborationMessage = "This album already has your review. Harmony loaded it for editing."
+                return false
+            }
             collaborationMessage = "Could not publish album review: \(error.localizedDescription)"
             return false
         }
@@ -4646,9 +5030,11 @@ final class HarmonySessionStore: ObservableObject {
             inviteCode = remoteSession.inviteCode
             queueRevision = remoteSession.queueRevision
             allowsCollaboratorInvites = remoteSession.allowCollaboratorInvites
+            allowsCollaboratorReordering = remoteSession.allowCollaboratorReordering
             selectedPlaybackMode = remoteSession.playbackMode
             sessionExpiresAt = remoteSession.expiresAt
             remoteSessionID = remoteSession.id
+            queueCommandCoordinator.beginSession(remoteSession.id, revision: remoteSession.queueRevision)
             collaborationMessage = "Resumed live Supabase session"
             await refreshRemoteQueue()
             await subscribeToRemoteQueue(remoteSession.id)
@@ -4677,6 +5063,17 @@ final class HarmonySessionStore: ObservableObject {
         }
     }
 
+    func retryQueueCommandConflict() {
+        queueCommandCoordinator.retryTerminalConflict()
+    }
+
+    func dismissQueueCommandConflict() {
+        queueCommandCoordinator.dismissTerminalConflict()
+        Task { @MainActor [weak self] in
+            await self?.refreshRemoteQueue(force: true)
+        }
+    }
+
     func setCollaboratorInvitesAllowed(_ allowed: Bool) async {
         guard let remoteSessionID, currentMember.role == .conductor, !isUpdatingInvitePermissions else { return }
         isUpdatingInvitePermissions = true
@@ -4692,34 +5089,52 @@ final class HarmonySessionStore: ObservableObject {
         }
     }
 
-    private func applyRemoteAdd(_ track: HarmonyTrack, sessionID: UUID, expectedRevision: Int) async {
+    func setCollaboratorReorderingAllowed(_ allowed: Bool) async {
+        guard let remoteSessionID,
+              currentMember.role == .conductor,
+              !isUpdatingCollaboratorReordering else { return }
+        isUpdatingCollaboratorReordering = true
+        defer { isUpdatingCollaboratorReordering = false }
         do {
-            queueRevision = try await collaborationRepository.add(track: track, to: sessionID, expectedRevision: expectedRevision)
-            collaborationMessage = "Live Supabase session"
-            await refreshRemoteQueue()
+            let session = try await collaborationRepository.setCollaboratorReorderingAllowed(
+                in: remoteSessionID,
+                allowed: allowed
+            )
+            allowsCollaboratorReordering = session.allowCollaboratorReordering
+            collaborationMessage = allowed
+                ? "Collaborators can arrange the queue"
+                : "Only the Conductor can arrange the queue"
         } catch {
-            collaborationMessage = "Queue sync failed: \(error.localizedDescription)"
-            await refreshRemoteQueue()
+            collaborationMessage = "Could not update queue permissions: \(error.localizedDescription)"
         }
     }
 
-    private func refreshRemoteQueue() async {
-        guard let remoteSessionID else { return }
+    @discardableResult
+    private func refreshRemoteQueue(force: Bool = false) async -> Bool {
+        guard let remoteSessionID else { return false }
+        let requestedSessionID = remoteSessionID
+        if !force, !pendingQueueCommands.isEmpty {
+            needsRemoteQueueRefresh = true
+            return false
+        }
         do {
             async let remoteSession = collaborationRepository.session(id: remoteSessionID)
             async let remoteQueue = collaborationRepository.queue(for: remoteSessionID)
             async let remoteMembers = collaborationRepository.members(for: remoteSessionID)
             async let currentUserID = collaborationRepository.currentUserID()
             let (session, snapshot, remoteMemberRecords, userID) = try await (remoteSession, remoteQueue, remoteMembers, currentUserID)
+            guard self.remoteSessionID == requestedSessionID else { return false }
             if let expiresAt = session.expiresAt, expiresAt <= Date() {
                 await detachLiveSubscriptions()
                 clearSessionState(message: "This Harmony session has expired")
-                return
+                return false
             }
             sessionName = session.title
             inviteCode = session.inviteCode
             queueRevision = session.queueRevision
+            queueCommandCoordinator.updateAuthoritativeRevision(session.queueRevision)
             allowsCollaboratorInvites = session.allowCollaboratorInvites
+            allowsCollaboratorReordering = session.allowCollaboratorReordering
             selectedPlaybackMode = session.playbackMode
             sessionExpiresAt = session.expiresAt
             if session.playbackState?.status == "playing" { playbackState = .playing }
@@ -4745,29 +5160,122 @@ final class HarmonySessionStore: ObservableObject {
                 )
                 return QueueItem(id: remote.id, track: track, addedBy: members.first(where: { $0.id == remote.addedBy }) ?? currentMember)
             }
+            authoritativeQueuePositions = Dictionary(uniqueKeysWithValues: snapshot.map { ($0.id, $0.position) })
+            applyPendingQueueProjection()
             await synchronizePersonalSpotifyPlaybackIfNeeded()
+            return true
         } catch {
             collaborationMessage = "Could not refresh queue: \(error.localizedDescription)"
+            return false
         }
     }
 
-    private func applyRemoteRemove(_ queueItemID: UUID, sessionID: UUID, expectedRevision: Int) async {
-        do {
-            queueRevision = try await collaborationRepository.remove(queueItemID: queueItemID, from: sessionID, expectedRevision: expectedRevision)
-            await refreshRemoteQueue()
-        } catch {
-            collaborationMessage = "Queue sync failed: \(error.localizedDescription)"
-            await refreshRemoteQueue()
+    private func executeQueueCommand(
+        _ command: PendingQueueCommand,
+        revision: Int,
+        mappings: [UUID: UUID]
+    ) async throws -> QueueCommandResult {
+        switch command.mutation {
+        case .add(let localItem):
+            return try await collaborationRepository.add(
+                track: localItem.track,
+                to: command.sessionID,
+                commandID: command.id,
+                expectedRevision: revision
+            )
+        case .remove(let requestedID):
+            let remoteID = mappings[requestedID] ?? requestedID
+            guard authoritativeQueuePositions[remoteID] != nil else {
+                // A concurrent removal already achieved the requested result.
+                return QueueCommandResult(status: "applied", revision: revision, queueItemID: nil)
+            }
+            return try await collaborationRepository.remove(
+                queueItemID: remoteID,
+                from: command.sessionID,
+                commandID: command.id,
+                expectedRevision: revision
+            )
+        case .move(let requestedID, let requestedPredecessorID, let requestedSuccessorID):
+            let remoteID = mappings[requestedID] ?? requestedID
+            guard authoritativeQueuePositions[remoteID] != nil else {
+                throw QueueMutationPreparationError.targetUnavailable
+            }
+            let predecessorID = requestedPredecessorID.map { mappings[$0] ?? $0 }
+            let successorID = requestedSuccessorID.map { mappings[$0] ?? $0 }
+            let position = try Self.rebasedMovePosition(
+                itemID: remoteID,
+                predecessorID: predecessorID,
+                successorID: successorID,
+                positions: authoritativeQueuePositions
+            )
+            return try await collaborationRepository.move(
+                queueItemID: remoteID,
+                to: position,
+                in: command.sessionID,
+                commandID: command.id,
+                expectedRevision: revision
+            )
         }
     }
 
-    private func applyRemoteMove(_ queueItemID: UUID, position: Double, sessionID: UUID, expectedRevision: Int) async {
-        do {
-            queueRevision = try await collaborationRepository.move(queueItemID: queueItemID, to: position, in: sessionID, expectedRevision: expectedRevision)
-            await refreshRemoteQueue()
-        } catch {
-            collaborationMessage = "Queue sync failed: \(error.localizedDescription)"
-            await refreshRemoteQueue()
+    static func rebasedMovePosition(
+        itemID: UUID,
+        predecessorID: UUID?,
+        successorID: UUID?,
+        positions: [UUID: Double]
+    ) throws -> Double {
+        guard let currentPosition = positions[itemID] else {
+            throw QueueMutationPreparationError.targetUnavailable
+        }
+        let predecessorPosition = predecessorID.flatMap { positions[$0] }
+        let successorPosition = successorID.flatMap { positions[$0] }
+
+        if predecessorID != nil, predecessorPosition == nil {
+            throw QueueMutationPreparationError.destinationChanged
+        }
+        if successorID != nil, successorPosition == nil {
+            throw QueueMutationPreparationError.destinationChanged
+        }
+        switch (predecessorPosition, successorPosition) {
+        case (let lower?, let upper?):
+            guard lower < upper else { throw QueueMutationPreparationError.destinationChanged }
+            return lower + ((upper - lower) / 2)
+        case (let lower?, nil):
+            return lower + 1024
+        case (nil, let upper?):
+            return upper - 1024
+        case (nil, nil):
+            return currentPosition
+        }
+    }
+
+    private func applyPendingQueueProjection() {
+        guard remoteSessionID != nil else { return }
+        for command in pendingQueueCommands {
+            switch command.mutation {
+            case .add(let localItem):
+                guard pendingQueueItemIDMappings[localItem.id] == nil,
+                      !queue.contains(where: { $0.id == localItem.id }) else { continue }
+                queue.append(localItem)
+            case .remove(let requestedID):
+                let resolvedID = pendingQueueItemIDMappings[requestedID] ?? requestedID
+                queue.removeAll { $0.id == requestedID || $0.id == resolvedID }
+            case .move(let requestedID, let predecessorID, let successorID):
+                let resolvedID = pendingQueueItemIDMappings[requestedID] ?? requestedID
+                guard let source = queue.firstIndex(where: { $0.id == requestedID || $0.id == resolvedID }) else { continue }
+                let item = queue.remove(at: source)
+                let resolvedPredecessorID = predecessorID.map { pendingQueueItemIDMappings[$0] ?? $0 }
+                let resolvedSuccessorID = successorID.map { pendingQueueItemIDMappings[$0] ?? $0 }
+                if let resolvedSuccessorID,
+                   let destination = queue.firstIndex(where: { $0.id == resolvedSuccessorID || $0.id == successorID }) {
+                    queue.insert(item, at: destination)
+                } else if let resolvedPredecessorID,
+                          let predecessor = queue.firstIndex(where: { $0.id == resolvedPredecessorID || $0.id == predecessorID }) {
+                    queue.insert(item, at: queue.index(after: predecessor))
+                } else {
+                    queue.insert(item, at: min(source, queue.endIndex))
+                }
+            }
         }
     }
 
@@ -4832,12 +5340,19 @@ final class HarmonySessionStore: ObservableObject {
         guard remoteSessionID == sessionID else { return }
         do {
             let session = try await collaborationRepository.session(id: sessionID)
+            guard remoteSessionID == sessionID else { return }
             if let expiresAt = session.expiresAt, expiresAt <= Date() {
                 await detachLiveSubscriptions()
                 clearSessionState(message: "This Harmony session has expired")
                 return
             }
-            guard session.endedAt != nil else { return }
+            if session.endedAt == nil {
+                allowsCollaboratorInvites = session.allowCollaboratorInvites
+                allowsCollaboratorReordering = session.allowCollaboratorReordering
+                selectedPlaybackMode = session.playbackMode
+                sessionExpiresAt = session.expiresAt
+                return
+            }
             await detachLiveSubscriptions()
             clearSessionState(message: "The Conductor ended this session")
         } catch {
@@ -4851,6 +5366,7 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     func clearSessionState(message: String) {
+        queueCommandCoordinator.invalidate()
         let localOwner = SessionMember(
             id: currentMember.id,
             name: currentMember.name,
@@ -4859,6 +5375,12 @@ final class HarmonySessionStore: ObservableObject {
             providers: currentMember.providers
         )
         remoteSessionID = nil
+        authoritativeQueuePositions = [:]
+        pendingQueueCommands = []
+        pendingQueueItemIDMappings = [:]
+        pendingQueueCommandCount = 0
+        queueCommandConflict = nil
+        needsRemoteQueueRefresh = false
         activeMemberIDs = []
         queue = []
         queueRevision = 0
@@ -4869,6 +5391,7 @@ final class HarmonySessionStore: ObservableObject {
         members = [localOwner]
         inviteCode = ""
         allowsCollaboratorInvites = true
+        allowsCollaboratorReordering = true
         selectedPlaybackMode = .conductorPlayback
         selectedSessionExpiry = .never
         sessionExpiresAt = nil

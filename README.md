@@ -14,11 +14,11 @@ device; Harmony never rebroadcasts audio.
 
 | iOS destination | Responsibility |
 | --- | --- |
-| Session | Conductor/collaborator room, queue ordering, playback intent |
+| Session | Conductor/collaborator room, permission-aware shared queue ordering, playback intent |
 | Add music | Connected-catalog search and queue insertion |
 | Connections | Spotify/Apple setup, profile, consent, social privacy |
-| Listen | follows, notifications, live eavesdrop presence, passive history |
-| Reviews | first-class Reviews, Ratings, Diary, Activity, and Lists routes |
+| Listen | follows, notifications, Eavesdrop, history, Diary, Activity, Music shelf, and Lists routes |
+| Reviews | first-class Following, My Reviews, Ratings, and review composition |
 
 The Reviews architecture is intentionally Letterboxd-inspired without copying
 its film-specific presentation. Current rating, Loved state, a dated listen,
@@ -44,7 +44,12 @@ MusicProvider adapters
 Canonical tracks and provider mappings prevent a Spotify ID from becoming the
 shared identity of a song. Queue commands and ordered-list edits use explicit
 revisions; stale mutations reject atomically and the client reloads the
-authoritative snapshot.
+authoritative snapshot. New rooms allow collaborators to arrange the queue by
+default; the Conductor can revoke that permission without transferring
+playback or arbitrary-removal authority.
+Optimistic queue commands are serialized, visibly marked while syncing, and
+surface a Retry/Dismiss decision when an automatic one-time rebase cannot
+preserve the requested change.
 
 ## Build and test
 

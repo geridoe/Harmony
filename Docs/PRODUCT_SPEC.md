@@ -5,14 +5,29 @@ Harmony owns a collaborative, provider-neutral music queue. A Conductor hosts a 
 
 ## First milestone
 - Create or join one live session, see members and a shared queue.
-- Add, remove, and reorder canonical tracks locally.
+- Add and remove canonical tracks; let the Conductor and permitted
+  collaborators reorder the shared queue.
 - Show independent Apple Music and Spotify availability for every track.
 - Use mock provider connections until MusicKit and Spotify OAuth/App Remote credentials are configured.
 
 ## Architecture
 The SwiftUI feature layer sends commands to `HarmonySessionStore`. The store is the optimistic local state boundary and will later call a `SessionRepository` backed by Supabase Realtime. The domain uses canonical tracks plus provider mappings; provider adapters resolve and play locally, never as the source of truth.
 
-The backend phase stores sessions, memberships, canonical tracks, provider mappings, queue items, and an append-only queue-event log. Every mutation supplies an expected queue revision; the server validates membership/role, appends the event atomically, updates the materialized queue, and broadcasts the new revision.
+The backend stores sessions, memberships, canonical tracks, provider mappings,
+queue items, and an append-only queue-event log. Every mutation supplies an
+expected queue revision; the server validates membership, role, and the
+session's collaborator-reordering permission, appends the event atomically,
+updates the materialized queue, and broadcasts the new revision.
+
+## Social Reviews expansion
+
+Reviews is its own primary page rather than a Diary subsection inside Listen.
+It separates a follower review feed, the owner's written Reviews library, and
+current song/album Ratings. A dated Diary listen, current rating, Loved state,
+written review, list membership, and review reaction are separate domain
+records even when one composer creates compatible records atomically. The
+first-class IA, creation/detail flows, Letterboxd attribution, privacy
+differences, and acceptance evidence are specified in `REVIEW_DESIGN.md`.
 
 ## Delivery sequence
 1. Local store, queue UX, provider mapping states, and unit tests.
@@ -21,4 +36,7 @@ The backend phase stores sessions, memberships, canonical tracks, provider mappi
 4. Push notifications, resilience, and device-test coverage.
 
 ## Validation
-Use unit tests for queue operations; use XcodeBuildMCP to compile/test simulator UI; use real devices and valid service accounts for all MusicKit/Spotify authorization and playback checks.
+Use unit tests for queue operations and permission projection; use
+XcodeBuildMCP to compile/test Conductor, permitted-collaborator, and denied-
+collaborator simulator UI; use real devices and valid service accounts for all
+MusicKit/Spotify authorization and playback checks.

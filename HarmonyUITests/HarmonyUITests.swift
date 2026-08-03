@@ -40,6 +40,40 @@ class HarmonyUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Friday Night Finds"].exists)
     }
 
+    func testNewSessionAllowsCollaboratorsToArrangeQueueByDefault() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        let arrangement = app.switches["create-collaborator-reordering"]
+        XCTAssertTrue(arrangement.waitForExistence(timeout: 5))
+        XCTAssertEqual(arrangement.value as? String, "1")
+    }
+
+    func testPermittedCollaboratorCanEnterQueueReorderingMode() throws {
+        let app = XCUIApplication()
+        app.launchArguments.append("--ui-test-collaborator-reordering-allowed")
+        app.launch()
+
+        XCTAssertTrue(app.staticTexts["Live session active"].waitForExistence(timeout: 5))
+        let edit = app.buttons["queue-reorder-edit"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        edit.tap()
+        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.switches["live-collaborator-reordering"].exists,
+                       "Only the Conductor owns the live permission control")
+    }
+
+    func testDeniedCollaboratorCannotEnterQueueReorderingMode() throws {
+        let app = XCUIApplication()
+        app.launchArguments.append("--ui-test-collaborator-reordering-disabled")
+        app.launch()
+
+        XCTAssertTrue(app.staticTexts["Live session active"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["queue-reorder-edit"].exists)
+        XCTAssertFalse(app.switches["live-collaborator-reordering"].exists,
+                       "Only the Conductor owns the live permission control")
+    }
+
     func testConnectionsTabLoadsWithoutCrashing() throws {
         let app = XCUIApplication()
         app.launch()
@@ -197,7 +231,7 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Choose different music"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["Your diary"].exists)
 
-        let reviewBody = app.textFields["Write your review (optional)"]
+        let reviewBody = app.descendants(matching: .any)["review-composer-body"]
         XCTAssertTrue(reviewBody.waitForExistence(timeout: 5))
         reviewBody.tap()
         reviewBody.typeText("A UI fixture review.")
@@ -232,6 +266,37 @@ class HarmonyUITests: XCTestCase {
             format: "label == 'Complete current rating distribution: 2 ratings'"
         )).firstMatch
         XCTAssertTrue(distribution.waitForExistence(timeout: 5))
+    }
+
+    func testSelectingAlreadyReviewedMusicRoutesComposerIntoEditMode() throws {
+        let app = XCUIApplication()
+        app.launchArguments.append("--ui-test-diary-editor")
+        app.launch()
+
+        let reviewsTab = app.tabBars.buttons["Reviews"]
+        XCTAssertTrue(reviewsTab.waitForExistence(timeout: 5))
+        reviewsTab.tap()
+        let reviewsNavigation = app.navigationBars["Reviews"]
+        if !reviewsNavigation.waitForExistence(timeout: 3) {
+            reviewsTab.tap()
+        }
+        XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Write review"].waitForExistence(timeout: 5))
+        app.buttons["Write review"].tap()
+        XCTAssertTrue(app.buttons["Choose a song or album"].waitForExistence(timeout: 5))
+        app.buttons["Choose a song or album"].tap()
+
+        let existingSubject = app.buttons["Review song Afterglow by Wolves at Noon"]
+        XCTAssertTrue(existingSubject.waitForExistence(timeout: 5))
+        existingSubject.tap()
+
+        XCTAssertTrue(app.navigationBars["Edit review"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["review-composer-existing-review"].exists)
+        let reviewBody = app.descendants(matching: .any)["review-composer-body"]
+        XCTAssertTrue(reviewBody.exists)
+        XCTAssertEqual(reviewBody.value as? String, "A fixture opinion.")
+        XCTAssertTrue(app.buttons["Save changes"].exists)
+        XCTAssertFalse(app.switches["review-add-to-diary"].exists)
     }
 
     func testReviewFeedKeepsConversationControlsOffTheSummary() throws {

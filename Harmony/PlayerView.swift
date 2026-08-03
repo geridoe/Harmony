@@ -18,8 +18,9 @@ struct SessionView: View {
             .task { await store.refreshRecentSessions() }
             .toolbar {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
-                    if store.currentMember.role == .conductor {
+                    if store.canReorderQueue {
                         EditButton()
+                            .accessibilityIdentifier("queue-reorder-edit")
                     }
                     if store.isLiveSession {
                         Menu {
@@ -47,6 +48,23 @@ struct SessionView: View {
                 Text(store.currentMember.role == .conductor
                     ? "Members will no longer be able to join or edit this queue."
                     : "You can rejoin later with a valid invite code while the session remains active.")
+            }
+            .alert(
+                "Queue change needs attention",
+                isPresented: Binding(
+                    get: { store.queueCommandConflict != nil },
+                    set: { presented in
+                        if !presented, store.queueCommandConflict != nil {
+                            store.dismissQueueCommandConflict()
+                        }
+                    }
+                ),
+                presenting: store.queueCommandConflict
+            ) { _ in
+                Button("Retry") { store.retryQueueCommandConflict() }
+                Button("Dismiss", role: .cancel) { store.dismissQueueCommandConflict() }
+            } message: { conflict in
+                Text("\(conflict.message) The latest shared queue is still visible.")
             }
             .sheet(isPresented: $showingJoinSession) {
                 NavigationView {
@@ -111,7 +129,11 @@ struct SessionView: View {
 
     @ViewBuilder private var inviteSharingControl: some View {
         if store.canShareInvite, let inviteURL = store.inviteURL {
-            ShareLink(item: inviteURL, subject: Text("Join my Harmony session"), message: Text("Add and arrange music in \(store.sessionName). Invite code: \(store.inviteCode)")) {
+            ShareLink(
+                item: inviteURL,
+                subject: Text("Join my Harmony session"),
+                message: Text(inviteMessage)
+            ) {
                 Label("Share invite", systemImage: "square.and.arrow.up")
             }
         } else if store.isLiveSession {
@@ -132,6 +154,12 @@ struct SessionView: View {
                     get: { store.allowsCollaboratorInvites },
                     set: { allowed in Task { await store.setCollaboratorInvitesAllowed(allowed) } }
                 )).disabled(store.isUpdatingInvitePermissions)
+                Toggle("Collaborators can arrange the queue", isOn: Binding(
+                    get: { store.allowsCollaboratorReordering },
+                    set: { allowed in Task { await store.setCollaboratorReorderingAllowed(allowed) } }
+                ))
+                .disabled(store.isUpdatingCollaboratorReordering)
+                .accessibilityIdentifier("live-collaborator-reordering")
             }
         } else {
             TextField("Session name", text: $store.sessionName).textInputAutocapitalization(.words).accessibilityLabel("Session name")
@@ -140,6 +168,9 @@ struct SessionView: View {
                 Button("Join session") { showingJoinSession = true }.buttonStyle(.bordered)
             }
             Toggle("Collaborators can share invites", isOn: $store.allowsCollaboratorInvites).font(.subheadline)
+            Toggle("Collaborators can arrange the queue", isOn: $store.allowsCollaboratorReordering)
+                .font(.subheadline)
+                .accessibilityIdentifier("create-collaborator-reordering")
             Picker("Playback", selection: $store.selectedPlaybackMode) {
                 ForEach(SessionPlaybackMode.allCases) { mode in Text(mode.title).tag(mode) }
             }
@@ -192,7 +223,26 @@ struct SessionView: View {
     }
 
     private var sharedQueueSection: some View {
-        Section(header: HStack { Text("Shared queue"); Spacer(); Text("rev \(store.queueRevision)").font(.caption).foregroundColor(.secondary) }) {
+        Section(header: HStack {
+            Text("Shared queue")
+            Spacer()
+            if store.pendingQueueCommandCount > 0 {
+                HStack(spacing: 4) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(store.pendingQueueCommandCount == 1
+                         ? "Syncing 1 change"
+                         : "Syncing \(store.pendingQueueCommandCount) changes")
+                }
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .accessibilityIdentifier("queue-sync-pending")
+            } else {
+                Text("rev \(store.queueRevision)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }) {
             ForEach(store.queue) { item in
                 HStack {
                     TrackArtwork(track: item.track, size: 30, cornerRadius: 6)
@@ -203,10 +253,18 @@ struct SessionView: View {
                     Spacer()
                     Text(item.track.durationText).font(.caption).foregroundColor(.secondary)
                 }
+                .moveDisabled(!store.canReorderQueue)
             }
             .onMove(perform: store.move)
             .onDelete { offsets in offsets.map { store.queue[$0] }.filter(store.canRemove).forEach(store.remove) }
         }
+    }
+
+    private var inviteMessage: String {
+        let action = store.allowsCollaboratorReordering
+            ? "Add and arrange music"
+            : "Add music"
+        return "\(action) in \(store.sessionName). Invite code: \(store.inviteCode)"
     }
 
     private func sessionStatus(_ session: RemoteHarmonySession) -> String {

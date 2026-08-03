@@ -14,7 +14,12 @@ struct HarmonyApp: App {
     init() {
         let store = HarmonySessionStore(seedSampleData: false)
 #if DEBUG
-        if ProcessInfo.processInfo.arguments.contains("--ui-test-diary-editor") {
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("--ui-test-collaborator-reordering-allowed") {
+            store.seedCollaboratorReorderingUITestFixture(allowed: true)
+        } else if arguments.contains("--ui-test-collaborator-reordering-disabled") {
+            store.seedCollaboratorReorderingUITestFixture(allowed: false)
+        } else if arguments.contains("--ui-test-diary-editor") {
             store.seedDiaryEditorUITestFixture()
         }
 #endif

@@ -34,17 +34,23 @@ playback/catalog interaction.
 
 ### Live collaboration
 
-- Create a session with title, expiry, playback mode, and collaborator-invite
-  setting. A generated 6–8 character code and universal-link-compatible URL
-  can be shared.
+- Create a session with title, expiry, playback mode, collaborator-invite
+  setting, and a separate collaborator queue-arrangement setting. Arrangement
+  starts enabled for new rooms. A generated 6–8 character code and
+  universal-link-compatible URL can be shared.
 - Join an active, unexpired room by invite code; recent rooms can be resumed.
 - Add a canonical track, remove one’s own contribution, and see membership and
   queue changes live. The Conductor can reorder/remove any item, play/pause,
-  skip, end the room, and change invite permission.
+  skip, end the room, and change invite or arrangement permission. A
+  collaborator may reorder any queue item only while the session's arrangement
+  permission is enabled; disabling it removes the affordance and server authority.
 - Playback modes are `conductor_playback`, `personal_listen_along`, and
   `queue_only`. The latter intentionally rejects server playback commands.
 - Revisions and client-generated command IDs make queue changes conflict-aware
-  and retry-safe.
+  and retry-safe. Live add/remove/move intents are serialized per session;
+  pending changes show a sync indicator, one stale revision is refreshed and
+  rebased automatically, and a terminal conflict presents explicit Retry and
+  Dismiss actions instead of silently discarding the user's intent.
 
 ### Provider-neutral catalog and connections
 
@@ -310,6 +316,16 @@ are implemented. Review comment/reaction notifications carry the durable review
 UUID and open that exact RLS-visible review even when it is outside the bounded
 feed caches or the notification is already read. Additional reaction kinds,
 reporting, and broader moderation policy remain follow-up work.
+
+An authored review is one member's current written opinion of one canonical
+song or album. Migration 062 enforces one active written row per owner/subject
+without conflating repeatable Diary listens or private rating-only subject
+state. Every creation path shares a serialized insert guard; a concurrent or
+ordinary duplicate returns HTTP 409 with detail
+`music_review_already_exists`, and an optional-Diary creation rolls its Diary
+insert back atomically. `get_my_active_music_review(...)` provides an exact,
+auth-bound composer preflight. Soft deletion permits a later replacement and
+retains the prior row for auditability.
 
 ### Reviews picker and draft guarantees
 
@@ -615,7 +631,7 @@ also removes the blocked identity from all cached graph pages immediately.
 | Table | Role |
 | --- | --- |
 | `profiles` | one profile per Supabase Auth user; created by trigger |
-| `sessions` | room metadata, Conductor, invite, revision, playback intent, lifecycle |
+| `sessions` | room metadata, Conductor, invite/arrangement permissions, revision, playback intent, lifecycle |
 | `session_members` | per-room role and last-seen membership |
 | `canonical_tracks` | provider-independent track identity/metadata/ISRC |
 | `provider_tracks` | provider/storefront mapping, link, availability, confidence |
@@ -673,11 +689,16 @@ changes go through narrowly scoped `security definer` RPCs after checking
 | `skip_queue_item` | Conductor only; rejects queue-only playback and advances queue atomically |
 | `end_harmony_session` / `leave_harmony_session` | Conductor ends; collaborators leave |
 | `set_harmony_collaborator_invites` | Conductor only |
+| `set_harmony_collaborator_reordering` | Conductor only; changes whether collaborators may move queue items |
 | `resolve_harmony_track_v2` | collision-safe provider/storefront, ISRC, then guarded metadata resolution |
 | `resolve_harmony_track` | installed-client compatibility wrapper around v2 |
 | `resolve_harmony_album_v2` | exact provider album resolution; UPC/EAN merge requires service-role attestation |
 | `resolve_harmony_album` | installed-client provider-scoped album compatibility wrapper |
 | `get_canonical_album`, `list_canonical_album_reviews` | canonical release detail and RLS-filtered review page |
+
+Add and move commands remain revision-serialized. A move is authorized for the
+Conductor or for a collaborator while `allow_collaborator_reordering` is true;
+playback and arbitrary removal remain Conductor-only.
 
 `is_session_member(session_id)` is a security-definer helper used by reading
 policies to avoid recursive membership policy evaluation. Room reads require
@@ -865,6 +886,15 @@ The live smoke test reads the project URL and public key from the iOS plist,
 does not print tokens, and needs a Node 22+ binary only for its native
 WebSocket assertion. It is an integration/security test, not a substitute for
 provider-device testing.
+
+Collaborator-arrangement coverage includes the default-enabled creation value,
+Conductor-only setting mutation, permitted and denied collaborator moves,
+Conductor moves in either setting, stale-revision rejection, and the UI's
+capability-derived Edit affordance. Realtime session refresh projects a
+permission change to every member instead of trusting stale local UI state.
+Queue-coordinator coverage separately proves serialized revision assignment,
+single-retry rebasing, stable command IDs, local-to-server queue-item identity,
+session-switch cancellation, and terminal-conflict Retry/Dismiss behavior.
 
 The implemented picker has coverage for choosing a subject, switching its
 Songs/Albums result mode, provider-identity album deduplication, audience

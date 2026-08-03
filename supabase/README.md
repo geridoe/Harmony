@@ -141,6 +141,13 @@ subject kind.
 
 `create_music_review(...)` creates a follower/private/public review of a canonical track or provider-addressed album. Its rating is optional; a row must contain either a valid half-star rating or nonblank writing. Clearing a review rating intentionally clears the current subject rating, while any linked Diary rating remains an independent historical snapshot. Owners can edit or soft-delete it through `update_music_review(...)` and `delete_music_review(...)`. Visible viewers can use `add_review_comment(...)` and `toggle_review_reaction(...)`; comment authors or the parent-review owner can soft-delete a comment through the guarded RPC. RLS reevaluates the review’s visibility and blocks before granting access.
 
+One active written review is allowed per owner and canonical song or album.
+Duplicate creation returns HTTP 409 with stable detail
+`music_review_already_exists`; `get_my_active_music_review(...)` resolves the
+existing opinion for Edit. The migration refuses to guess among legacy
+duplicates, optional Diary creation rolls back on a review conflict, and soft
+deletion releases the subject without erasing the old authored row.
+
 Review collections read transactionally maintained `heart_count` and
 `comment_count` columns instead of embedding every child row.
 `list_following_reviews(subject_kind, before_created_at, before_id, limit)` is

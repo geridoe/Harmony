@@ -740,6 +740,50 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(draft.visibility, .followers, "An open draft must not follow later profile-default changes")
     }
 
+    func testExistingReviewPrepopulatesComposerWithoutCreatingAnotherDiaryEntry() {
+        let subject = ReviewDraftSubject.track(reviewTrack(title: "Existing opinion"))
+        let review = musicReview(
+            title: "Existing opinion",
+            body: "The server-authored copy wins.",
+            rating: 4.5,
+            isLoved: true
+        )
+
+        let draft = reviewDraftForEditing(
+            review,
+            subject: subject,
+            diaryVisibility: .privateOnly
+        )
+
+        XCTAssertEqual(draft.subject, subject)
+        XCTAssertEqual(draft.rating, 4.5)
+        XCTAssertEqual(draft.body, "The server-authored copy wins.")
+        XCTAssertTrue(draft.isLoved)
+        XCTAssertFalse(draft.containsSpoilers)
+        XCTAssertEqual(draft.visibility, .followers)
+        XCTAssertFalse(draft.addToDiary, "Editing a review must not silently duplicate listening history")
+        XCTAssertNil(draft.diaryRequest)
+    }
+
+    func testActiveReviewFixtureResolvesExistingSubjectAndLeavesOtherMusicNew() async {
+        let store = HarmonySessionStore(seedSampleData: false)
+        store.seedDiaryEditorUITestFixture()
+
+        let existing = await store.resolveActiveMusicReview(for: .track(SampleCatalog.tracks[0]))
+        guard case .existing(let review) = existing else {
+            return XCTFail("The fixture subject must route to its active review")
+        }
+        XCTAssertEqual(review.body, "A fixture opinion.")
+
+        let newSubject = await store.resolveActiveMusicReview(
+            for: .track(reviewTrack(title: "Never reviewed"))
+        )
+        if case .none = newSubject {} else {
+            XCTFail("Unreviewed music must stay on the creation path")
+        }
+        XCTAssertFalse(store.isResolvingActiveMusicReview)
+    }
+
     func testReviewDraftCreatesLinkedDiarySnapshotOnlyForTrackOptIn() {
         var draft = ReviewDraft(
             subject: .track(reviewTrack(title: "Snapshot song")),
@@ -1914,6 +1958,208 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(store.currentMember.role, .conductor)
         XCTAssertTrue(store.activeMemberIDs.isEmpty)
         XCTAssertEqual(store.collaborationMessage, "The Conductor ended this session")
+    }
+
+    func testQueueCoordinatorSerializesCommandsAndReusesIDAcrossConflictRebase() async {
+        let sessionID = UUID()
+        let firstID = UUID()
+        let secondID = UUID()
+        var attempts: [(UUID, Int)] = []
+        var activeExecutions = 0
+        var maximumConcurrentExecutions = 0
+        var firstAttemptConflicted = false
+        var refreshCount = 0
+
+        let coordinator = SerializedQueueCommandCoordinator(
+            execute: { command, revision, _ in
+                activeExecutions += 1
+                maximumConcurrentExecutions = max(maximumConcurrentExecutions, activeExecutions)
+                defer { activeExecutions -= 1 }
+                attempts.append((command.id, revision))
+                await Task.yield()
+                if command.id == firstID, !firstAttemptConflicted {
+                    firstAttemptConflicted = true
+                    throw CollaborationError.revisionConflict
+                }
+                return QueueCommandResult(status: "applied", revision: revision + 1, queueItemID: UUID())
+            },
+            refresh: {
+                refreshCount += 1
+                return refreshCount == 1 ? 8 : (8 + refreshCount)
+            }
+        )
+        let member = SessionMember(name: "Listener", initials: "L", role: .conductor, providers: [])
+        coordinator.beginSession(sessionID, revision: 5)
+        coordinator.enqueue(.add(localItem: QueueItem(track: reviewTrack(title: "First"), addedBy: member)), commandID: firstID)
+        coordinator.enqueue(.add(localItem: QueueItem(track: reviewTrack(title: "Second"), addedBy: member)), commandID: secondID)
+
+        await coordinator.waitUntilIdleForTesting()
+
+        XCTAssertEqual(attempts.map(\.0), [firstID, firstID, secondID])
+        XCTAssertEqual(attempts.map(\.1), [5, 8, 10])
+        XCTAssertEqual(maximumConcurrentExecutions, 1)
+        XCTAssertTrue(coordinator.pending.isEmpty)
+        XCTAssertNil(coordinator.terminalConflict)
+    }
+
+    func testRemoteSessionDecodesCollaboratorReorderingPermission() throws {
+        let sessionID = UUID()
+        let payload = """
+        {
+          "id": "\(sessionID.uuidString)",
+          "title": "Permission room",
+          "invite_code": "ROOM61",
+          "queue_revision": 7,
+          "playback_state": {"status": "paused"},
+          "ended_at": null,
+          "expires_at": null,
+          "allow_collaborator_invites": true,
+          "allow_collaborator_reordering": false,
+          "playback_mode": "queue_only"
+        }
+        """
+
+        let session = try JSONDecoder().decode(RemoteHarmonySession.self, from: Data(payload.utf8))
+
+        XCTAssertEqual(session.id, sessionID)
+        XCTAssertFalse(session.allowCollaboratorReordering)
+        XCTAssertEqual(session.playbackMode, .queueOnly)
+    }
+
+    func testCollaboratorQueueCapabilityFollowsLivePermission() {
+        let store = HarmonySessionStore(seedSampleData: false)
+
+        store.seedCollaboratorReorderingUITestFixture(allowed: true)
+        XCTAssertTrue(store.canReorderQueue)
+
+        store.seedCollaboratorReorderingUITestFixture(allowed: false)
+        XCTAssertFalse(store.canReorderQueue)
+    }
+
+    func testQueueCoordinatorIgnoresCompletionFromInvalidatedSessionGeneration() async {
+        let oldSessionID = UUID()
+        let newSessionID = UUID()
+        var continuation: CheckedContinuation<QueueCommandResult, Error>?
+        var appliedIDs: [UUID] = []
+        let coordinator = SerializedQueueCommandCoordinator(
+            execute: { _, _, _ in
+                try await withCheckedThrowingContinuation { continuation = $0 }
+            },
+            refresh: { XCTFail("A stale completion must not refresh the new session"); return 0 },
+            applied: { command, _ in appliedIDs.append(command.id) }
+        )
+        let member = SessionMember(name: "Listener", initials: "L", role: .conductor, providers: [])
+        coordinator.beginSession(oldSessionID, revision: 1)
+        coordinator.enqueue(.add(localItem: QueueItem(track: reviewTrack(title: "Old"), addedBy: member)))
+        while continuation == nil { await Task.yield() }
+
+        coordinator.beginSession(newSessionID, revision: 20)
+        continuation?.resume(returning: QueueCommandResult(status: "applied", revision: 2, queueItemID: UUID()))
+        await Task.yield()
+        await coordinator.waitUntilIdleForTesting()
+
+        XCTAssertEqual(coordinator.sessionID, newSessionID)
+        XCTAssertEqual(coordinator.authoritativeRevision, 20)
+        XCTAssertTrue(coordinator.pending.isEmpty)
+        XCTAssertTrue(appliedIDs.isEmpty)
+    }
+
+    func testQueueCoordinatorRetainsTerminalConflictForManualRetry() async {
+        let sessionID = UUID()
+        let commandID = UUID()
+        var executions = 0
+        let coordinator = SerializedQueueCommandCoordinator(
+            execute: { _, _, _ in
+                executions += 1
+                if executions <= 2 { throw CollaborationError.revisionConflict }
+                return QueueCommandResult(status: "applied", revision: 13, queueItemID: UUID())
+            },
+            refresh: { 12 }
+        )
+        let member = SessionMember(name: "Listener", initials: "L", role: .conductor, providers: [])
+        coordinator.beginSession(sessionID, revision: 10)
+        coordinator.enqueue(.add(localItem: QueueItem(track: reviewTrack(title: "Retry"), addedBy: member)), commandID: commandID)
+        await coordinator.waitUntilIdleForTesting()
+
+        XCTAssertEqual(coordinator.terminalConflict?.command.id, commandID)
+        coordinator.retryTerminalConflict()
+        await coordinator.waitUntilIdleForTesting()
+
+        XCTAssertNil(coordinator.terminalConflict)
+        XCTAssertEqual(executions, 3)
+    }
+
+    func testQueueCoordinatorDismissDropsDependentPendingBatch() async {
+        let sessionID = UUID()
+        let member = SessionMember(name: "Listener", initials: "L", role: .conductor, providers: [])
+        let firstItem = QueueItem(track: reviewTrack(title: "Rejected"), addedBy: member)
+        let dependentItem = QueueItem(track: reviewTrack(title: "Dependent"), addedBy: member)
+        let coordinator = SerializedQueueCommandCoordinator(
+            execute: { _, _, _ in throw QueueMutationPreparationError.destinationChanged },
+            refresh: { 4 }
+        )
+        coordinator.beginSession(sessionID, revision: 4)
+        coordinator.enqueue(.add(localItem: firstItem))
+        coordinator.enqueue(.add(localItem: dependentItem))
+        await coordinator.waitUntilIdleForTesting()
+
+        XCTAssertNotNil(coordinator.terminalConflict)
+        XCTAssertEqual(coordinator.pending.count, 1)
+        coordinator.dismissTerminalConflict()
+
+        XCTAssertNil(coordinator.terminalConflict)
+        XCTAssertTrue(coordinator.pending.isEmpty)
+        XCTAssertTrue(coordinator.localToRemoteItemIDs.isEmpty)
+    }
+
+    func testQueueCoordinatorRemapsOptimisticAddBeforeDependentMove() async {
+        let sessionID = UUID()
+        let remoteItemID = UUID()
+        let member = SessionMember(name: "Listener", initials: "L", role: .conductor, providers: [])
+        let localItem = QueueItem(track: reviewTrack(title: "Add then move"), addedBy: member)
+        var observedMoveTarget: UUID?
+        var executionCount = 0
+        let coordinator = SerializedQueueCommandCoordinator(
+            execute: { command, revision, mappings in
+                executionCount += 1
+                switch command.mutation {
+                case .add:
+                    return QueueCommandResult(status: "applied", revision: revision + 1, queueItemID: remoteItemID)
+                case .move(let requestedID, _, _):
+                    observedMoveTarget = mappings[requestedID] ?? requestedID
+                    return QueueCommandResult(status: "applied", revision: revision + 1, queueItemID: nil)
+                case .remove:
+                    XCTFail("Unexpected mutation")
+                    return QueueCommandResult(status: "applied", revision: revision, queueItemID: nil)
+                }
+            },
+            refresh: { executionCount + 1 }
+        )
+        coordinator.beginSession(sessionID, revision: 0)
+        coordinator.enqueue(.add(localItem: localItem))
+        coordinator.enqueue(.move(queueItemID: localItem.id, predecessorID: nil, successorID: nil))
+
+        await coordinator.waitUntilIdleForTesting()
+
+        XCTAssertEqual(observedMoveTarget, remoteItemID)
+        XCTAssertTrue(coordinator.pending.isEmpty)
+    }
+
+    func testRebasedMovePositionUsesUnoccupiedFractionalGap() throws {
+        let itemID = UUID()
+        let predecessorID = UUID()
+        let successorID = UUID()
+        let positions = [itemID: 1024.0, predecessorID: 2048.0, successorID: 4096.0]
+
+        let target = try HarmonySessionStore.rebasedMovePosition(
+            itemID: itemID,
+            predecessorID: predecessorID,
+            successorID: successorID,
+            positions: positions
+        )
+
+        XCTAssertEqual(target, 3072)
+        XCTAssertFalse(Set(positions.values).contains(target))
     }
 
     private func reviewTrack(title: String, album: ReviewableAlbum? = nil) -> HarmonyTrack {

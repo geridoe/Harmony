@@ -33,6 +33,7 @@ struct RemoteHarmonySession: Decodable {
     let endedAt: Date?
     let expiresAt: Date?
     let allowCollaboratorInvites: Bool
+    let allowCollaboratorReordering: Bool
     let playbackMode: SessionPlaybackMode
 
     enum CodingKeys: String, CodingKey {
@@ -43,6 +44,7 @@ struct RemoteHarmonySession: Decodable {
         case endedAt = "ended_at"
         case expiresAt = "expires_at"
         case allowCollaboratorInvites = "allow_collaborator_invites"
+        case allowCollaboratorReordering = "allow_collaborator_reordering"
         case playbackMode = "playback_mode"
     }
 }
@@ -57,11 +59,17 @@ private struct CreateSessionParameters: Encodable {
     let p_playback_mode: String
     let p_allow_collaborator_invites: Bool
     let p_expires_at: Date?
+    let p_allow_collaborator_reordering: Bool
 }
 
 private struct UpdateInvitePermissionParameters: Encodable {
     let p_session_id: UUID
     let p_allow_collaborator_invites: Bool
+}
+
+private struct UpdateCollaboratorReorderingParameters: Encodable {
+    let p_session_id: UUID
+    let p_allow_collaborator_reordering: Bool
 }
 
 private struct QueueCommandParameters<Payload: Encodable>: Encodable {
@@ -146,6 +154,11 @@ private struct CreateCanonicalAlbumReviewParameters: Encodable {
 private struct ReviewReactionParameters: Encodable { let p_review_id: UUID; let p_kind = "heart" }
 private struct ReviewCommentParameters: Encodable { let p_review_id: UUID; let p_body: String }
 private struct ReviewIDParameters: Encodable { let p_review_id: UUID }
+private struct ActiveMusicReviewParameters: Encodable {
+    let p_subject_kind: String
+    let p_canonical_track_id: UUID?
+    let p_canonical_album_id: UUID?
+}
 private struct ReviewCommentsPageParameters: Encodable {
     let p_review_id: UUID
     let p_before_created_at: Date?
@@ -438,7 +451,16 @@ private struct SkipQueueParameters: Encodable {
     let p_expected_revision: Int
 }
 private struct RemoteTrackID: Decodable { let id: UUID }
-private struct QueueCommandResult: Decodable { let status: String; let revision: Int }
+struct QueueCommandResult: Decodable, Equatable {
+    let status: String
+    let revision: Int
+    let queueItemID: UUID?
+
+    enum CodingKeys: String, CodingKey {
+        case status, revision
+        case queueItemID = "queue_item_id"
+    }
+}
 private struct SpotifyTokenExchangeParameters: Encodable { let code: String; let codeVerifier: String; let redirectURI: String }
 private struct RemotePresence: Codable { let profileID: UUID }
 
@@ -1558,6 +1580,15 @@ final class HarmonyCollaborationRepository {
         return error.localizedDescription.localizedCaseInsensitiveContains("profile is unavailable")
     }
 
+    func isActiveMusicReviewConflict(_ error: Error) -> Bool {
+        guard let error = error as? PostgrestError else {
+            return error.localizedDescription.localizedCaseInsensitiveContains("active review already exists")
+        }
+        return error.code == "PT409"
+            || error.message.localizedCaseInsensitiveContains("active review already exists")
+            || error.detail?.localizedCaseInsensitiveContains("music_review_already_exists") == true
+    }
+
     // Defer plist-dependent client creation until a live backend operation is
     // requested. This keeps local queue behavior and unit tests independent of
     // a test-host Info.plist while production still fails fast on misconfiguration.
@@ -1571,7 +1602,13 @@ final class HarmonyCollaborationRepository {
         }
     }
 
-    func createSession(title: String, allowCollaboratorInvites: Bool, playbackMode: SessionPlaybackMode, expiresAt: Date?) async throws -> RemoteHarmonySession {
+    func createSession(
+        title: String,
+        allowCollaboratorInvites: Bool,
+        allowCollaboratorReordering: Bool,
+        playbackMode: SessionPlaybackMode,
+        expiresAt: Date?
+    ) async throws -> RemoteHarmonySession {
         try await authenticate()
         for attempt in 1...3 {
             do {
@@ -1580,7 +1617,8 @@ final class HarmonyCollaborationRepository {
                     p_invite_code: Self.makeInviteCode(),
                     p_playback_mode: playbackMode.rawValue,
                     p_allow_collaborator_invites: allowCollaboratorInvites,
-                    p_expires_at: expiresAt
+                    p_expires_at: expiresAt,
+                    p_allow_collaborator_reordering: allowCollaboratorReordering
                 )
                 return try await client.rpc("create_session", params: parameters).execute().value
             } catch let error as PostgrestError where error.code == "23505" && attempt < 3 {
@@ -1609,7 +1647,7 @@ final class HarmonyCollaborationRepository {
     func session(id: UUID) async throws -> RemoteHarmonySession {
         try await client
             .from("sessions")
-            .select("id,title,invite_code,queue_revision,playback_state,ended_at,expires_at,allow_collaborator_invites,playback_mode")
+            .select("id,title,invite_code,queue_revision,playback_state,ended_at,expires_at,allow_collaborator_invites,allow_collaborator_reordering,playback_mode")
             .eq("id", value: id.uuidString)
             .single()
             .execute()
@@ -1620,7 +1658,7 @@ final class HarmonyCollaborationRepository {
         try await authenticate()
         return try await client
             .from("sessions")
-            .select("id,title,invite_code,queue_revision,playback_state,ended_at,expires_at,allow_collaborator_invites,playback_mode")
+            .select("id,title,invite_code,queue_revision,playback_state,ended_at,expires_at,allow_collaborator_invites,allow_collaborator_reordering,playback_mode")
             .order("created_at", ascending: false)
             .limit(20)
             .execute()
@@ -1633,6 +1671,17 @@ final class HarmonyCollaborationRepository {
             params: UpdateInvitePermissionParameters(
                 p_session_id: sessionID,
                 p_allow_collaborator_invites: allowed
+            )
+        ).execute().value
+    }
+
+    func setCollaboratorReorderingAllowed(in sessionID: UUID, allowed: Bool) async throws -> RemoteHarmonySession {
+        try await authenticate()
+        return try await client.rpc(
+            "set_harmony_collaborator_reordering",
+            params: UpdateCollaboratorReorderingParameters(
+                p_session_id: sessionID,
+                p_allow_collaborator_reordering: allowed
             )
         ).execute().value
     }
@@ -2572,6 +2621,54 @@ final class HarmonyCollaborationRepository {
         }
     }
 
+    func activeMusicReview(for track: HarmonyTrack) async throws -> RemoteMusicReview? {
+        try await authenticate()
+        let canonicalTrackID = try await canonicalTrackID(for: track)
+        return try await activeMusicReview(
+            subjectKind: "track",
+            canonicalTrackID: canonicalTrackID,
+            canonicalAlbumID: nil
+        )
+    }
+
+    func activeMusicReview(for album: ReviewableAlbum) async throws -> RemoteMusicReview? {
+        let canonicalAlbum = try await resolveCanonicalAlbum(album)
+        return try await activeMusicReview(
+            subjectKind: "album",
+            canonicalTrackID: nil,
+            canonicalAlbumID: canonicalAlbum.id
+        )
+    }
+
+    private func activeMusicReview(
+        subjectKind: String,
+        canonicalTrackID: UUID?,
+        canonicalAlbumID: UUID?
+    ) async throws -> RemoteMusicReview? {
+        let parameters = ActiveMusicReviewParameters(
+            p_subject_kind: subjectKind,
+            p_canonical_track_id: canonicalTrackID,
+            p_canonical_album_id: canonicalAlbumID
+        )
+        do {
+            let rows: [RemoteMusicReview] = try await client.rpc(
+                "get_my_active_music_review",
+                params: parameters
+            )
+            .select(Self.musicReviewSelection)
+            .execute().value
+            return rows.first
+        } catch let error as PostgrestError where Self.isMissingCanonicalAlbumContract(error) {
+            let rows: [RemoteMusicReview] = try await client.rpc(
+                "get_my_active_music_review",
+                params: parameters
+            )
+            .select(Self.legacyMusicReviewSelection)
+            .execute().value
+            return rows.first
+        }
+    }
+
     func reviewCommentsPage(
         reviewID: UUID,
         beforeCreatedAt: Date? = nil,
@@ -2702,11 +2799,16 @@ final class HarmonyCollaborationRepository {
         return try await client.auth.session.user.id
     }
 
-    func add(track: HarmonyTrack, to sessionID: UUID, expectedRevision: Int) async throws -> Int {
+    func add(
+        track: HarmonyTrack,
+        to sessionID: UUID,
+        commandID: UUID = UUID(),
+        expectedRevision: Int
+    ) async throws -> QueueCommandResult {
         let canonicalTrackID = try await canonicalTrackID(for: track)
         return try await executeCommand(QueueCommandParameters(
             p_session_id: sessionID,
-            p_command_id: UUID(),
+            p_command_id: commandID,
             p_expected_revision: expectedRevision,
             p_type: "add",
             p_payload: AddPayload(canonical_track_id: canonicalTrackID)
@@ -3210,17 +3312,28 @@ final class HarmonyCollaborationRepository {
             }
             .first
     }
-    func remove(queueItemID: UUID, from sessionID: UUID, expectedRevision: Int) async throws -> Int {
-        try await executeCommand(QueueCommandParameters(p_session_id: sessionID, p_command_id: UUID(), p_expected_revision: expectedRevision, p_type: "remove", p_payload: RemovePayload(queue_item_id: queueItemID)))
+    func remove(
+        queueItemID: UUID,
+        from sessionID: UUID,
+        commandID: UUID = UUID(),
+        expectedRevision: Int
+    ) async throws -> QueueCommandResult {
+        try await executeCommand(QueueCommandParameters(p_session_id: sessionID, p_command_id: commandID, p_expected_revision: expectedRevision, p_type: "remove", p_payload: RemovePayload(queue_item_id: queueItemID)))
     }
 
-    func move(queueItemID: UUID, to position: Double, in sessionID: UUID, expectedRevision: Int) async throws -> Int {
-        try await executeCommand(QueueCommandParameters(p_session_id: sessionID, p_command_id: UUID(), p_expected_revision: expectedRevision, p_type: "move", p_payload: MovePayload(queue_item_id: queueItemID, position: position)))
+    func move(
+        queueItemID: UUID,
+        to position: Double,
+        in sessionID: UUID,
+        commandID: UUID = UUID(),
+        expectedRevision: Int
+    ) async throws -> QueueCommandResult {
+        try await executeCommand(QueueCommandParameters(p_session_id: sessionID, p_command_id: commandID, p_expected_revision: expectedRevision, p_type: "move", p_payload: MovePayload(queue_item_id: queueItemID, position: position)))
     }
 
     func setPlayback(state: PlaybackState, in sessionID: UUID, expectedRevision: Int) async throws -> Int {
         let type = state == .playing ? "play" : "pause"
-        return try await executeCommand(QueueCommandParameters(p_session_id: sessionID, p_command_id: UUID(), p_expected_revision: expectedRevision, p_type: type, p_payload: PlaybackPayload(status: state == .playing ? "playing" : "paused")))
+        return try await executeCommand(QueueCommandParameters(p_session_id: sessionID, p_command_id: UUID(), p_expected_revision: expectedRevision, p_type: type, p_payload: PlaybackPayload(status: state == .playing ? "playing" : "paused"))).revision
     }
 
     func skip(in sessionID: UUID, expectedRevision: Int) async throws -> Int {
@@ -3236,10 +3349,10 @@ final class HarmonyCollaborationRepository {
         return result.revision
     }
 
-    private func executeCommand<Payload: Encodable>(_ parameters: QueueCommandParameters<Payload>) async throws -> Int {
+    private func executeCommand<Payload: Encodable>(_ parameters: QueueCommandParameters<Payload>) async throws -> QueueCommandResult {
         let result: QueueCommandResult = try await client.rpc("apply_queue_command", params: parameters).execute().value
         guard result.status == "applied" else { throw CollaborationError.revisionConflict }
-        return result.revision
+        return result
     }
 
     func queue(for sessionID: UUID) async throws -> [RemoteQueueSnapshot] {

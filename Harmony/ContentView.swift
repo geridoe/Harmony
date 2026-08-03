@@ -1123,6 +1123,30 @@ struct ReviewDraft: Equatable {
     }
 }
 
+enum ComposerReviewLookupState: Equatable {
+    case idle
+    case loading
+    case ready
+    case failed(String)
+}
+
+func reviewDraftForEditing(
+    _ review: RemoteMusicReview,
+    subject: ReviewDraftSubject,
+    diaryVisibility: SocialVisibilityOption
+) -> ReviewDraft {
+    ReviewDraft(
+        subject: subject,
+        rating: review.rating,
+        isLoved: review.isLoved,
+        containsSpoilers: review.containsSpoilers,
+        body: review.body,
+        visibility: review.visibility,
+        addToDiary: false,
+        diaryVisibility: diaryVisibility
+    )
+}
+
 enum ReviewPickerMode: String, CaseIterable, Identifiable {
     case songs = "Songs"
     case albums = "Albums"
@@ -1358,6 +1382,9 @@ struct ReviewsView: View {
     @State private var hasSeededDraftVisibility = false
     @State private var isComposingReview = false
     @State private var isChoosingReviewSubject = false
+    @State private var composingExistingReview: RemoteMusicReview?
+    @State private var composerLookupState = ComposerReviewLookupState.idle
+    @State private var composerLookupRequestID: UUID?
     @State private var reviewBrowseFilter = ReviewBrowseFilter()
     @State private var ratingsSubjectScope = RatingsSubjectScope.all
     @State private var followingSubjectScope = RatingsSubjectScope.all
@@ -1414,7 +1441,7 @@ struct ReviewsView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        isComposingReview = true
+                        openReviewComposer()
                     } label: {
                         Label("Write review", systemImage: "square.and.pencil")
                     }
@@ -1506,23 +1533,22 @@ struct ReviewsView: View {
             Form {
                 reviewComposer
             }
-            .navigationTitle("Write a review")
+            .navigationTitle(composingExistingReview == nil ? "Write a review" : "Edit review")
             .navigationBarTitleDisplayMode(.inline)
             .accessibilityIdentifier("review-composer")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { isComposingReview = false }
+                    Button("Done") {
+                        composerLookupRequestID = UUID()
+                        isComposingReview = false
+                    }
                 }
             }
         }
         .sheet(isPresented: $isChoosingReviewSubject) {
             ReviewSubjectPicker { subject in
-                var nextDraft = ReviewDraft()
-                nextDraft.subject = subject
-                nextDraft.visibility = draft.visibility
-                nextDraft.diaryVisibility = draft.diaryVisibility
-                draft = nextDraft
                 isChoosingReviewSubject = false
+                beginReviewSubjectSelection(subject)
             }
             .environmentObject(store)
         }
@@ -1536,7 +1562,7 @@ struct ReviewsView: View {
                 Label(draft.subject == nil ? "Choose a song or album" : "Choose different music", systemImage: "magnifyingglass")
             }
 
-            if let subject = draft.subject ?? store.nowPlaying.map({ .track($0.track) }) {
+            if let subject = draft.subject {
                 HStack(spacing: 12) {
                     reviewSubjectArtwork(subject)
                     VStack(alignment: .leading, spacing: 2) {
@@ -1555,13 +1581,14 @@ struct ReviewsView: View {
                 Toggle("Contains spoilers", isOn: $draft.containsSpoilers)
                 TextField("Write your review (optional)", text: $draft.body, axis: .vertical)
                     .lineLimit(3...8)
+                    .accessibilityIdentifier("review-composer-body")
                 Picker("Audience", selection: $draft.visibility) {
                     ForEach(SocialVisibilityOption.allCases) { visibility in
                         Text(visibility.title).tag(visibility)
                     }
                 }
 
-                if case .track = subject {
+                if case .track = subject, composingExistingReview == nil {
                     Divider()
                     Toggle("Also add to Diary", isOn: $draft.addToDiary)
                         .accessibilityIdentifier("review-add-to-diary")
@@ -1600,31 +1627,68 @@ struct ReviewsView: View {
                     }
                 }
 
-                Button(draft.submissionButtonTitle) {
+                switch composerLookupState {
+                case .loading:
+                    ProgressView("Checking for your existing review…")
+                        .accessibilityIdentifier("review-existing-lookup-loading")
+                case .failed(let message):
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Harmony couldn’t check for an existing review. \(message)")
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                        Button("Try again") { beginReviewSubjectSelection(subject, preservingDraft: true) }
+                            .accessibilityIdentifier("review-existing-lookup-retry")
+                    }
+                case .idle, .ready:
+                    EmptyView()
+                }
+
+                if composingExistingReview != nil {
+                    Label("Editing your existing review", systemImage: "pencil.circle.fill")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.indigo)
+                        .accessibilityIdentifier("review-composer-existing-review")
+                    Text("Diary listens remain separate. Delete this review first if you want to replace it with a new publication.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Button(composingExistingReview == nil ? draft.submissionButtonTitle : "Save changes") {
                     let selectedSubject = subject
                     let submittedDraft = draft
                     Task {
                         let didPublish: Bool
-                        switch selectedSubject {
-                        case .track(let track):
-                            didPublish = await store.publishTrackReview(
-                                track,
+                        if let existing = composingExistingReview {
+                            didPublish = await store.updateReview(
+                                existing.id,
                                 rating: submittedDraft.rating,
                                 body: submittedDraft.body,
-                                isLoved: submittedDraft.isLoved,
-                                containsSpoilers: submittedDraft.containsSpoilers,
                                 visibility: submittedDraft.visibility,
-                                diary: submittedDraft.diaryRequest
-                            )
-                        case .album(let album):
-                            didPublish = await store.publishAlbumReview(
-                                album,
-                                rating: submittedDraft.rating,
-                                body: submittedDraft.body,
                                 isLoved: submittedDraft.isLoved,
-                                containsSpoilers: submittedDraft.containsSpoilers,
-                                visibility: submittedDraft.visibility
+                                containsSpoilers: submittedDraft.containsSpoilers
                             )
+                        } else {
+                            switch selectedSubject {
+                            case .track(let track):
+                                didPublish = await store.publishTrackReview(
+                                    track,
+                                    rating: submittedDraft.rating,
+                                    body: submittedDraft.body,
+                                    isLoved: submittedDraft.isLoved,
+                                    containsSpoilers: submittedDraft.containsSpoilers,
+                                    visibility: submittedDraft.visibility,
+                                    diary: submittedDraft.diaryRequest
+                                )
+                            case .album(let album):
+                                didPublish = await store.publishAlbumReview(
+                                    album,
+                                    rating: submittedDraft.rating,
+                                    body: submittedDraft.body,
+                                    isLoved: submittedDraft.isLoved,
+                                    containsSpoilers: submittedDraft.containsSpoilers,
+                                    visibility: submittedDraft.visibility
+                                )
+                            }
                         }
                         if didPublish {
                             draft = ReviewDraft(
@@ -1632,13 +1696,26 @@ struct ReviewsView: View {
                                 visibility: submittedDraft.visibility,
                                 diaryVisibility: submittedDraft.diaryVisibility
                             )
+                            composingExistingReview = nil
+                            composerLookupState = .idle
                             isComposingReview = false
+                        } else if let existing = store.consumeReviewPublicationConflict() {
+                            composingExistingReview = existing
+                            draft = reviewDraftForEditing(
+                                existing,
+                                subject: selectedSubject,
+                                diaryVisibility: submittedDraft.diaryVisibility
+                            )
+                            composerLookupState = .ready
                         }
                     }
                 }
                 .disabled(
                     store.isPublishingMusicReview
-                        || draft.submissionIntent == .invalid
+                        || composerLookupState != .ready
+                        || (composingExistingReview == nil
+                            ? draft.submissionIntent == .invalid
+                            : !draft.savesWrittenReview)
                         || (draft.addToDiary && draft.diaryDraft.tagValidationMessage != nil)
                 )
             } else {
@@ -1654,6 +1731,58 @@ struct ReviewsView: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
+            }
+        }
+    }
+
+    private func openReviewComposer() {
+        isComposingReview = true
+        composingExistingReview = nil
+        if let subject = draft.subject {
+            beginReviewSubjectSelection(subject, preservingDraft: true)
+        } else if let track = store.nowPlaying?.track {
+            beginReviewSubjectSelection(.track(track))
+        } else {
+            composerLookupState = .idle
+        }
+    }
+
+    private func beginReviewSubjectSelection(
+        _ subject: ReviewDraftSubject,
+        preservingDraft: Bool = false
+    ) {
+        let requestID = UUID()
+        composerLookupRequestID = requestID
+        let preservedVisibility = draft.visibility
+        let preservedDiaryVisibility = draft.diaryVisibility
+        if preservingDraft {
+            draft.subject = subject
+        } else {
+            draft = ReviewDraft(
+                subject: subject,
+                visibility: preservedVisibility,
+                diaryVisibility: preservedDiaryVisibility
+            )
+        }
+        composingExistingReview = nil
+        composerLookupState = .loading
+        Task {
+            let resolution = await store.resolveActiveMusicReview(for: subject)
+            guard composerLookupRequestID == requestID,
+                  draft.subject == subject else { return }
+            switch resolution {
+            case .none:
+                composerLookupState = .ready
+            case .existing(let review):
+                composingExistingReview = review
+                draft = reviewDraftForEditing(
+                    review,
+                    subject: subject,
+                    diaryVisibility: preservedDiaryVisibility
+                )
+                composerLookupState = .ready
+            case .failed(let message):
+                composerLookupState = .failed(message)
             }
         }
     }

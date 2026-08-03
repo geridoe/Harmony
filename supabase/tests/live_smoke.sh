@@ -607,7 +607,7 @@ rpc "$conductor_token" create_session \
   "{\"p_title\":\"Harmony live smoke\",\"p_invite_code\":\"$invite_code\",\"p_playback_mode\":\"queue_only\",\"p_allow_collaborator_invites\":true,\"p_expires_at\":null}" \
   "$smoke_tmp/session.json"
 session_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/session.json")"
-jq -e 'if type == "array" then .[0].playback_mode == "queue_only" else .playback_mode == "queue_only" end' "$smoke_tmp/session.json" >/dev/null
+jq -e '(if type == "array" then .[0] else . end) | .playback_mode == "queue_only" and .allow_collaborator_reordering == true' "$smoke_tmp/session.json" >/dev/null
 
 rpc "$collaborator_token" join_session_by_invite \
   "{\"p_invite_code\":\"$invite_code\"}" \
@@ -617,9 +617,20 @@ joined_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/j
 
 stage="recent-session visibility"
 rest_get "$collaborator_token" \
-  'sessions?select=id,title,ended_at,expires_at,playback_mode&order=created_at.desc&limit=20' \
+  'sessions?select=id,title,ended_at,expires_at,playback_mode,allow_collaborator_reordering&order=created_at.desc&limit=20' \
   "$smoke_tmp/recent-sessions.json"
-jq -e --arg session "$session_id" '.[] | select(.id == $session)' "$smoke_tmp/recent-sessions.json" >/dev/null
+jq -e --arg session "$session_id" '.[] | select(.id == $session and .allow_collaborator_reordering == true)' "$smoke_tmp/recent-sessions.json" >/dev/null
+
+stage="session setting Realtime projection"
+if [[ -n "$realtime_node" ]]; then
+  HARMONY_SUPABASE_URL="$supabase_url" \
+  HARMONY_PUBLISHABLE_KEY="$publishable_key" \
+  HARMONY_CONDUCTOR_TOKEN="$conductor_token" \
+  HARMONY_SESSION_ID="$session_id" \
+    "$realtime_node" "$repo_root/supabase/tests/session_settings_realtime_smoke.mjs"
+else
+  printf 'Harmony session-settings Realtime smoke skipped: set HARMONY_NODE_BINARY to Node.js 22 or newer\n'
+fi
 
 stage="provider track canonicalization"
 invalid_catalog_artwork_status="$(rpc_status "$conductor_token" resolve_harmony_track \
@@ -903,6 +914,27 @@ rpc "$collaborator_token" create_music_review \
   "{\"p_subject_kind\":\"track\",\"p_canonical_track_id\":\"$canonical_track_id\",\"p_provider\":\"apple_music\",\"p_provider_subject_id\":null,\"p_rating\":4.5,\"p_body\":\"A great Harmony smoke review.\",\"p_visibility\":\"followers\",\"p_contains_spoilers\":true,\"p_is_loved\":true}" \
   "$smoke_tmp/review.json"
 review_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/review.json")"
+rpc "$collaborator_token" get_my_active_music_review \
+  "{\"p_subject_kind\":\"track\",\"p_canonical_track_id\":\"$canonical_track_id\",\"p_canonical_album_id\":null}" \
+  "$smoke_tmp/my-active-track-review.json"
+jq -e --arg review "$review_id" 'length == 1 and .[0].id == $review' "$smoke_tmp/my-active-track-review.json" >/dev/null
+rpc "$conductor_token" get_my_active_music_review \
+  "{\"p_subject_kind\":\"track\",\"p_canonical_track_id\":\"$canonical_track_id\",\"p_canonical_album_id\":null}" \
+  "$smoke_tmp/foreign-active-track-review.json"
+[[ "$(jq 'length' "$smoke_tmp/foreign-active-track-review.json")" -eq 0 ]]
+rest_get "$collaborator_token" \
+  "listening_history_entries?select=id&canonical_track_id=eq.$canonical_track_id&source=eq.manual" \
+  "$smoke_tmp/duplicate-review-diary-before.json"
+duplicate_review_diary_count="$(jq 'length' "$smoke_tmp/duplicate-review-diary-before.json")"
+duplicate_track_review_status="$(rpc_status "$collaborator_token" create_track_review_with_optional_diary \
+  "{\"p_canonical_track_id\":\"$canonical_track_id\",\"p_rating\":4.0,\"p_body\":\"A duplicate current opinion.\",\"p_review_visibility\":\"private\",\"p_diary_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_diary_visibility\":\"private\",\"p_is_relisten\":true,\"p_tags\":[\"duplicate-attempt\"],\"p_diary_rating\":4.0}" \
+  "$smoke_tmp/duplicate-track-review.json")"
+[[ "$duplicate_track_review_status" == "409" ]]
+jq -e '.details == "music_review_already_exists"' "$smoke_tmp/duplicate-track-review.json" >/dev/null
+rest_get "$collaborator_token" \
+  "listening_history_entries?select=id&canonical_track_id=eq.$canonical_track_id&source=eq.manual" \
+  "$smoke_tmp/duplicate-review-diary-after.json"
+[[ "$(jq 'length' "$smoke_tmp/duplicate-review-diary-after.json")" -eq "$duplicate_review_diary_count" ]]
 rest_get "$conductor_token" \
   "music_reviews?select=id,profile_id,subject_kind,subject_title,subject_artist,rating,contains_spoilers,is_loved,body&id=eq.$review_id" \
   "$smoke_tmp/follower-review.json"
@@ -1230,25 +1262,27 @@ invalid_album_state_scope_status="$(rpc_status "$collaborator_token" list_my_alb
 [[ "$invalid_album_state_scope_status" == "400" ]]
 
 stage="canonical album visible-review aggregates"
-rpc "$collaborator_token" create_music_review \
+rpc "$collaborator_token" get_my_active_music_review \
+  "{\"p_subject_kind\":\"album\",\"p_canonical_track_id\":null,\"p_canonical_album_id\":\"$album_canonical_id\"}" \
+  "$smoke_tmp/my-active-album-review.json"
+jq -e --arg review "$album_review_id" 'length == 1 and .[0].id == $review' "$smoke_tmp/my-active-album-review.json" >/dev/null
+duplicate_album_review_status="$(rpc_status "$collaborator_token" create_music_review \
   "{\"p_subject_kind\":\"album\",\"p_canonical_album_id\":\"$album_canonical_id\",\"p_rating\":2.0,\"p_body\":\"A newer album rating.\",\"p_visibility\":\"followers\",\"p_is_loved\":false}" \
-  "$smoke_tmp/newer-album-review.json"
-newer_album_review_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/newer-album-review.json")"
+  "$smoke_tmp/duplicate-album-review.json")"
+[[ "$duplicate_album_review_status" == "409" ]]
+jq -e '.details == "music_review_already_exists"' "$smoke_tmp/duplicate-album-review.json" >/dev/null
 rpc "$conductor_token" get_canonical_album_state_aggregate \
   "{\"p_canonical_album_id\":\"$album_canonical_id\"}" \
   "$smoke_tmp/album-state-aggregate.json"
-jq -e --arg album "$album_canonical_id" 'length == 1 and .[0].canonical_album_id == $album and .[0].rating_count == 1 and .[0].average_rating == 2.00 and .[0].listened_count == 1 and .[0].loved_count == 0 and .[0].want_to_listen_count == 0' "$smoke_tmp/album-state-aggregate.json" >/dev/null
+jq -e --arg album "$album_canonical_id" 'length == 1 and .[0].canonical_album_id == $album and .[0].rating_count == 1 and .[0].average_rating == 3.50 and .[0].listened_count == 1 and .[0].loved_count == 1 and .[0].want_to_listen_count == 0' "$smoke_tmp/album-state-aggregate.json" >/dev/null
 rpc "$conductor_token" list_canonical_album_rating_distribution \
   "{\"p_canonical_album_id\":\"$album_canonical_id\"}" \
   "$smoke_tmp/album-rating-distribution.json"
-jq -e 'length == 10 and (map(.rating_count) | add) == 1 and any(.[]; .rating == 2.0 and .rating_count == 1) and all(.[]; .rating == 2.0 or .rating_count == 0)' "$smoke_tmp/album-rating-distribution.json" >/dev/null
-rpc "$collaborator_token" delete_music_review \
-  "{\"p_review_id\":\"$newer_album_review_id\"}" \
-  "$smoke_tmp/deleted-newer-album-review.json"
+jq -e 'length == 10 and (map(.rating_count) | add) == 1 and any(.[]; .rating == 3.5 and .rating_count == 1) and all(.[]; .rating == 3.5 or .rating_count == 0)' "$smoke_tmp/album-rating-distribution.json" >/dev/null
 rest_get "$collaborator_token" \
   "profile_album_subject_states?select=has_listened,default_rating,is_loved,want_to_listen&canonical_album_id=eq.$album_canonical_id" \
   "$smoke_tmp/state-after-newer-album-review-delete.json"
-jq -e 'length == 1 and .[0].has_listened == true and .[0].default_rating == 2.0 and .[0].is_loved == false and .[0].want_to_listen == false' "$smoke_tmp/state-after-newer-album-review-delete.json" >/dev/null
+jq -e 'length == 1 and .[0].has_listened == true and .[0].default_rating == 4.0 and .[0].is_loved == true and .[0].want_to_listen == false' "$smoke_tmp/state-after-newer-album-review-delete.json" >/dev/null
 rpc "$conductor_token" get_canonical_album_state_aggregate \
   "{\"p_canonical_album_id\":\"$album_canonical_id\"}" \
   "$smoke_tmp/album-state-aggregate-after-newest-delete.json"
@@ -2795,8 +2829,9 @@ stage="expired session rejection"
 expired_invite_code="EXP$(printf '%05d' "$((RANDOM % 100000))")"
 expired_at="$(date -u -v-1H '+%Y-%m-%dT%H:%M:%SZ')"
 rpc "$conductor_token" create_session \
-  "{\"p_title\":\"Expired Harmony smoke\",\"p_invite_code\":\"$expired_invite_code\",\"p_playback_mode\":\"queue_only\",\"p_allow_collaborator_invites\":false,\"p_expires_at\":\"$expired_at\"}" \
+  "{\"p_title\":\"Expired Harmony smoke\",\"p_invite_code\":\"$expired_invite_code\",\"p_playback_mode\":\"queue_only\",\"p_allow_collaborator_invites\":false,\"p_expires_at\":\"$expired_at\",\"p_allow_collaborator_reordering\":false}" \
   "$smoke_tmp/expired-session.json"
+jq -e '(if type == "array" then .[0] else . end) | .allow_collaborator_reordering == false' "$smoke_tmp/expired-session.json" >/dev/null
 expired_join_status="$(rpc_status "$collaborator_token" join_session_by_invite \
   "{\"p_invite_code\":\"$expired_invite_code\"}" \
   "$smoke_tmp/expired-join.json")"
@@ -2832,19 +2867,25 @@ conductor_add_command="$(new_uuid)"
 rpc "$conductor_token" apply_queue_command \
   "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$conductor_add_command\",\"p_expected_revision\":0,\"p_type\":\"add\",\"p_payload\":{\"canonical_track_id\":\"$track_one\"}}" \
   "$smoke_tmp/conductor-add.json"
-jq -e '.status == "applied" and .idempotent == false and .revision == 1' "$smoke_tmp/conductor-add.json" >/dev/null
+conductor_added_item_id="$(jq -er '.queue_item_id' "$smoke_tmp/conductor-add.json")"
+jq -e '.status == "applied" and .idempotent == false and .revision == 1 and (.queue_item_id | length) > 0' "$smoke_tmp/conductor-add.json" >/dev/null
 
 rpc "$conductor_token" apply_queue_command \
   "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$conductor_add_command\",\"p_expected_revision\":0,\"p_type\":\"add\",\"p_payload\":{\"canonical_track_id\":\"$track_one\"}}" \
   "$smoke_tmp/conductor-add-replay.json"
-jq -e '.status == "applied" and .idempotent == true and .revision == 1' "$smoke_tmp/conductor-add-replay.json" >/dev/null
+jq -e --arg item "$conductor_added_item_id" '.status == "applied" and .idempotent == true and .revision == 1 and .queue_item_id == $item' "$smoke_tmp/conductor-add-replay.json" >/dev/null
+rest_get "$conductor_token" \
+  "queue_events?select=payload&session_id=eq.$session_id&command_id=eq.$conductor_add_command" \
+  "$smoke_tmp/conductor-add-event.json"
+jq -e --arg item "$conductor_added_item_id" 'length == 1 and .[0].payload.queue_item_id == $item' "$smoke_tmp/conductor-add-event.json" >/dev/null
 
 stage="collaborator add"
 collaborator_add_command="$(new_uuid)"
 rpc "$collaborator_token" apply_queue_command \
   "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$collaborator_add_command\",\"p_expected_revision\":1,\"p_type\":\"add\",\"p_payload\":{\"canonical_track_id\":\"$track_two\"}}" \
   "$smoke_tmp/collaborator-add.json"
-jq -e '.status == "applied" and .revision == 2' "$smoke_tmp/collaborator-add.json" >/dev/null
+collaborator_added_item_id="$(jq -er '.queue_item_id' "$smoke_tmp/collaborator-add.json")"
+jq -e '.status == "applied" and .revision == 2 and (.queue_item_id | length) > 0' "$smoke_tmp/collaborator-add.json" >/dev/null
 
 stage="queue ownership lookup"
 rest_get "$conductor_token" \
@@ -2853,55 +2894,90 @@ rest_get "$conductor_token" \
 [[ "$(jq 'length' "$smoke_tmp/queue.json")" -eq 2 ]]
 conductor_item_id="$(jq -er --arg actor "$conductor_id" '.[] | select(.added_by == $actor) | .id' "$smoke_tmp/queue.json")"
 collaborator_item_id="$(jq -er --arg actor "$collaborator_id" '.[] | select(.added_by == $actor) | .id' "$smoke_tmp/queue.json")"
+[[ "$conductor_item_id" == "$conductor_added_item_id" ]]
+[[ "$collaborator_item_id" == "$collaborator_added_item_id" ]]
 
-stage="collaborator permission rejection"
-collaborator_move_status="$(rpc_status "$collaborator_token" apply_queue_command \
+stage="default collaborator reorder permission"
+rpc "$collaborator_token" apply_queue_command \
   "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":2,\"p_type\":\"move\",\"p_payload\":{\"queue_item_id\":\"$collaborator_item_id\",\"position\":512}}" \
-  "$smoke_tmp/collaborator-move.json")"
+  "$smoke_tmp/default-collaborator-move.json"
+jq -e '.status == "applied" and .revision == 3' "$smoke_tmp/default-collaborator-move.json" >/dev/null
+
+stage="collaborator reordering setting authority"
+collaborator_reordering_permission_status="$(rpc_status "$collaborator_token" set_harmony_collaborator_reordering \
+  "{\"p_session_id\":\"$session_id\",\"p_allow_collaborator_reordering\":false}" \
+  "$smoke_tmp/collaborator-reordering-permission.json")"
+[[ "$collaborator_reordering_permission_status" == "400" || "$collaborator_reordering_permission_status" == "403" ]]
+rpc "$conductor_token" set_harmony_collaborator_reordering \
+  "{\"p_session_id\":\"$session_id\",\"p_allow_collaborator_reordering\":false}" \
+  "$smoke_tmp/conductor-disable-reordering.json"
+jq -e '(if type == "array" then .[0] else . end) | .allow_collaborator_reordering == false and .queue_revision == 3' "$smoke_tmp/conductor-disable-reordering.json" >/dev/null
+rest_get "$collaborator_token" \
+  "sessions?select=id,allow_collaborator_reordering,queue_revision&id=eq.$session_id" \
+  "$smoke_tmp/disabled-reordering-projection.json"
+jq -e 'length == 1 and .[0].allow_collaborator_reordering == false and .[0].queue_revision == 3' "$smoke_tmp/disabled-reordering-projection.json" >/dev/null
+
+collaborator_move_status="$(rpc_status "$collaborator_token" apply_queue_command \
+  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":3,\"p_type\":\"move\",\"p_payload\":{\"queue_item_id\":\"$collaborator_item_id\",\"position\":640}}" \
+  "$smoke_tmp/disabled-collaborator-move.json")"
 [[ "$collaborator_move_status" == "400" || "$collaborator_move_status" == "403" ]]
 
+stage="collaborator stale revision and nonmember rejection"
+rpc "$collaborator_token" apply_queue_command \
+  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":2,\"p_type\":\"move\",\"p_payload\":{\"queue_item_id\":\"$collaborator_item_id\",\"position\":640}}" \
+  "$smoke_tmp/stale-collaborator-move.json"
+jq -e '.status == "conflict" and .revision == 3' "$smoke_tmp/stale-collaborator-move.json" >/dev/null
+nonmember_move_status="$(rpc_status "$directory_token" apply_queue_command \
+  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":3,\"p_type\":\"move\",\"p_payload\":{\"queue_item_id\":\"$collaborator_item_id\",\"position\":640}}" \
+  "$smoke_tmp/nonmember-move.json")"
+[[ "$nonmember_move_status" == "400" || "$nonmember_move_status" == "403" ]]
+
 collaborator_remove_other_status="$(rpc_status "$collaborator_token" apply_queue_command \
-  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":2,\"p_type\":\"remove\",\"p_payload\":{\"queue_item_id\":\"$conductor_item_id\"}}" \
+  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":3,\"p_type\":\"remove\",\"p_payload\":{\"queue_item_id\":\"$conductor_item_id\"}}" \
   "$smoke_tmp/collaborator-remove-other.json")"
 [[ "$collaborator_remove_other_status" == "400" || "$collaborator_remove_other_status" == "403" ]]
 
 stage="non-finite queue position rejection"
 nan_move_status="$(rpc_status "$conductor_token" apply_queue_command \
-  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":2,\"p_type\":\"move\",\"p_payload\":{\"queue_item_id\":\"$collaborator_item_id\",\"position\":\"NaN\"}}" \
+  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":3,\"p_type\":\"move\",\"p_payload\":{\"queue_item_id\":\"$collaborator_item_id\",\"position\":\"NaN\"}}" \
   "$smoke_tmp/nan-move.json")"
 [[ "$nan_move_status" == "400" ]]
 infinity_move_status="$(rpc_status "$conductor_token" apply_queue_command \
-  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":2,\"p_type\":\"move\",\"p_payload\":{\"queue_item_id\":\"$collaborator_item_id\",\"position\":\"Infinity\"}}" \
+  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":3,\"p_type\":\"move\",\"p_payload\":{\"queue_item_id\":\"$collaborator_item_id\",\"position\":\"Infinity\"}}" \
   "$smoke_tmp/infinity-move.json")"
 [[ "$infinity_move_status" == "400" ]]
 
-stage="revision conflict"
+stage="Conductor reorder while collaborators are disabled"
 rpc "$conductor_token" apply_queue_command \
-  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":1,\"p_type\":\"move\",\"p_payload\":{\"queue_item_id\":\"$collaborator_item_id\",\"position\":512}}" \
-  "$smoke_tmp/stale-move.json"
-jq -e '.status == "conflict" and .revision == 2' "$smoke_tmp/stale-move.json" >/dev/null
-
-stage="Conductor reorder"
-rpc "$conductor_token" apply_queue_command \
-  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":2,\"p_type\":\"move\",\"p_payload\":{\"queue_item_id\":\"$collaborator_item_id\",\"position\":512}}" \
+  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":3,\"p_type\":\"move\",\"p_payload\":{\"queue_item_id\":\"$collaborator_item_id\",\"position\":256}}" \
   "$smoke_tmp/conductor-move.json"
-jq -e '.status == "applied" and .revision == 3' "$smoke_tmp/conductor-move.json" >/dev/null
+jq -e '.status == "applied" and .revision == 4' "$smoke_tmp/conductor-move.json" >/dev/null
+
+stage="Conductor enables collaborator reordering"
+rpc "$conductor_token" set_harmony_collaborator_reordering \
+  "{\"p_session_id\":\"$session_id\",\"p_allow_collaborator_reordering\":true}" \
+  "$smoke_tmp/conductor-enable-reordering.json"
+jq -e '(if type == "array" then .[0] else . end) | .allow_collaborator_reordering == true and .queue_revision == 4' "$smoke_tmp/conductor-enable-reordering.json" >/dev/null
+rpc "$collaborator_token" apply_queue_command \
+  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":4,\"p_type\":\"move\",\"p_payload\":{\"queue_item_id\":\"$conductor_item_id\",\"position\":768}}" \
+  "$smoke_tmp/enabled-collaborator-move.json"
+jq -e '.status == "applied" and .revision == 5' "$smoke_tmp/enabled-collaborator-move.json" >/dev/null
 
 stage="collaborator removes own item"
 rpc "$collaborator_token" apply_queue_command \
-  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":3,\"p_type\":\"remove\",\"p_payload\":{\"queue_item_id\":\"$collaborator_item_id\"}}" \
+  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":5,\"p_type\":\"remove\",\"p_payload\":{\"queue_item_id\":\"$collaborator_item_id\"}}" \
   "$smoke_tmp/collaborator-remove-own.json"
-jq -e '.status == "applied" and .revision == 4' "$smoke_tmp/collaborator-remove-own.json" >/dev/null
+jq -e '.status == "applied" and .revision == 6' "$smoke_tmp/collaborator-remove-own.json" >/dev/null
 
 stage="collaborator playback rejection"
 collaborator_play_status="$(rpc_status "$collaborator_token" apply_queue_command \
-  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":4,\"p_type\":\"play\",\"p_payload\":{\"status\":\"playing\"}}" \
+  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":6,\"p_type\":\"play\",\"p_payload\":{\"status\":\"playing\"}}" \
   "$smoke_tmp/collaborator-play.json")"
 [[ "$collaborator_play_status" == "400" || "$collaborator_play_status" == "403" ]]
 
 stage="queue-only playback rejection"
 conductor_play_status="$(rpc_status "$conductor_token" apply_queue_command \
-  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":4,\"p_type\":\"play\",\"p_payload\":{\"status\":\"playing\"}}" \
+  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":6,\"p_type\":\"play\",\"p_payload\":{\"status\":\"playing\"}}" \
   "$smoke_tmp/conductor-play.json")"
 [[ "$conductor_play_status" == "400" || "$conductor_play_status" == "403" ]]
 
@@ -2921,6 +2997,15 @@ rpc "$conductor_token" end_harmony_session \
   "{\"p_session_id\":\"$session_id\"}" \
   "$smoke_tmp/end.json"
 
+ended_reordering_setting_status="$(rpc_status "$conductor_token" set_harmony_collaborator_reordering \
+  "{\"p_session_id\":\"$session_id\",\"p_allow_collaborator_reordering\":false}" \
+  "$smoke_tmp/ended-reordering-setting.json")"
+[[ "$ended_reordering_setting_status" == "400" || "$ended_reordering_setting_status" == "404" ]]
+ended_move_status="$(rpc_status "$collaborator_token" apply_queue_command \
+  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":6,\"p_type\":\"move\",\"p_payload\":{\"queue_item_id\":\"$conductor_item_id\",\"position\":384}}" \
+  "$smoke_tmp/ended-collaborator-move.json")"
+[[ "$ended_move_status" == "400" || "$ended_move_status" == "404" ]]
+
 cleanup_account "$collaborator_token"
 collaborator_token=""
 rest_get "$conductor_token" \
@@ -2936,4 +3021,4 @@ directory_token=""
 cleanup_account "$conductor_token"
 conductor_token=""
 
-printf 'Harmony live smoke passed: auth, invite permissions, collaboration roles, queue ownership, conflicts, idempotency, end, cleanup\n'
+printf 'Harmony live smoke passed: auth, session permissions, collaboration roles, queue ownership, conflicts, idempotency, Realtime, end, cleanup\n'
