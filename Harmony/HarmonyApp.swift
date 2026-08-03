@@ -9,7 +9,17 @@ import SwiftUI
 
 @main
 struct HarmonyApp: App {
-    @StateObject private var sessionStore = HarmonySessionStore(seedSampleData: false)
+    @StateObject private var sessionStore: HarmonySessionStore
+
+    init() {
+        let store = HarmonySessionStore(seedSampleData: false)
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ui-test-diary-editor") {
+            store.seedDiaryEditorUITestFixture()
+        }
+#endif
+        _sessionStore = StateObject(wrappedValue: store)
+    }
 
     var body: some Scene {
         WindowGroup {

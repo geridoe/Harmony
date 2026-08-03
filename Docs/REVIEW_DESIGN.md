@@ -1,7 +1,7 @@
 # Reviews and listening journal design
 
 **Decision date:** 2 August 2026  
-**Status:** dedicated reviews and manual music-diary entry implemented; broader discovery work remains
+**Status:** dedicated reviews, manual music-diary entry, and edit/link implementation deployed
 
 ## Why this is a separate product surface
 
@@ -73,11 +73,13 @@ Only the first stage should be described as implemented:
    composer, rating/Loved/spoiler/audience controls, compact cards, review
    detail with reactions/comments, and manual dated track logs with Relisten,
    tags, and per-entry audience.
-2. **Next:** editing manual diary entries, optional linkage between a listen
-   and an opinion, and richer Journal browsing/filtering.
-3. **Later:** profile Reviews/Journal/Loved shelves and a richer typed following
+2. **Current:** owner editing for manual diary metadata and an optional link to
+   the owner's opinion for the same canonical track.
+3. **Next:** richer Journal browsing/filtering and a deliberate create-time
+   opinion-linking interaction if the edit-first workflow proves too hidden.
+4. **Later:** profile Reviews/Journal/Loved shelves and a richer typed following
    activity feed. Bulk provider-history imports must not flood that feed.
-4. **After moderation and ranking policy:** popular/community discovery,
+5. **After moderation and ranking policy:** popular/community discovery,
    shareable lists/collections, and listening statistics/year summaries.
 
 This order emulates Letterboxd's durable separation of diary, opinion,
@@ -152,9 +154,40 @@ and provider-import writes explicitly submit `false` and an empty tag array.
 Manual repeats are allowed; the existing provider-import deduplication index
 continues to apply only to imported provider history.
 
-This slice is create/delete only. Editing a dated log and linking it to an
-existing review are deliberately follow-up work. A diary entry does not create
-or update `music_reviews`, enqueue its track, or start playback.
+### Local edit and opinion-link slice
+
+Each owner-visible manual row now has an accessible **Edit journal entry**
+action. Harmony-room and provider-import rows remain immutable in this editor.
+The track is also fixed: editing changes only Listened on, Relisten, tags,
+audience, and an optional Linked opinion. Creation intentionally remains a
+quick log without a Linked opinion control; the author may link it afterward.
+
+The editor is seeded from the persisted row, including its existing link. It
+shows **No linked opinion** plus only the owner's active track reviews whose
+canonical track ID exactly matches the diary entry. Save calls
+`updateDiaryEntry(...) -> Bool`; invalid input or a failed request leaves the
+sheet and all edited values intact. A successful refresh and dismiss occur
+only after server confirmation.
+
+Manual journal rows render their calendar date without a misleading time;
+imported and Harmony-room history retains full timestamps. For submission,
+today maps to the current instant so it cannot be rejected as a future time,
+while an earlier selected day maps to local noon to avoid crossing the chosen
+calendar boundary during UTC conversion.
+
+Migration `202608030026_edit_music_diary_entries.sql` adds nullable
+`review_id` with `ON DELETE SET NULL`, so deleting an opinion unlinks the log
+without deleting either record. The owner-only `update_listening_diary_entry`
+RPC permits only manual entries and reuses the existing future-date and tag
+rules. A non-null review must be owned by the same caller, undeleted, a track
+review, and about the same track. The server compares canonical IDs when
+available and falls back to provider identity for legacy rows where both sides
+provide it. Passing null explicitly unlinks the opinion. RLS and read
+visibility remain unchanged and independent for the two records.
+
+The migration is deployed to the linked Supabase project. A diary entry still
+never creates or updates `music_reviews`, enqueues its track, or starts
+playback.
 
 Album review creation remains available on Spotify/Apple catalog results in
 Add music. The server migration `202608020023_review_affinity.sql` adds the
@@ -345,8 +378,7 @@ the entire authored draft. Only confirmed publication resets it.
 1. Expand the implemented detail page with additional reaction choices,
    comment moderation/reporting, and deep links from notifications.
 2. Add profile shelves for Journal, Reviews, Loved, and Collections.
-3. Extend the implemented dated-log context with edit support, optional review
-   linkage, and structured first-listen/live/setting fields without requiring
-   them for a quick log.
+3. Extend dated-log context with structured first-listen/live/setting fields
+   without requiring them for a quick log.
 4. Add discovery only after report/block/moderation and ranking policies are
    defined; bulk history imports should not flood follower activity.

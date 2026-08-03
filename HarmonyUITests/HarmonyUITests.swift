@@ -152,6 +152,7 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(app.textFields["Tags, separated by commas"].exists)
         XCTAssertTrue(app.staticTexts["Audience"].exists)
         XCTAssertTrue(app.buttons["Save"].exists)
+        XCTAssertFalse(app.staticTexts["Linked opinion"].exists, "Opinion linkage belongs to editing an existing manual diary entry")
 
         app.buttons["Choose a song"].tap()
         XCTAssertTrue(app.navigationBars["Choose music"].waitForExistence(timeout: 5))
@@ -160,6 +161,37 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(reviewSong.waitForExistence(timeout: 5))
         reviewSong.tap()
         XCTAssertTrue(app.buttons["Choose a different song"].waitForExistence(timeout: 5))
+    }
+
+    func testManualJournalEntryEditorPrefillsContextAndCompatibleOpinion() throws {
+        let app = XCUIApplication()
+        app.launchArguments.append("--ui-test-diary-editor")
+        app.launch()
+
+        let reviewsTab = app.tabBars.buttons["Reviews"]
+        XCTAssertTrue(reviewsTab.waitForExistence(timeout: 5))
+        reviewsTab.tap()
+        let reviewsNavigation = app.navigationBars["Reviews"]
+        if !reviewsNavigation.waitForExistence(timeout: 3) { reviewsTab.tap() }
+        XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
+        app.buttons["My journal"].tap()
+
+        let edit = app.buttons["Edit journal entry for Afterglow"]
+        for _ in 0..<3 where !edit.exists { app.swipeUp() }
+        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        edit.tap()
+
+        XCTAssertTrue(app.navigationBars["Edit journal entry"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Afterglow"].exists)
+        XCTAssertTrue(app.staticTexts["Wolves at Noon"].exists)
+        XCTAssertTrue(app.staticTexts["Listened on"].exists)
+        XCTAssertEqual(app.switches["Relisten"].value as? String, "1")
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS '#party' AND label CONTAINS '#vinyl'")).firstMatch.exists)
+        XCTAssertTrue(app.staticTexts["Linked opinion"].exists)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS '4.5' AND label CONTAINS 'Afterglow'")).firstMatch.exists)
+        XCTAssertTrue(app.staticTexts["Audience"].exists)
+        XCTAssertTrue(app.buttons["Save changes"].exists)
+        XCTAssertFalse(app.buttons["Choose a different song"].exists, "Editing preserves the logged recording")
     }
 
     func testLaunchPerformance() throws {

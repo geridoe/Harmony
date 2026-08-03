@@ -234,6 +234,9 @@ final class HarmonySessionStore: ObservableObject {
     private let spotifyRemote: any SpotifyPlaybackProviding
     private let appleMusicProvider: any AppleMusicProviding
     private var spotifyLoadedProviderID: String?
+#if DEBUG
+    private var isDiaryEditorUITestFixtureActive = false
+#endif
     @Published private(set) var currentMember: SessionMember
     @Published private(set) var members: [SessionMember]
     let catalog: [HarmonyTrack]
@@ -855,6 +858,9 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     func refreshListeningHistory() async {
+#if DEBUG
+        guard !isDiaryEditorUITestFixtureActive else { return }
+#endif
         guard !isRefreshingListeningHistory else { return }
         isRefreshingListeningHistory = true
         defer { isRefreshingListeningHistory = false }
@@ -899,6 +905,111 @@ final class HarmonySessionStore: ObservableObject {
             return false
         }
     }
+
+    @discardableResult
+    func updateDiaryEntry(
+        _ entry: RemoteListeningHistoryEntry,
+        listenedOn: Date,
+        isRelisten: Bool,
+        tags: [String],
+        visibility: SocialVisibilityOption,
+        reviewID: UUID?
+    ) async -> Bool {
+        guard entry.source == "manual", isOwnHistoryEntry(entry) else {
+            collaborationMessage = "Only your manually logged listens can be edited."
+            return false
+        }
+        if let reviewID {
+            guard compatibleOwnTrackReviews(for: entry).contains(where: { $0.id == reviewID }) else {
+                collaborationMessage = "That opinion does not match this journal entry."
+                return false
+            }
+        }
+        guard !isSavingDiaryEntry else { return false }
+        isSavingDiaryEntry = true
+        defer { isSavingDiaryEntry = false }
+        do {
+            try await collaborationRepository.updateListeningDiaryEntry(
+                entry.id,
+                playedAt: listenedOn,
+                isRelisten: isRelisten,
+                tags: tags,
+                visibility: visibility,
+                reviewID: reviewID
+            )
+            collaborationMessage = "Journal entry updated"
+            await refreshListeningHistory()
+            return true
+        } catch {
+            collaborationMessage = "Could not update journal entry: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func compatibleOwnTrackReviews(for entry: RemoteListeningHistoryEntry) -> [RemoteMusicReview] {
+        guard let entryTrackID = entry.canonicalTrack?.id else { return [] }
+        return musicReviews.filter { review in
+            isOwnReview(review)
+                && review.subjectKind == "track"
+                && review.canonicalTrack?.id == entryTrackID
+        }
+    }
+
+#if DEBUG
+    /// Keeps editor UI tests deterministic and independent of a developer's
+    /// signed-in account or hosted journal contents.
+    func seedDiaryEditorUITestFixture() {
+        let profileID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+        let trackID = UUID(uuidString: "20000000-0000-0000-0000-000000000002")!
+        let reviewID = UUID(uuidString: "30000000-0000-0000-0000-000000000003")!
+        let entryID = UUID(uuidString: "40000000-0000-0000-0000-000000000004")!
+        let profile = RemoteProfile(displayName: "UI Test Listener")
+        let track = RemoteCatalogTrack(
+            id: trackID,
+            title: "Afterglow",
+            artist: "Wolves at Noon",
+            album: "Northern Lights",
+            durationMilliseconds: 206_000,
+            artworkURL: nil,
+            isExplicit: false,
+            providerTracks: nil
+        )
+        let review = RemoteMusicReview(
+            id: reviewID,
+            profileID: profileID,
+            rating: 4.5,
+            body: "A fixture opinion.",
+            createdAt: Date(),
+            visibility: .privateOnly,
+            containsSpoilers: false,
+            isLoved: true,
+            subjectKind: "track",
+            subjectTitle: track.title,
+            subjectArtist: track.artist,
+            subjectArtworkURL: nil,
+            subjectDeepLink: nil,
+            canonicalTrack: track,
+            profile: profile,
+            comments: [],
+            reactions: []
+        )
+        authenticatedProfileID = profileID
+        isDiaryEditorUITestFixtureActive = true
+        musicReviews = [review]
+        listeningHistory = [RemoteListeningHistoryEntry(
+            id: entryID,
+            profileID: profileID,
+            playedAt: Calendar.current.date(byAdding: .day, value: -2, to: Date())!,
+            source: "manual",
+            visibility: .privateOnly,
+            isRelisten: true,
+            tags: ["party", "vinyl"],
+            reviewID: reviewID,
+            canonicalTrack: track,
+            profile: profile
+        )]
+    }
+#endif
 
     func deleteListeningHistoryEntry(_ entryID: UUID) async {
         do {
@@ -1083,6 +1194,9 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     func refreshMusicReviews() async {
+#if DEBUG
+        guard !isDiaryEditorUITestFixtureActive else { return }
+#endif
         guard !isRefreshingMusicReviews else { return }
         isRefreshingMusicReviews = true
         defer { isRefreshingMusicReviews = false }

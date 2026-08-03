@@ -281,9 +281,52 @@ tags, and rejects Relisten/tags on non-manual history. Provider-import repeats
 remain governed by the pre-existing import-only unique index; separate manual
 listens remain repeatable.
 
-This slice supports create and the existing owner delete path. It does not yet
-edit diary metadata or link a dated listen to a review. Quick logging remains a
-separate unadorned history action and does not infer Relisten or tags.
+Quick logging remains a separate unadorned history action and does not infer
+Relisten or tags.
+
+### Diary editing and optional opinion linkage
+
+Manual entries in **Reviews → My journal** expose a pencil action with the
+accessible label `Edit journal entry for <track>`. Imported and Harmony-room
+history does not expose it. `DiaryEntryEditor` keeps the track immutable and
+seeds `DiaryEntryDraft` from the existing date, Relisten flag, tags, audience,
+and optional `linkedReviewID`.
+
+`DiaryEntryDraft.listenedOnForSubmission` preserves date-only intent across
+time-zone conversion: today submits the current instant, while an earlier day
+submits local noon. Manual rows display only month/day/year; imported and
+Harmony-room rows continue to display their real time of play.
+
+The **Linked opinion** picker is edit-only. It offers **No linked opinion** and
+the owner's active track reviews returned by
+`compatibleOwnTrackReviews(for:)`. The client requires an exact canonical
+track-ID match and rejects an ID outside that list before making a request.
+This avoids presenting album opinions, another member's review, or an opinion
+about a different recording. Creation does not silently infer a link.
+
+**Save changes** calls
+`updateDiaryEntry(_:listenedOn:isRelisten:tags:visibility:reviewID:)`. The store
+accepts only an owned `source = manual` entry, shares the existing
+`isSavingDiaryEntry` duplicate-submit guard, and returns `Bool`; failure keeps
+the editor and draft intact. A successful call refreshes history before the
+sheet dismisses.
+
+Migration `202608030026_edit_music_diary_entries.sql` adds nullable
+`listening_history_entries.review_id`, an index for non-null links, and a
+manual-only constraint. `ON DELETE SET NULL` makes review deletion an unlink,
+not diary deletion. Its owner-only `update_listening_diary_entry` RPC updates
+the existing `played_at`, visibility, Relisten, normalized tags, and optional
+review link. It rejects future timestamps and invalid tag limits as before.
+A linked opinion must be caller-owned, undeleted, a track review, and match the
+entry's canonical track; provider identity is a legacy fallback where both
+sides supply it. Passing `p_review_id = null` unlinks it. Existing RLS/read
+policies are unchanged.
+
+Migration 026 is deployed to the linked Supabase project, and the hosted smoke
+suite covers successful normalization/linkage plus foreign-owner and album-link
+rejection. The DTO/repository contract adds
+`RemoteListeningHistoryEntry.reviewID`, canonical track IDs in nested catalog
+rows, and `updateListeningDiaryEntry(...)` using the exact named RPC fields.
 
 ## 4. Supabase data model
 
@@ -477,6 +520,16 @@ listens, and preservation of the composer after a failed save. UI coverage
 should keep Log a listen in My journal and verify the track-only picker, date,
 Relisten, tags, audience, and disabled-until-valid Save flow.
 
+Edit/link coverage should decode `review_id` and nested canonical identity,
+preserve a draft's existing optional link, and prove owner/manual-only updates,
+unlinking, same-track enforcement, deleted/foreign/album-review rejection,
+`ON DELETE SET NULL`, future/tag validation, and failure draft retention. UI
+coverage uses the debug-only `--ui-test-diary-editor` launch fixture to assert
+the pencil affordance, fixed track, prefilled date/Relisten/tags, compatible
+Linked opinion, audience, and Save changes without depending on a developer's
+hosted diary contents. The fixture bypasses remote history/review refresh only
+in DEBUG builds while that launch argument is present.
+
 ### Local development and deployment
 
 ```bash
@@ -542,8 +595,7 @@ MusicKit library/playback authorization.
 3. Review detail and spoiler conceal/reveal are implemented; extend that
    surface with additional reaction choices, comment moderation, and
    notification-to-review deep links.
-4. Extend manual diary entries with owner editing, optional review linkage,
-   and Journal filtering without moving authoring into the Listen tab.
+4. Add Journal filtering without moving authoring into Listen.
 5. Enroll/configure the Apple developer assets, enable MusicKit, and implement
    the equivalent Apple catalog resolution, playback, and opted-in history
    source. Keep its adapter local and submit only canonical/provider metadata

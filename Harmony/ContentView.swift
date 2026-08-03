@@ -393,6 +393,7 @@ struct DiaryEntryDraft: Equatable {
     var isRelisten = false
     var tagsText = ""
     var visibility: SocialVisibilityOption = .privateOnly
+    var linkedReviewID: UUID?
 
     var normalizedTags: [String] {
         var seen = Set<String>()
@@ -406,6 +407,12 @@ struct DiaryEntryDraft: Equatable {
         if normalizedTags.contains(where: { $0.count > 30 }) { return "Each tag must be 30 characters or fewer." }
         return nil
     }
+
+    var listenedOnForSubmission: Date {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(listenedOn) { return Date() }
+        return calendar.date(byAdding: .hour, value: 12, to: calendar.startOfDay(for: listenedOn)) ?? listenedOn
+    }
 }
 
 struct ReviewsView: View {
@@ -415,6 +422,7 @@ struct ReviewsView: View {
     @State private var hasSeededDraftVisibility = false
     @State private var isChoosingReviewSubject = false
     @State private var isCreatingDiaryEntry = false
+    @State private var editingDiaryEntry: RemoteListeningHistoryEntry?
     @State private var editingReview: RemoteMusicReview?
     @State private var editingRating = 4.0
     @State private var editingBody = ""
@@ -521,6 +529,13 @@ struct ReviewsView: View {
         .sheet(isPresented: $isCreatingDiaryEntry) {
             DiaryEntryComposer(defaultVisibility: store.historySocialVisibility)
                 .environmentObject(store)
+        }
+        .sheet(item: $editingDiaryEntry) { entry in
+            DiaryEntryEditor(
+                entry: entry,
+                compatibleReviews: store.compatibleOwnTrackReviews(for: entry)
+            )
+            .environmentObject(store)
         }
     }
 
@@ -671,16 +686,25 @@ struct ReviewsView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(entry.canonicalTrack.map { "\($0.title) · \($0.artist)" } ?? "Unavailable track")
                                 .font(.subheadline.weight(.semibold))
-                            Text(entry.playedAt, format: .dateTime.month().day().year().hour().minute())
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            if entry.isRelisten || !entry.tags.isEmpty {
+                            if entry.source == "manual" {
+                                Text(entry.playedAt, format: .dateTime.month().day().year())
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            } else {
+                                Text(entry.playedAt, format: .dateTime.month().day().year().hour().minute())
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            if entry.isRelisten || !entry.tags.isEmpty || entry.reviewID != nil {
                                 HStack(spacing: 5) {
                                     if entry.isRelisten {
                                         Label("Relisten", systemImage: "arrow.clockwise")
                                     }
                                     ForEach(entry.tags.prefix(3), id: \.self) { tag in
                                         Text("#\(tag)")
+                                    }
+                                    if entry.reviewID != nil {
+                                        Label("Opinion", systemImage: "link")
                                     }
                                 }
                                 .font(.caption2)
@@ -692,6 +716,16 @@ struct ReviewsView: View {
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .accessibilityLabel(entry.visibility.title)
+                        if entry.source == "manual" {
+                            Button {
+                                editingDiaryEntry = entry
+                            } label: {
+                                Image(systemName: "pencil.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Edit journal entry for \(entry.canonicalTrack?.title ?? "unavailable track")")
+                            .accessibilityIdentifier("edit-diary-entry-\(entry.id.uuidString)")
+                        }
                     }
                 }
             }
@@ -915,7 +949,7 @@ private struct DiaryEntryComposer: View {
                         Task {
                             let didSave = await store.createDiaryEntry(
                                 track: track,
-                                listenedOn: submittedDraft.listenedOn,
+                                listenedOn: submittedDraft.listenedOnForSubmission,
                                 isRelisten: submittedDraft.isRelisten,
                                 tags: submittedDraft.normalizedTags,
                                 visibility: submittedDraft.visibility
@@ -934,6 +968,119 @@ private struct DiaryEntryComposer: View {
                 isChoosingTrack = false
             }
             .environmentObject(store)
+        }
+    }
+}
+
+private struct DiaryEntryEditor: View {
+    @EnvironmentObject private var store: HarmonySessionStore
+    @Environment(\.dismiss) private var dismiss
+    let entry: RemoteListeningHistoryEntry
+    let compatibleReviews: [RemoteMusicReview]
+    @State private var draft: DiaryEntryDraft
+
+    init(entry: RemoteListeningHistoryEntry, compatibleReviews: [RemoteMusicReview]) {
+        self.entry = entry
+        self.compatibleReviews = compatibleReviews
+        let linkedReviewID = entry.reviewID.flatMap { reviewID in
+            compatibleReviews.contains(where: { $0.id == reviewID }) ? reviewID : nil
+        }
+        _draft = State(initialValue: DiaryEntryDraft(
+            track: entry.canonicalTrack?.harmonyTrack,
+            listenedOn: entry.playedAt,
+            isRelisten: entry.isRelisten,
+            tagsText: entry.tags.joined(separator: ", "),
+            visibility: entry.visibility,
+            linkedReviewID: linkedReviewID
+        ))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Music") {
+                    HStack(spacing: 12) {
+                        if let track = draft.track {
+                            TrackArtwork(track: track, size: 46, cornerRadius: 9)
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(entry.canonicalTrack?.title ?? "Unavailable track").font(.headline)
+                            if let artist = entry.canonicalTrack?.artist {
+                                Text(artist).font(.subheadline).foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
+
+                Section("Listen") {
+                    DatePicker("Listened on", selection: $draft.listenedOn, in: ...Date(), displayedComponents: .date)
+                        .accessibilityIdentifier("diary-edit-listened-on")
+                    Toggle("Relisten", isOn: $draft.isRelisten)
+                        .accessibilityIdentifier("diary-edit-relisten")
+                    TextField("Tags, separated by commas", text: $draft.tagsText, axis: .vertical)
+                        .lineLimit(2...4)
+                        .textInputAutocapitalization(.never)
+                        .accessibilityIdentifier("diary-edit-tags")
+                    if let message = draft.tagValidationMessage {
+                        Text(message).font(.footnote).foregroundColor(.red)
+                    } else if !draft.normalizedTags.isEmpty {
+                        Text(draft.normalizedTags.map { "#\($0)" }.joined(separator: "  "))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Section("Opinion") {
+                    Picker("Linked opinion", selection: $draft.linkedReviewID) {
+                        Text("No linked opinion").tag(UUID?.none)
+                        ForEach(compatibleReviews) { review in
+                            Text("\(String(format: "%.1f", review.rating)) ★ · \(review.subjectTitle ?? review.canonicalTrack?.title ?? "Song review")")
+                                .tag(Optional(review.id))
+                        }
+                    }
+                    .accessibilityIdentifier("diary-edit-linked-opinion")
+                    if compatibleReviews.isEmpty {
+                        Text("No compatible song opinions are available. Harmony only links reviews whose canonical track ID exactly matches this listen.")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Section("Visibility") {
+                    Picker("Audience", selection: $draft.visibility) {
+                        ForEach(SocialVisibilityOption.allCases) { visibility in
+                            Text(visibility.title).tag(visibility)
+                        }
+                    }
+                    .accessibilityIdentifier("diary-edit-audience")
+                }
+            }
+            .navigationTitle("Edit journal entry")
+            .navigationBarTitleDisplayMode(.inline)
+            .accessibilityIdentifier("diary-entry-editor")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save changes") {
+                        let submittedDraft = draft
+                        Task {
+                            let didSave = await store.updateDiaryEntry(
+                                entry,
+                                listenedOn: submittedDraft.listenedOnForSubmission,
+                                isRelisten: submittedDraft.isRelisten,
+                                tags: submittedDraft.normalizedTags,
+                                visibility: submittedDraft.visibility,
+                                reviewID: submittedDraft.linkedReviewID
+                            )
+                            if didSave { dismiss() }
+                        }
+                    }
+                    .accessibilityIdentifier("diary-edit-save")
+                    .disabled(draft.tagValidationMessage != nil || store.isSavingDiaryEntry)
+                }
+            }
         }
     }
 }

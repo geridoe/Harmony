@@ -263,6 +263,19 @@ rest_get "$conductor_token" \
   "music_reviews?select=id,profile_id,subject_kind,subject_title,subject_artist,rating,contains_spoilers,is_loved,body&id=eq.$review_id" \
   "$smoke_tmp/follower-review.json"
 jq -e --arg profile "$collaborator_id" 'length == 1 and .[0].profile_id == $profile and .[0].subject_kind == "track" and .[0].subject_title == "Harmony Smoke Track" and .[0].rating == 4.5 and .[0].contains_spoilers == true and .[0].is_loved == true' "$smoke_tmp/follower-review.json" >/dev/null
+
+stage="owner diary editing and review linkage"
+unauthorized_diary_update_status="$(rpc_status "$conductor_token" update_listening_diary_entry \
+  "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_visibility\":\"private\",\"p_is_relisten\":false,\"p_tags\":[],\"p_review_id\":null}" \
+  "$smoke_tmp/unauthorized-diary-update.json")"
+[[ "$unauthorized_diary_update_status" == "400" || "$unauthorized_diary_update_status" == "404" ]]
+rpc "$collaborator_token" update_listening_diary_entry \
+  "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_visibility\":\"followers\",\"p_is_relisten\":true,\"p_tags\":[\" Road Trip \",\"road trip\",\"NIGHT\"],\"p_review_id\":\"$review_id\"}" \
+  "$smoke_tmp/diary-update.json"
+rest_get "$collaborator_token" \
+  "listening_history_entries?select=id,source,visibility,is_relisten,tags,review_id&id=eq.$history_entry_id" \
+  "$smoke_tmp/updated-diary.json"
+jq -e --arg review "$review_id" 'length == 1 and .[0].source == "manual" and .[0].visibility == "followers" and .[0].is_relisten == true and .[0].tags == ["road trip", "night"] and .[0].review_id == $review' "$smoke_tmp/updated-diary.json" >/dev/null
 invalid_album_link_status="$(rpc_status "$collaborator_token" create_music_review \
   '{"p_subject_kind":"album","p_provider":"spotify","p_provider_subject_id":"spotify:album:invalid","p_subject_title":"Invalid Link Album","p_subject_deep_link":"https://example.com/not-spotify","p_rating":3.0}' \
   "$smoke_tmp/invalid-album-link.json")"
@@ -275,6 +288,10 @@ rest_get "$conductor_token" \
   "music_reviews?select=id,subject_kind,subject_title,subject_artist,subject_deep_link&id=eq.$album_review_id" \
   "$smoke_tmp/follower-album-review.json"
 jq -e 'length == 1 and .[0].subject_kind == "album" and .[0].subject_title == "Harmony Smoke Album" and .[0].subject_artist == "Harmony Test Artist"' "$smoke_tmp/follower-album-review.json" >/dev/null
+album_diary_link_status="$(rpc_status "$collaborator_token" update_listening_diary_entry \
+  "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_visibility\":\"followers\",\"p_is_relisten\":true,\"p_tags\":[\"road trip\",\"night\"],\"p_review_id\":\"$album_review_id\"}" \
+  "$smoke_tmp/album-diary-link.json")"
+[[ "$album_diary_link_status" == "400" ]]
 rpc "$conductor_token" add_review_comment \
   "{\"p_review_id\":\"$review_id\",\"p_body\":\"Agreed.\"}" \
   "$smoke_tmp/review-comment.json"

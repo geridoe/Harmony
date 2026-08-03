@@ -326,12 +326,14 @@ final class HarmonyTests: XCTestCase {
     func testDiaryDraftNormalizesTagsAndPreservesJournalContext() {
         let listenedOn = Date(timeIntervalSince1970: 1_722_470_400)
         let track = reviewTrack(title: "Midnight reprise")
+        let linkedReviewID = UUID()
         let draft = DiaryEntryDraft(
             track: track,
             listenedOn: listenedOn,
             isRelisten: true,
             tagsText: " Party, vinyl, PARTY, , late night ",
-            visibility: .followers
+            visibility: .followers,
+            linkedReviewID: linkedReviewID
         )
 
         XCTAssertEqual(draft.track, track)
@@ -339,6 +341,7 @@ final class HarmonyTests: XCTestCase {
         XCTAssertTrue(draft.isRelisten)
         XCTAssertEqual(draft.normalizedTags, ["party", "vinyl", "late night"])
         XCTAssertEqual(draft.visibility, .followers)
+        XCTAssertEqual(draft.linkedReviewID, linkedReviewID)
         XCTAssertNil(draft.tagValidationMessage)
     }
 
@@ -351,6 +354,64 @@ final class HarmonyTests: XCTestCase {
 
         draft.tagsText = (1...10).map { "tag\($0)" }.joined(separator: ",")
         XCTAssertNil(draft.tagValidationMessage)
+    }
+
+    func testDiaryDraftSubmissionPreservesSelectedCalendarDay() {
+        let calendar = Calendar.current
+        let pastDay = calendar.date(byAdding: .day, value: -2, to: calendar.startOfDay(for: Date()))!
+        var draft = DiaryEntryDraft(listenedOn: pastDay)
+
+        let pastSubmission = draft.listenedOnForSubmission
+
+        XCTAssertTrue(calendar.isDate(pastSubmission, inSameDayAs: pastDay))
+        XCTAssertEqual(calendar.component(.hour, from: pastSubmission), 12, "Past date-only values use local noon to survive UTC conversion")
+
+        draft.listenedOn = calendar.startOfDay(for: Date())
+        let beforeSubmission = Date()
+        let todaySubmission = draft.listenedOnForSubmission
+        XCTAssertTrue(calendar.isDateInToday(todaySubmission))
+        XCTAssertGreaterThanOrEqual(todaySubmission, beforeSubmission)
+    }
+
+    func testListeningHistoryDecodesOptionalReviewAndCanonicalTrackIdentity() throws {
+        let entryID = UUID()
+        let profileID = UUID()
+        let reviewID = UUID()
+        let trackID = UUID()
+        let payload = """
+        {
+          "id": "\(entryID.uuidString)",
+          "profile_id": "\(profileID.uuidString)",
+          "played_at": "2026-08-02T18:30:00Z",
+          "source": "manual",
+          "visibility": "followers",
+          "is_relisten": true,
+          "tags": ["party", "vinyl"],
+          "review_id": "\(reviewID.uuidString)",
+          "canonical_tracks": {
+            "id": "\(trackID.uuidString)",
+            "title": "Midnight reprise",
+            "artist": "Test artist",
+            "album": "Test album",
+            "duration_ms": 180000,
+            "artwork_url": null,
+            "is_explicit": false,
+            "provider_tracks": null
+          },
+          "profiles": { "display_name": "Test listener" }
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let entry = try decoder.decode(RemoteListeningHistoryEntry.self, from: Data(payload.utf8))
+
+        XCTAssertEqual(entry.id, entryID)
+        XCTAssertEqual(entry.profileID, profileID)
+        XCTAssertEqual(entry.reviewID, reviewID)
+        XCTAssertEqual(entry.canonicalTrack?.id, trackID)
+        XCTAssertTrue(entry.isRelisten)
+        XCTAssertEqual(entry.tags, ["party", "vinyl"])
     }
 
     func testClearingSessionRemovesRoomStateAndRestoresLocalOwnership() {

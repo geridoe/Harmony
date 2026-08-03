@@ -129,6 +129,14 @@ private struct RecordListeningHistoryParameters: Encodable {
     let p_is_relisten: Bool
     let p_tags: [String]
 }
+private struct UpdateListeningDiaryEntryParameters: Encodable {
+    let p_entry_id: UUID
+    let p_played_at: Date
+    let p_visibility: String
+    let p_is_relisten: Bool
+    let p_tags: [String]
+    let p_review_id: UUID?
+}
 private struct HistoryEntryIDParameters: Encodable { let p_entry_id: UUID }
 private struct RemovePayload: Encodable { let queue_item_id: UUID }
 private struct MovePayload: Encodable { let queue_item_id: UUID; let position: Double }
@@ -241,6 +249,7 @@ struct RemoteSocialNotification: Decodable, Identifiable {
 }
 
 struct RemoteCatalogTrack: Decodable {
+    let id: UUID?
     let title: String
     let artist: String
     let album: String?
@@ -250,7 +259,7 @@ struct RemoteCatalogTrack: Decodable {
     let providerTracks: [RemoteProviderTrack]?
 
     enum CodingKeys: String, CodingKey {
-        case title, artist, album
+        case id, title, artist, album
         case durationMilliseconds = "duration_ms"
         case artworkURL = "artwork_url"
         case isExplicit = "is_explicit"
@@ -310,10 +319,12 @@ struct RemoteListeningHistoryEntry: Decodable, Identifiable {
     let visibility: SocialVisibilityOption
     let isRelisten: Bool
     let tags: [String]
+    let reviewID: UUID?
     let canonicalTrack: RemoteCatalogTrack?
     let profile: RemoteProfile
     enum CodingKeys: String, CodingKey {
         case id, source, visibility, tags
+        case reviewID = "review_id"
         case profileID = "profile_id"
         case playedAt = "played_at"
         case isRelisten = "is_relisten"
@@ -659,7 +670,7 @@ final class HarmonyCollaborationRepository {
     func listeningHistory() async throws -> [RemoteListeningHistoryEntry] {
         try await authenticate()
         return try await client.from("listening_history_entries")
-            .select("id,profile_id,played_at,source,visibility,is_relisten,tags,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)")
+            .select("id,profile_id,played_at,source,visibility,is_relisten,tags,review_id,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)")
             .order("played_at", ascending: false)
             .limit(100).execute().value
     }
@@ -667,7 +678,7 @@ final class HarmonyCollaborationRepository {
     func musicReviews() async throws -> [RemoteMusicReview] {
         try await authenticate()
         return try await client.from("music_reviews")
-            .select("id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,rating,body,visibility,contains_spoilers,is_loved,created_at,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name),review_comments(id,author_id,body,created_at,profiles(display_name)),review_reactions(profile_id,kind)")
+            .select("id,profile_id,subject_kind,subject_title,subject_artist,subject_artwork_url,subject_deep_link,rating,body,visibility,contains_spoilers,is_loved,created_at,canonical_tracks(id,title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name),review_comments(id,author_id,body,created_at,profiles(display_name)),review_reactions(profile_id,kind)")
             .order("created_at", ascending: false).limit(50).execute().value
     }
 
@@ -838,6 +849,28 @@ final class HarmonyCollaborationRepository {
                 p_tags: tags
             )
         ).execute().value
+    }
+
+    func updateListeningDiaryEntry(
+        _ entryID: UUID,
+        playedAt: Date,
+        isRelisten: Bool,
+        tags: [String],
+        visibility: SocialVisibilityOption,
+        reviewID: UUID?
+    ) async throws {
+        try await authenticate()
+        _ = try await client.rpc(
+            "update_listening_diary_entry",
+            params: UpdateListeningDiaryEntryParameters(
+                p_entry_id: entryID,
+                p_played_at: playedAt,
+                p_visibility: visibility.rawValue,
+                p_is_relisten: isRelisten,
+                p_tags: tags,
+                p_review_id: reviewID
+            )
+        ).execute()
     }
 
     func createListeningDiaryEntry(
