@@ -352,12 +352,40 @@ private enum ReviewsShelf: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+private enum ReviewDraftSubject: Hashable {
+    case track(HarmonyTrack)
+    case album(ReviewableAlbum)
+
+    var title: String {
+        switch self {
+        case .track(let track): track.title
+        case .album(let album): album.title
+        }
+    }
+
+    var artist: String {
+        switch self {
+        case .track(let track): track.artist
+        case .album(let album): album.artist
+        }
+    }
+
+    var kind: String {
+        switch self {
+        case .track: "Song"
+        case .album: "Album"
+        }
+    }
+}
+
 struct ReviewsView: View {
     @EnvironmentObject private var store: HarmonySessionStore
     @State private var shelf = ReviewsShelf.community
     @State private var rating = 4.0
     @State private var isLoved = false
     @State private var reviewBody = ""
+    @State private var reviewSubject: ReviewDraftSubject?
+    @State private var isChoosingReviewSubject = false
     @State private var editingReview: RemoteMusicReview?
     @State private var editingRating = 4.0
     @State private var editingBody = ""
@@ -447,16 +475,33 @@ struct ReviewsView: View {
                 }
             }
         }
+        .sheet(isPresented: $isChoosingReviewSubject) {
+            ReviewSubjectPicker { subject in
+                reviewSubject = subject
+                rating = 4
+                isLoved = false
+                reviewBody = ""
+                isChoosingReviewSubject = false
+            }
+            .environmentObject(store)
+        }
     }
 
     private var reviewComposer: some View {
-        Section("Review what is playing") {
-            if let track = store.nowPlaying?.track {
+        Section("Review music") {
+            Button {
+                isChoosingReviewSubject = true
+            } label: {
+                Label(reviewSubject == nil ? "Choose a song or album" : "Choose different music", systemImage: "magnifyingglass")
+            }
+
+            if let subject = reviewSubject ?? store.nowPlaying.map({ .track($0.track) }) {
                 HStack(spacing: 12) {
-                    TrackArtwork(track: track, size: 48, cornerRadius: 10)
+                    reviewSubjectArtwork(subject)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(track.title).font(.headline)
-                        Text(track.artist).font(.subheadline).foregroundColor(.secondary)
+                        Text(subject.title).font(.headline)
+                        Text(subject.artist).font(.subheadline).foregroundColor(.secondary)
+                        Text(subject.kind).font(.caption).foregroundColor(.secondary)
                     }
                 }
                 RatingPicker(rating: $rating)
@@ -466,10 +511,22 @@ struct ReviewsView: View {
                 TextField("Write your review (optional)", text: $reviewBody, axis: .vertical)
                     .lineLimit(3...8)
                 Button(store.reviewsSocialVisibility == .followers ? "Publish to followers" : "Save private review") {
+                    let selectedSubject = subject
                     let body = reviewBody
-                    reviewBody = ""
                     let loved = isLoved
-                    Task { await store.publishTrackReview(rating: rating, body: body, isLoved: loved) }
+                    Task {
+                        let didPublish: Bool
+                        switch selectedSubject {
+                        case .track(let track):
+                            didPublish = await store.publishTrackReview(track, rating: rating, body: body, isLoved: loved)
+                        case .album(let album):
+                            didPublish = await store.publishAlbumReview(album, rating: rating, body: body, isLoved: loved)
+                        }
+                        if didPublish {
+                            reviewBody = ""
+                            isLoved = false
+                        }
+                    }
                 }
                 .disabled(store.isPublishingMusicReview)
             } else {
@@ -477,14 +534,38 @@ struct ReviewsView: View {
                     Image(systemName: "text.book.closed")
                         .font(.title2)
                         .foregroundColor(.secondary)
-                    Text("Nothing queued").font(.headline)
-                    Text("Add a song or start playback, then return here to rate and review it.")
+                    Text("Choose something to review").font(.headline)
+                    Text("Search your connected catalogs without adding music to the party queue or listening journal.")
                         .font(.footnote)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func reviewSubjectArtwork(_ subject: ReviewDraftSubject) -> some View {
+        switch subject {
+        case .track(let track):
+            TrackArtwork(track: track, size: 48, cornerRadius: 10)
+        case .album(let album):
+            if let artworkURL = album.artworkURL {
+                AsyncImage(url: artworkURL) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFit()
+                    } else {
+                        Image(systemName: "square.stack").foregroundColor(.indigo)
+                    }
+                }
+                .frame(width: 48, height: 48)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            } else {
+                Image(systemName: "square.stack")
+                    .foregroundColor(.indigo)
+                    .frame(width: 48, height: 48)
             }
         }
     }
@@ -563,6 +644,72 @@ struct ReviewsView: View {
             editingBody = selected.body
             editingVisibility = selected.visibility
             editingIsLoved = selected.isLoved
+        }
+    }
+}
+
+private struct ReviewSubjectPicker: View {
+    @EnvironmentObject private var store: HarmonySessionStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    let onSelect: (ReviewDraftSubject) -> Void
+
+    private var tracks: [HarmonyTrack] {
+        guard !query.isEmpty else { return store.catalog }
+        return store.catalogSearchResults ?? store.catalog.filter {
+            "\($0.title) \($0.artist) \($0.album)".localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if store.isSearchingCatalog {
+                    ProgressView("Searching connected catalogs…")
+                } else if let message = store.catalogSearchMessage {
+                    Text(message).font(.footnote).foregroundColor(.secondary)
+                }
+
+                ForEach(tracks) { track in
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 12) {
+                            TrackArtwork(track: track, size: 42)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(track.title).font(.headline)
+                                Text("\(track.artist) · \(track.album)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        HStack {
+                            Button("Review song") { onSelect(.track(track)) }
+                                .buttonStyle(.borderedProminent)
+                            if let album = track.reviewableAlbum {
+                                Button("Review album") { onSelect(.album(album)) }
+                                    .buttonStyle(.bordered)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            .searchable(text: $query, prompt: "Search songs and albums")
+            .navigationTitle("Choose music")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .task(id: query) {
+                guard !query.isEmpty else {
+                    await store.searchCatalog(query: "")
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                guard !Task.isCancelled else { return }
+                await store.searchCatalog(query: query)
+            }
         }
     }
 }

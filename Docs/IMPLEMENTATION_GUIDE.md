@@ -157,6 +157,63 @@ The UI offers Only me and Followers. The database supports `public` for a
 future intentional discovery feature, but no public-discovery product surface
 is implemented.
 
+### Implemented: Reviews subject picker
+
+The Reviews tab now has a **Choose a song or album** action. `ReviewsView`
+owns a local `ReviewDraftSubject?` (`track(HarmonyTrack)` or
+`album(ReviewableAlbum)`), rating, body, Loved state, and sheet presentation.
+If nothing is selected, the composer still falls back to `nowPlaying` for the
+quick-review path.
+
+`ReviewSubjectPicker` is a sheet with a debounced query and displays each
+`HarmonyTrack` result with **Review song** and, where available, **Review
+album** buttons. The selected subject returns through a closure, resets the
+composer's rating/Loved/body fields, and never adds a queue item, starts
+playback, or writes listening history.
+
+Today the sheet calls `HarmonySessionStore.searchCatalog(query:)` and reads
+the store-wide `catalogSearchResults`, `isSearchingCatalog`, and search
+message. That is correct functional behavior but means it shares search state
+with Add music; opening both surfaces can replace each other’s results. The
+picker does not yet use a segmented Songs/Albums view or deduplicate album
+rows.
+
+At publication, `publishTrackReview` routes to
+`createTrackReview(track:rating:body:visibility:isLoved:)`; the repository
+resolves the canonical ID. `publishAlbumReview` routes to
+`createAlbumReview(album:rating:body:visibility:isLoved:)`, preserving the
+provider album identity and safe metadata. Both store methods return `Bool`:
+the composer clears body/Loved only after success and therefore retains the
+selected subject and author text on failure. The existing create/update RPCs,
+RLS, and `is_loved` column are sufficient; this feature required no new schema
+migration.
+
+New reviews use the current global `reviewsSocialVisibility` at the moment of
+submission. A review can be individually changed after creation in Edit
+review, but the create composer does **not** yet snapshot or expose a
+per-review audience. “Loved” remains the author’s independent affinity field:
+it never creates a reaction, does not notify followers by itself, and is
+visible only where the enclosing review is visible.
+
+### Follow-up: isolate picker state and add creation audience
+
+The next refactor should introduce a `ReviewMediaPickerModel` that owns query,
+result mode, debounce/cancellation, loading/error state, and local results.
+It should call a store method that returns results rather than mutate
+`catalogSearchResults`, so Add music and Reviews cannot race. That refactor
+can add a segmented **Songs / Albums** result mode, deduplicating albums by
+provider plus provider album ID and only allowing provider-identified albums
+with a title to be selected.
+
+At the same time, replace the parallel `ReviewsView` fields with a small
+`ReviewDraft` value holding subject, rating, body, `isLoved`, and visibility.
+Seed visibility from `reviewsSocialVisibility` on composer open, allow an
+explicit Only me/Followers selection, and preserve that snapshot until save.
+A Connections privacy change must not silently change an already-open draft.
+Keep the existing `Bool` publication result behavior: dismiss/clear only after
+success and preserve draft/search context on a recoverable catalog, auth,
+validation, RPC, or RLS failure.
+
 ## 4. Supabase data model
 
 ### Collaboration tables
@@ -220,6 +277,30 @@ changes go through narrowly scoped `security definer` RPCs after checking
 policies to avoid recursive membership policy evaluation. Room reads require
 membership. Queue mutations record the actor and cannot be forged as another
 member.
+
+### Shared-input hardening
+
+Migration `202608020024_catalog_and_queue_input_hardening.sql` closes two
+Postgres-specific input gaps at the shared-data boundary:
+
+- Queue positions have a table constraint requiring a value strictly between
+  negative and positive infinity. This rejects `NaN`, `Infinity`, and
+  `-Infinity` regardless of which future write path reaches `queue_items`, while
+  retaining the complete finite `double precision` range used for fractional
+  ordering. A rejected move rolls back before its event or revision can commit.
+- `resolve_harmony_track` trims provider IDs and display metadata, bounds the
+  album and URL lengths, permits artwork only over HTTPS, and accepts deep links
+  only on the expected provider host (`open.spotify.com/track/…` or
+  `music.apple.com/…`). These rules match the current Spotify Web API and Apple
+  Music catalog outputs. Provider IDs remain opaque because Apple and Spotify
+  use different identifier formats.
+- Public function execution is explicitly revoked; authenticated clients and
+  trusted service-role jobs retain the catalog-resolution RPC grant. The RPC
+  still takes an advisory lock and returns an existing mapping idempotently.
+
+The hosted smoke test covers both providers' accepted URL shapes, hostile link
+and insecure-artwork rejection, plus `NaN` and `Infinity` queue moves. Negative
+infinity is enforced by the same symmetric table constraint.
 
 ### Social commands and visibility
 
@@ -307,6 +388,15 @@ does not print tokens, and needs a Node 22+ binary only for its native
 WebSocket assertion. It is an integration/security test, not a substitute for
 provider-device testing.
 
+The implemented picker needs UI coverage for choosing a subject, its per-result
+song/album actions, and preserving the composer after a failed `Bool` publish.
+The follow-up picker refactor needs unit coverage for album deduplication,
+visibility snapshotting, and stale/cancelled query rejection, plus UI coverage
+that Reviews search cannot alter Add music results and that a per-review
+audience survives an in-flight Connections change. Backend smoke coverage
+should continue to prove owner-only edits and visibility/block enforcement for
+both subject kinds.
+
 ### Local development and deployment
 
 ```bash
@@ -366,16 +456,20 @@ MusicKit library/playback authorization.
    now-playing share, search, and local App Remote playback on a physical
    iPhone. Capture server/function errors separately from App Remote transport
    errors.
-2. Enroll/configure the Apple developer assets, enable MusicKit, and implement
+2. Refactor the implemented Reviews picker: isolate its catalog state from Add
+   music, add segmented/deduplicated album results, and add explicit
+   per-review audience snapshotting while retaining the current separate
+   journal/opinion/Loved model and no queue side effect.
+3. Enroll/configure the Apple developer assets, enable MusicKit, and implement
    the equivalent Apple catalog resolution, playback, and opted-in history
    source. Keep its adapter local and submit only canonical/provider metadata
    to the backend.
-3. Add server-owned APNs delivery from `social_notifications`; retain the
+4. Add server-owned APNs delivery from `social_notifications`; retain the
    database row as the source of truth and provide notification preference UI.
-4. Add production operational work: error reporting, scheduled cleanup of
+5. Add production operational work: error reporting, scheduled cleanup of
    expired presence, rate limiting/abuse reporting, privacy-policy copy,
    TestFlight build settings, and device-pair collaboration tests.
-5. If public discovery is desired, design moderation/reporting, profile
+6. If public discovery is desired, design moderation/reporting, profile
    discovery queries, rate limits, and explicit migration from follower-only
    UI before exposing the existing `public` data value.
 

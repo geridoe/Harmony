@@ -212,8 +212,19 @@ rest_get "$collaborator_token" \
 jq -e --arg session "$session_id" '.[] | select(.id == $session)' "$smoke_tmp/recent-sessions.json" >/dev/null
 
 stage="provider track canonicalization"
+invalid_catalog_artwork_status="$(rpc_status "$conductor_token" resolve_harmony_track \
+  '{"p_provider":"spotify","p_provider_id":"spotify:track:harmony-invalid-artwork","p_title":"Invalid Artwork Track","p_artist":"Harmony Test Artist","p_artwork_url":"http://example.com/not-secure.jpg","p_deep_link":"https://open.spotify.com/track/harmony-invalid-artwork"}' \
+  "$smoke_tmp/invalid-catalog-artwork.json")"
+[[ "$invalid_catalog_artwork_status" == "400" ]]
+invalid_catalog_link_status="$(rpc_status "$conductor_token" resolve_harmony_track \
+  '{"p_provider":"spotify","p_provider_id":"spotify:track:harmony-invalid-link","p_title":"Invalid Link Track","p_artist":"Harmony Test Artist","p_artwork_url":"https://example.com/secure.jpg","p_deep_link":"https://open.spotify.com.evil.example/track/harmony-invalid-link"}' \
+  "$smoke_tmp/invalid-catalog-link.json")"
+[[ "$invalid_catalog_link_status" == "400" ]]
 rpc "$conductor_token" resolve_harmony_track \
-  '{"p_provider":"apple_music","p_provider_id":"harmony-smoke-apple-track","p_title":"Harmony Smoke Track","p_artist":"Harmony Test Artist","p_album":"Harmony Test Album","p_duration_ms":180000,"p_artwork_url":null,"p_is_explicit":false,"p_deep_link":null}' \
+  '{"p_provider":"spotify","p_provider_id":"spotify:track:harmony-smoke-valid-url","p_title":"Harmony Spotify URL Smoke","p_artist":"Harmony Test Artist","p_album":"Harmony Test Album","p_duration_ms":180000,"p_artwork_url":"https://i.scdn.co/image/harmony-smoke","p_is_explicit":false,"p_deep_link":"https://open.spotify.com/track/harmony-smoke-valid-url"}' \
+  "$smoke_tmp/spotify-url-track.json"
+rpc "$conductor_token" resolve_harmony_track \
+  '{"p_provider":"apple_music","p_provider_id":"harmony-smoke-apple-track","p_title":"Harmony Smoke Track","p_artist":"Harmony Test Artist","p_album":"Harmony Test Album","p_duration_ms":180000,"p_artwork_url":"https://is1-ssl.mzstatic.com/image/thumb/harmony-smoke/300x300.jpg","p_is_explicit":false,"p_deep_link":"https://music.apple.com/us/song/harmony-smoke/123456789"}' \
   "$smoke_tmp/canonical-track.json"
 canonical_track_id="$(jq -er '.' "$smoke_tmp/canonical-track.json")"
 rpc "$conductor_token" resolve_harmony_track \
@@ -433,6 +444,16 @@ collaborator_remove_other_status="$(rpc_status "$collaborator_token" apply_queue
   "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":2,\"p_type\":\"remove\",\"p_payload\":{\"queue_item_id\":\"$conductor_item_id\"}}" \
   "$smoke_tmp/collaborator-remove-other.json")"
 [[ "$collaborator_remove_other_status" == "400" || "$collaborator_remove_other_status" == "403" ]]
+
+stage="non-finite queue position rejection"
+nan_move_status="$(rpc_status "$conductor_token" apply_queue_command \
+  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":2,\"p_type\":\"move\",\"p_payload\":{\"queue_item_id\":\"$collaborator_item_id\",\"position\":\"NaN\"}}" \
+  "$smoke_tmp/nan-move.json")"
+[[ "$nan_move_status" == "400" ]]
+infinity_move_status="$(rpc_status "$conductor_token" apply_queue_command \
+  "{\"p_session_id\":\"$session_id\",\"p_command_id\":\"$(new_uuid)\",\"p_expected_revision\":2,\"p_type\":\"move\",\"p_payload\":{\"queue_item_id\":\"$collaborator_item_id\",\"position\":\"Infinity\"}}" \
+  "$smoke_tmp/infinity-move.json")"
+[[ "$infinity_move_status" == "400" ]]
 
 stage="revision conflict"
 rpc "$conductor_token" apply_queue_command \

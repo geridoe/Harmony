@@ -999,8 +999,15 @@ final class HarmonySessionStore: ObservableObject {
         catch { collaborationMessage = "Could not refresh reviews." }
     }
 
-    func publishTrackReview(rating: Double, body: String, isLoved: Bool = false) async {
-        guard let track = nowPlaying?.track, !isPublishingMusicReview else { return }
+    @discardableResult
+    func publishTrackReview(rating: Double, body: String, isLoved: Bool = false) async -> Bool {
+        guard let track = nowPlaying?.track else { return false }
+        return await publishTrackReview(track, rating: rating, body: body, isLoved: isLoved)
+    }
+
+    @discardableResult
+    func publishTrackReview(_ track: HarmonyTrack, rating: Double, body: String, isLoved: Bool = false) async -> Bool {
+        guard !isPublishingMusicReview else { return false }
         isPublishingMusicReview = true
         defer { isPublishingMusicReview = false }
         do {
@@ -1015,20 +1022,35 @@ final class HarmonySessionStore: ObservableObject {
                 ? "Review published to approved followers"
                 : "Private review saved"
             await refreshMusicReviews()
-        } catch { collaborationMessage = "Could not publish review: \(error.localizedDescription)" }
+            return true
+        } catch {
+            collaborationMessage = "Could not publish review: \(error.localizedDescription)"
+            return false
+        }
     }
 
-    func publishAlbumReview(_ album: ReviewableAlbum, rating: Double, body: String) async {
-        guard !isPublishingMusicReview else { return }
+    @discardableResult
+    func publishAlbumReview(_ album: ReviewableAlbum, rating: Double, body: String, isLoved: Bool = false) async -> Bool {
+        guard !isPublishingMusicReview else { return false }
         isPublishingMusicReview = true
         defer { isPublishingMusicReview = false }
         do {
-            try await collaborationRepository.createAlbumReview(album: album, rating: rating, body: body, visibility: reviewsSocialVisibility)
+            try await collaborationRepository.createAlbumReview(
+                album: album,
+                rating: rating,
+                body: body,
+                visibility: reviewsSocialVisibility,
+                isLoved: isLoved
+            )
             collaborationMessage = reviewsSocialVisibility == .followers
                 ? "Album review published to approved followers"
                 : "Private album review saved"
             await refreshMusicReviews()
-        } catch { collaborationMessage = "Could not publish album review: \(error.localizedDescription)" }
+            return true
+        } catch {
+            collaborationMessage = "Could not publish album review: \(error.localizedDescription)"
+            return false
+        }
     }
 
     func toggleReviewHeart(_ reviewID: UUID) async {

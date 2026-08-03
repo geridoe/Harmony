@@ -87,7 +87,12 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Community"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["My journal"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Review what is playing"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Review music"].waitForExistence(timeout: 5))
+        let chooseMusic = app.buttons["Choose a song or album"]
+        XCTAssertTrue(chooseMusic.waitForExistence(timeout: 5))
+        chooseMusic.tap()
+        XCTAssertTrue(app.navigationBars["Choose music"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Review song"].firstMatch.waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["Your diary"].exists)
     }
 
