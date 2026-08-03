@@ -24,12 +24,14 @@ enum ProviderAvailability: String, Hashable { case playable, openInProvider, una
 struct ProviderTrackMapping: Hashable {
     let provider: MusicProvider
     let providerID: String
+    let storefront: String
     let availability: ProviderAvailability
     let deepLinkURL: URL?
 
-    init(provider: MusicProvider, providerID: String, availability: ProviderAvailability, deepLinkURL: URL? = nil) {
+    init(provider: MusicProvider, providerID: String, storefront: String? = nil, availability: ProviderAvailability, deepLinkURL: URL? = nil) {
         self.provider = provider
         self.providerID = providerID
+        self.storefront = storefront ?? (provider == .spotify ? "global" : "us")
         self.availability = availability
         self.deepLinkURL = deepLinkURL
     }
@@ -45,6 +47,7 @@ struct ReviewableAlbum: Hashable, Identifiable {
 }
 struct HarmonyTrack: Identifiable, Hashable {
     let id: UUID
+    let canonicalTrackID: UUID?
     let title: String
     let artist: String
     let album: String
@@ -52,11 +55,13 @@ struct HarmonyTrack: Identifiable, Hashable {
     let symbol: String
     let artworkURL: URL?
     let isExplicit: Bool
+    let isrc: String?
     let mappings: [ProviderTrackMapping]
     let reviewableAlbum: ReviewableAlbum?
 
-    init(id: UUID = UUID(), title: String, artist: String, album: String, duration: TimeInterval, symbol: String, artworkURL: URL? = nil, isExplicit: Bool = false, mappings: [ProviderTrackMapping], reviewableAlbum: ReviewableAlbum? = nil) {
+    init(id: UUID = UUID(), canonicalTrackID: UUID? = nil, title: String, artist: String, album: String, duration: TimeInterval, symbol: String, artworkURL: URL? = nil, isExplicit: Bool = false, isrc: String? = nil, mappings: [ProviderTrackMapping], reviewableAlbum: ReviewableAlbum? = nil) {
         self.id = id
+        self.canonicalTrackID = canonicalTrackID
         self.title = title
         self.artist = artist
         self.album = album
@@ -64,6 +69,7 @@ struct HarmonyTrack: Identifiable, Hashable {
         self.symbol = symbol
         self.artworkURL = artworkURL
         self.isExplicit = isExplicit
+        self.isrc = isrc
         self.mappings = mappings
         self.reviewableAlbum = reviewableAlbum
     }
@@ -1184,6 +1190,9 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     func refreshTrackSubjectShelf() async {
+#if DEBUG
+        guard !isDiaryEditorUITestFixtureActive else { return }
+#endif
         guard !isRefreshingTrackSubjectShelf, !isLoadingMoreTrackSubjectShelf else { return }
         isRefreshingTrackSubjectShelf = true
         defer { isRefreshingTrackSubjectShelf = false }
@@ -1200,6 +1209,9 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     func loadMoreTrackSubjectShelf() async {
+#if DEBUG
+        guard !isDiaryEditorUITestFixtureActive else { return }
+#endif
         guard hasMoreTrackSubjectShelf,
               !isRefreshingTrackSubjectShelf,
               !isLoadingMoreTrackSubjectShelf,
@@ -2092,17 +2104,19 @@ final class HarmonySessionStore: ObservableObject {
             }
             if let me = members.first(where: { $0.id == userID }) { currentMember = me }
             queue = snapshot.map { remote in
-                let track = catalog.first(where: { $0.title == remote.canonicalTrack.title && $0.artist == remote.canonicalTrack.artist })
-                    ?? HarmonyTrack(
-                        title: remote.canonicalTrack.title,
-                        artist: remote.canonicalTrack.artist,
-                        album: remote.canonicalTrack.album ?? "",
-                        duration: TimeInterval(remote.canonicalTrack.durationMilliseconds ?? 0) / 1000,
-                        symbol: "music.note",
-                artworkURL: remote.canonicalTrack.artworkURL,
-                isExplicit: remote.canonicalTrack.isExplicit,
-                        mappings: (remote.canonicalTrack.providerTracks ?? []).compactMap(Self.providerMapping)
-                    )
+                let track = HarmonyTrack(
+                    id: remote.canonicalTrack.id ?? UUID(),
+                    canonicalTrackID: remote.canonicalTrack.id,
+                    title: remote.canonicalTrack.title,
+                    artist: remote.canonicalTrack.artist,
+                    album: remote.canonicalTrack.album ?? "",
+                    duration: TimeInterval(remote.canonicalTrack.durationMilliseconds ?? 0) / 1000,
+                    symbol: "music.note",
+                    artworkURL: remote.canonicalTrack.artworkURL,
+                    isExplicit: remote.canonicalTrack.isExplicit,
+                    isrc: remote.canonicalTrack.isrc,
+                    mappings: (remote.canonicalTrack.providerTracks ?? []).compactMap(Self.providerMapping)
+                )
                 return QueueItem(id: remote.id, track: track, addedBy: members.first(where: { $0.id == remote.addedBy }) ?? currentMember)
             }
             await synchronizePersonalSpotifyPlaybackIfNeeded()
@@ -2268,6 +2282,7 @@ final class HarmonySessionStore: ObservableObject {
         return ProviderTrackMapping(
             provider: provider,
             providerID: remote.providerID,
+            storefront: remote.storefront,
             availability: availability,
             deepLinkURL: remote.deepLink
         )
@@ -2275,16 +2290,19 @@ final class HarmonySessionStore: ObservableObject {
 
     private static func harmonyTrack(_ result: SpotifySearchTrack) -> HarmonyTrack {
         HarmonyTrack(
+            canonicalTrackID: result.canonicalTrackID,
             title: result.title,
             artist: result.artist,
             album: result.album,
-            duration: TimeInterval(result.durationSeconds),
+            duration: TimeInterval(result.durationMilliseconds) / 1000,
             symbol: "music.note",
             artworkURL: result.artworkURL,
             isExplicit: result.isExplicit,
+            isrc: result.isrc,
             mappings: [ProviderTrackMapping(
                 provider: .spotify,
                 providerID: result.providerID,
+                storefront: "global",
                 availability: .playable,
                 deepLinkURL: result.deepLinkURL
             )],
@@ -2309,6 +2327,7 @@ final class HarmonySessionStore: ObservableObject {
             let mappings = Array(Set(existing.mappings + track.mappings))
             results[existingIndex] = HarmonyTrack(
                 id: existing.id,
+                canonicalTrackID: existing.canonicalTrackID ?? track.canonicalTrackID,
                 title: existing.title,
                 artist: existing.artist,
                 album: existing.album,
@@ -2316,6 +2335,7 @@ final class HarmonySessionStore: ObservableObject {
                 symbol: existing.symbol,
                 artworkURL: existing.artworkURL ?? track.artworkURL,
                 isExplicit: existing.isExplicit || track.isExplicit,
+                isrc: existing.isrc ?? track.isrc,
                 mappings: mappings,
                 reviewableAlbum: existing.reviewableAlbum ?? track.reviewableAlbum
             )
@@ -2343,12 +2363,35 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     private static func representsSameRecording(_ lhs: HarmonyTrack, _ rhs: HarmonyTrack) -> Bool {
+        if let lhsCanonical = lhs.canonicalTrackID, let rhsCanonical = rhs.canonicalTrackID {
+            return lhsCanonical == rhsCanonical
+        }
         if lhs.id == rhs.id { return true }
         let lhsProviderIDs = Set(lhs.mappings.filter { !$0.providerID.isEmpty }.map { "\($0.provider.rawValue):\($0.providerID)" })
         let rhsProviderIDs = Set(rhs.mappings.filter { !$0.providerID.isEmpty }.map { "\($0.provider.rawValue):\($0.providerID)" })
         if !lhsProviderIDs.isDisjoint(with: rhsProviderIDs) { return true }
-        return lhs.title.compare(rhs.title, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
-            && lhs.artist.compare(rhs.artist, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        if let lhsISRC = normalizedISRC(lhs.isrc), let rhsISRC = normalizedISRC(rhs.isrc) {
+            return lhsISRC == rhsISRC
+        }
+        let lhsAlbum = normalizedIdentityText(lhs.album)
+        let rhsAlbum = normalizedIdentityText(rhs.album)
+        guard !lhsAlbum.isEmpty, !rhsAlbum.isEmpty, lhs.duration > 0, rhs.duration > 0 else { return false }
+        return normalizedIdentityText(lhs.title) == normalizedIdentityText(rhs.title)
+            && normalizedIdentityText(lhs.artist) == normalizedIdentityText(rhs.artist)
+            && lhsAlbum == rhsAlbum
+            && abs(lhs.duration - rhs.duration) <= 2
+    }
+
+    private static func normalizedIdentityText(_ value: String) -> String {
+        value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .split(whereSeparator: \Character.isWhitespace)
+            .joined(separator: " ")
+    }
+
+    private static func normalizedISRC(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let normalized = value.uppercased().filter { $0 != "-" && !$0.isWhitespace }
+        return normalized.isEmpty ? nil : normalized
     }
 }
 

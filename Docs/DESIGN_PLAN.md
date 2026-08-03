@@ -114,6 +114,13 @@ provider_tracks
 
 Resolution order: exact provider mapping, ISRC, normalized metadata with duration tolerance, then a visible unavailable/open-in-provider state. Never silently substitute a different recording.
 
+Implemented resolution requires storefront-scoped provider identity first,
+then a validated ISRC, then exact normalized title/artist/nonempty album with a
+two-second duration tolerance. Conflicting canonical IDs, different valid
+ISRCs, missing album/duration, live/remaster variants, and ambiguous legacy
+candidates remain separate or fail explicitly. False splits are repairable;
+silently merging two recordings is not.
+
 ## 7. iOS architecture
 
 ```text

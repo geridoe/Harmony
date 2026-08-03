@@ -53,8 +53,9 @@ playback/catalog interaction.
 - Every canonical track can have an Apple Music and/or Spotify mapping,
   including storefront, deep link, availability, and match confidence.
 - Spotify catalog search is live when connected. Spotify catalog tracks are
-  canonicalized server-side by exact mapping/ISRC and returned as neutral
-  Harmony tracks with attribution and explicit-content metadata.
+  canonicalized server-side and returned with canonical UUID, ISRC, exact
+  duration, attribution, and explicit-content metadata. Client merging treats
+  unequal canonical UUIDs as distinct even when display names match.
 - Spotify App Remote provides local-device playback control for a Premium
   account with the Spotify app installed. The Web API token is short-lived and
   is never persisted in iOS.
@@ -413,7 +414,7 @@ The Activity shelf's **Music shelf** link opens a dedicated owner collection
 for one-row-per-track state. `HarmonySessionStore.trackSubjectShelf` is separate
 from Diary occurrences and social feeds. Refresh requests 51 rows and keeps 50;
 Load more uses `(updatedAt, canonicalTrackID)`, deduplicates canonical IDs, and
-hydrates the single-track cache used by future subject-detail controls.
+hydrates the single-track cache used by the track-detail controls.
 
 The page offers All, Loved, Want to listen, Rated, and Listened scopes plus
 case/diacritic-insensitive title, artist, and album search. Filtering describes
@@ -537,7 +538,8 @@ changes go through narrowly scoped `security definer` RPCs after checking
 | `skip_queue_item` | Conductor only; rejects queue-only playback and advances queue atomically |
 | `end_harmony_session` / `leave_harmony_session` | Conductor ends; collaborators leave |
 | `set_harmony_collaborator_invites` | Conductor only |
-| `resolve_harmony_track` | idempotent provider-to-canonical mapping resolution |
+| `resolve_harmony_track_v2` | collision-safe provider/storefront, ISRC, then guarded metadata resolution |
+| `resolve_harmony_track` | installed-client compatibility wrapper around v2 |
 
 `is_session_member(session_id)` is a security-definer helper used by reading
 policies to avoid recursive membership policy evaluation. Room reads require
@@ -567,6 +569,31 @@ Postgres-specific input gaps at the shared-data boundary:
 The hosted smoke test covers both providers' accepted URL shapes, hostile link
 and insecure-artwork rejection, plus `NaN` and `Infinity` queue moves. Negative
 infinity is enforced by the same symmetric table constraint.
+
+Migration `202608030035_collision_safe_track_resolution.sql` brings the
+resolver up to the canonical-matching policy in `DESIGN_PLAN.md`. Exact
+provider/storefront identity wins. Otherwise a normalized, valid ISRC may join
+the same recording across providers or alternate catalog IDs. Without ISRC,
+fallback requires normalized title, artist, a nonempty album, and durations
+within two seconds; title/artist alone can never merge recordings. Multiple
+legacy ISRC candidates or a large ISRC-duration conflict fail explicitly.
+
+`resolve_harmony_track_v2` accepts ISRC and storefront. The nine-argument
+function remains a nonambiguous compatibility wrapper for installed clients.
+The provider-per-canonical constraint is removed because one recording may
+legitimately have multiple catalog IDs from the same provider; exact provider
+identity remains unique. Provider and semantic advisory locks serialize races.
+The nonunique legacy ISRC index stays until existing duplicate splits can be
+audited safely—past false merges cannot be automatically reconstructed from
+display metadata.
+
+iOS carries a persisted `canonicalTrackID` separately from its local SwiftUI
+row ID, preserves storefront/ISRC/exact duration, returns known canonical IDs
+without another lookup, and rejects a mappingless unknown track instead of
+guessing by title. Search result merging uses canonical ID, then provider ID,
+then ISRC, then the same guarded metadata rule. The three Spotify Edge
+Functions now share the transactional v2 RPC rather than performing separate
+read-then-insert algorithms.
 
 ### Social commands and visibility
 
@@ -619,9 +646,9 @@ developer token, nor a Supabase service-role key is shipped in the app.
 | `spotify-token-exchange` | PKCE code exchange, encrypt and save refresh token |
 | `spotify-access-token` | refresh and return short-lived token for App Remote; `no-store` |
 | `spotify-disconnect` | delete only caller’s stored connection |
-| `spotify-search` | refresh token, search catalog, canonicalize/mapping, return safe metadata |
-| `spotify-history-import` | explicit recent-plays import, scope check, canonicalization, exact-play deduplication |
-| `spotify-now-listening` | explicit current-track snapshot and five-minute presence publish |
+| `spotify-search` | refresh token, shared canonicalization, return canonical UUID/ISRC/exact metadata |
+| `spotify-history-import` | explicit recent-plays import, shared canonicalization, exact-play deduplication |
+| `spotify-now-listening` | shared canonicalization, explicit current-track snapshot and five-minute presence publish |
 | `delete-account` | service-role cleanup of owned data followed by Auth-user deletion |
 
 An existing Spotify connection must be reauthorized after a newly required

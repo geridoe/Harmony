@@ -82,6 +82,46 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(store.queue.count, initialCount)
     }
 
+    func testCanonicalIdentityOverridesMatchingDisplayMetadata() {
+        let store = HarmonySessionStore(seedSampleData: false)
+        let firstID = UUID()
+        let secondID = UUID()
+        let first = identityTrack(canonicalTrackID: firstID, provider: .spotify, providerID: "spotify:track:canonical-one")
+        let sameRecording = identityTrack(canonicalTrackID: firstID, title: "Changed title", provider: .appleMusic, providerID: "apple-one")
+        let differentRecording = identityTrack(canonicalTrackID: secondID, provider: .appleMusic, providerID: "apple-two")
+
+        store.add(first)
+        store.add(sameRecording)
+        store.add(differentRecording)
+
+        XCTAssertEqual(store.queue.count, 2)
+        XCTAssertEqual(Set(store.queue.compactMap(\.track.canonicalTrackID)), Set([firstID, secondID]))
+    }
+
+    func testISRCMergesCrossProviderRecordingWithoutCanonicalID() {
+        let store = HarmonySessionStore(seedSampleData: false)
+        let spotify = identityTrack(isrc: "QZHAR2600301", provider: .spotify, providerID: "spotify:track:isrc")
+        let apple = identityTrack(title: "Compilation display title", isrc: "qzhar2600301", provider: .appleMusic, providerID: "apple-isrc")
+
+        store.add(spotify)
+        store.add(apple)
+
+        XCTAssertEqual(store.queue.count, 1)
+    }
+
+    func testMetadataFallbackRequiresAlbumAndCloseDuration() {
+        let matchingStore = HarmonySessionStore(seedSampleData: false)
+        matchingStore.add(identityTrack(duration: 180, provider: .spotify, providerID: "spotify:track:metadata-a"))
+        matchingStore.add(identityTrack(title: " identity song ", artist: "identity artist", album: "identity album", duration: 182, provider: .appleMusic, providerID: "apple-metadata-a"))
+        XCTAssertEqual(matchingStore.queue.count, 1)
+
+        let variantsStore = HarmonySessionStore(seedSampleData: false)
+        variantsStore.add(identityTrack(album: "Studio", duration: 180, provider: .spotify, providerID: "spotify:track:variant-a"))
+        variantsStore.add(identityTrack(album: "Live", duration: 180, provider: .appleMusic, providerID: "apple-variant-a"))
+        variantsStore.add(identityTrack(album: "Studio", duration: 182.001, provider: .appleMusic, providerID: "apple-variant-b"))
+        XCTAssertEqual(variantsStore.queue.count, 3)
+    }
+
     func testSpotifyCatalogErrorsProvideRecoveryGuidance() {
         XCTAssertTrue(SpotifyCatalogError.reconnectRequired.localizedDescription.contains("Reconnect Spotify"))
         XCTAssertTrue(SpotifyCatalogError.rateLimited.localizedDescription.contains("Wait a moment"))
@@ -666,6 +706,32 @@ final class HarmonyTests: XCTestCase {
             symbol: "music.note",
             mappings: [ProviderTrackMapping(provider: .spotify, providerID: "spotify:track:\(title)", availability: .playable)],
             reviewableAlbum: album
+        )
+    }
+
+    private func identityTrack(
+        canonicalTrackID: UUID? = nil,
+        title: String = "Identity Song",
+        artist: String = "Identity Artist",
+        album: String = "Identity Album",
+        duration: TimeInterval = 180,
+        isrc: String? = nil,
+        provider: MusicProvider,
+        providerID: String
+    ) -> HarmonyTrack {
+        HarmonyTrack(
+            canonicalTrackID: canonicalTrackID,
+            title: title,
+            artist: artist,
+            album: album,
+            duration: duration,
+            symbol: "music.note",
+            isrc: isrc,
+            mappings: [ProviderTrackMapping(
+                provider: provider,
+                providerID: providerID,
+                availability: .playable
+            )]
         )
     }
 

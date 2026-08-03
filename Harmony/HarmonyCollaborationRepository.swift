@@ -60,6 +60,8 @@ private struct ResolveCanonicalTrackParameters: Encodable {
     let p_artwork_url: String?
     let p_is_explicit: Bool
     let p_deep_link: String?
+    let p_isrc: String?
+    let p_storefront: String
 }
 private struct PublishListeningPresenceParameters: Encodable {
     let p_canonical_track_id: UUID
@@ -343,10 +345,33 @@ struct RemoteCatalogTrack: Decodable {
     let durationMilliseconds: Int?
     let artworkURL: URL?
     let isExplicit: Bool
+    let isrc: String?
     let providerTracks: [RemoteProviderTrack]?
 
+    init(
+        id: UUID?,
+        title: String,
+        artist: String,
+        album: String?,
+        durationMilliseconds: Int?,
+        artworkURL: URL?,
+        isExplicit: Bool,
+        isrc: String? = nil,
+        providerTracks: [RemoteProviderTrack]?
+    ) {
+        self.id = id
+        self.title = title
+        self.artist = artist
+        self.album = album
+        self.durationMilliseconds = durationMilliseconds
+        self.artworkURL = artworkURL
+        self.isExplicit = isExplicit
+        self.isrc = isrc
+        self.providerTracks = providerTracks
+    }
+
     enum CodingKeys: String, CodingKey {
-        case id, title, artist, album
+        case id, title, artist, album, isrc
         case durationMilliseconds = "duration_ms"
         case artworkURL = "artwork_url"
         case isExplicit = "is_explicit"
@@ -357,10 +382,11 @@ struct RemoteCatalogTrack: Decodable {
 struct RemoteProviderTrack: Decodable {
     let provider: String
     let providerID: String
+    let storefront: String?
     let availability: String
     let deepLink: URL?
     enum CodingKeys: String, CodingKey {
-        case provider, availability
+        case provider, storefront, availability
         case providerID = "provider_id"
         case deepLink = "deep_link"
     }
@@ -611,11 +637,13 @@ struct SpotifySearchTrack: Decodable {
     let title: String
     let artist: String
     let album: String
-    let durationSeconds: Int
+    let durationMilliseconds: Int
     let artworkURL: URL?
     let providerID: String
     let deepLinkURL: URL?
     let isExplicit: Bool
+    let isrc: String?
+    let canonicalTrackID: UUID?
     let albumProviderID: String
     let albumArtist: String
     let albumDeepLinkURL: URL?
@@ -1372,31 +1400,33 @@ final class HarmonyCollaborationRepository {
     }
 
     private func canonicalTrackID(for track: HarmonyTrack) async throws -> UUID {
-        if let mapping = track.mappings.first(where: { !$0.providerID.isEmpty }) {
+        if let canonicalTrackID = track.canonicalTrackID { return canonicalTrackID }
+        let mapping = track.mappings
+            .filter { !$0.providerID.isEmpty }
+            .sorted {
+                ($0.provider.rawValue, $0.storefront, $0.providerID)
+                    < ($1.provider.rawValue, $1.storefront, $1.providerID)
+            }
+            .first
+        if let mapping {
             return try await client.rpc(
-                "resolve_harmony_track",
+                "resolve_harmony_track_v2",
                 params: ResolveCanonicalTrackParameters(
                     p_provider: mapping.provider == .spotify ? "spotify" : "apple_music",
                     p_provider_id: mapping.providerID,
                     p_title: track.title,
                     p_artist: track.artist,
                     p_album: track.album,
-                    p_duration_ms: Int(track.duration * 1000),
+                    p_duration_ms: track.duration > 0 ? Int(track.duration * 1000) : nil,
                     p_artwork_url: track.artworkURL?.absoluteString,
                     p_is_explicit: track.isExplicit,
-                    p_deep_link: mapping.deepLinkURL?.absoluteString
+                    p_deep_link: mapping.deepLinkURL?.absoluteString,
+                    p_isrc: track.isrc,
+                    p_storefront: mapping.storefront
                 )
             ).execute().value
         }
-        let trackID: RemoteTrackID = try await client
-            .from("canonical_tracks")
-            .select("id")
-            .eq("title", value: track.title)
-            .eq("artist", value: track.artist)
-            .single()
-            .execute()
-            .value
-        return trackID.id
+        throw CollaborationError.missingCanonicalTrackIdentity
     }
     func remove(queueItemID: UUID, from sessionID: UUID, expectedRevision: Int) async throws -> Int {
         try await executeCommand(QueueCommandParameters(p_session_id: sessionID, p_command_id: UUID(), p_expected_revision: expectedRevision, p_type: "remove", p_payload: RemovePayload(queue_item_id: queueItemID)))
@@ -1433,7 +1463,7 @@ final class HarmonyCollaborationRepository {
     func queue(for sessionID: UUID) async throws -> [RemoteQueueSnapshot] {
         try await client
             .from("queue_items")
-            .select("id,position,added_by,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit,provider_tracks(provider,provider_id,availability,deep_link))")
+            .select("id,position,added_by,canonical_tracks(id,title,artist,album,duration_ms,isrc,artwork_url,is_explicit,provider_tracks(provider,provider_id,storefront,availability,deep_link))")
             .eq("session_id", value: sessionID.uuidString)
             .order("position", ascending: true)
             .execute()
@@ -1519,12 +1549,13 @@ final class HarmonyCollaborationRepository {
 }
 
 enum CollaborationError: LocalizedError {
-    case revisionConflict, invalidResponse, inviteCodeGenerationFailed
+    case revisionConflict, invalidResponse, inviteCodeGenerationFailed, missingCanonicalTrackIdentity
     var errorDescription: String? {
         switch self {
         case .revisionConflict: return "The queue changed on another device. Refresh and try again."
         case .invalidResponse: return "Harmony received an invalid server response."
         case .inviteCodeGenerationFailed: return "Harmony could not create a unique invite code. Please try again."
+        case .missingCanonicalTrackIdentity: return "Harmony could not safely identify this recording. Choose it from a connected music service and try again."
         }
     }
 }

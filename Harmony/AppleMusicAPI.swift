@@ -57,7 +57,15 @@ final class AppleMusicProvider: AppleMusicProviding {
                 duration: song.duration ?? 0,
                 symbol: "music.note",
                 artworkURL: song.artwork?.url(width: 300, height: 300),
-                mappings: [ProviderTrackMapping(provider: .appleMusic, providerID: song.id.rawValue, availability: .playable)]
+                isExplicit: song.contentRating == .explicit,
+                isrc: song.isrc,
+                mappings: [ProviderTrackMapping(
+                    provider: .appleMusic,
+                    providerID: song.id.rawValue,
+                    storefront: Self.storefront(from: song.url),
+                    availability: .playable,
+                    deepLinkURL: song.url
+                )]
             )
         }
     }
@@ -105,5 +113,12 @@ final class AppleMusicProvider: AppleMusicProviding {
         }
         songsByID[providerID] = song
         return song
+    }
+
+    private static func storefront(from url: URL?) -> String {
+        guard let component = url?.pathComponents.dropFirst().first?.lowercased(),
+              component.count == 2,
+              component.allSatisfy({ $0.isASCII && $0.isLetter }) else { return "us" }
+        return component
     }
 }

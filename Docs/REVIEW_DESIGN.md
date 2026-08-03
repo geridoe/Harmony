@@ -305,6 +305,11 @@ draft for retry. Loaded owner Diary entries and reviews for the track appear as
 separate sections so historical occurrences remain distinct from current
 state.
 
+Canonical resolution outside the page follows the same identity rule. A known
+canonical UUID is authoritative; unequal known UUIDs never merge merely because
+their display metadata matches. Provider identity and ISRC precede a guarded
+album-and-duration fallback, preserving studio/live/remaster distinctions.
+
 Migrations 032–034 remove all-empty state rows (including legacy rows), sync
 track-review create/edit into current state, and serialize direct state,
 history, and review writers with the same owner/track advisory lock. Clearing

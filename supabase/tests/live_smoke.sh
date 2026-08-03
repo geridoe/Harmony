@@ -233,6 +233,63 @@ rpc "$conductor_token" resolve_harmony_track \
   "$smoke_tmp/canonical-track-repeat.json"
 [[ "$(jq -er '.' "$smoke_tmp/canonical-track-repeat.json")" == "$canonical_track_id" ]]
 
+invalid_isrc_status="$(rpc_status "$conductor_token" resolve_harmony_track_v2 \
+  '{"p_provider":"spotify","p_provider_id":"spotify:track:harmony-invalid-isrc","p_title":"Invalid ISRC","p_artist":"Harmony Test Artist","p_album":"Identity","p_duration_ms":180000,"p_artwork_url":null,"p_is_explicit":false,"p_deep_link":null,"p_isrc":"not-an-isrc","p_storefront":"global"}' \
+  "$smoke_tmp/invalid-isrc.json")"
+[[ "$invalid_isrc_status" == "400" ]]
+invalid_storefront_status="$(rpc_status "$conductor_token" resolve_harmony_track_v2 \
+  '{"p_provider":"spotify","p_provider_id":"spotify:track:harmony-invalid-storefront","p_title":"Invalid Storefront","p_artist":"Harmony Test Artist","p_album":"Identity","p_duration_ms":180000,"p_artwork_url":null,"p_is_explicit":false,"p_deep_link":null,"p_isrc":null,"p_storefront":"north-america"}' \
+  "$smoke_tmp/invalid-storefront.json")"
+[[ "$invalid_storefront_status" == "400" ]]
+
+rpc "$conductor_token" resolve_harmony_track_v2 \
+  '{"p_provider":"spotify","p_provider_id":"spotify:track:harmony-cross-isrc","p_title":"Cross Provider Recording","p_artist":"Harmony Identity","p_album":"Original Album","p_duration_ms":180000,"p_artwork_url":null,"p_is_explicit":false,"p_deep_link":"https://open.spotify.com/track/harmony-cross-isrc","p_isrc":"QZHAR2600101","p_storefront":"global"}' \
+  "$smoke_tmp/cross-isrc-spotify.json"
+cross_isrc_track_id="$(jq -er '.' "$smoke_tmp/cross-isrc-spotify.json")"
+rpc "$conductor_token" resolve_harmony_track_v2 \
+  '{"p_provider":"apple_music","p_provider_id":"harmony-cross-isrc-apple","p_title":"Cross Provider Recording","p_artist":"Harmony Identity","p_album":"Compilation Album","p_duration_ms":181000,"p_artwork_url":null,"p_is_explicit":false,"p_deep_link":"https://music.apple.com/us/song/harmony-cross-isrc/90101","p_isrc":"qz-har-26-00101","p_storefront":"us"}' \
+  "$smoke_tmp/cross-isrc-apple.json"
+[[ "$(jq -er '.' "$smoke_tmp/cross-isrc-apple.json")" == "$cross_isrc_track_id" ]]
+rpc "$conductor_token" resolve_harmony_track_v2 \
+  '{"p_provider":"spotify","p_provider_id":"spotify:track:harmony-cross-isrc-alt","p_title":"Cross Provider Recording","p_artist":"Harmony Identity","p_album":"Deluxe Album","p_duration_ms":180500,"p_artwork_url":null,"p_is_explicit":false,"p_deep_link":"https://open.spotify.com/track/harmony-cross-isrc-alt","p_isrc":"QZHAR2600101","p_storefront":"global"}' \
+  "$smoke_tmp/cross-isrc-spotify-alt.json"
+[[ "$(jq -er '.' "$smoke_tmp/cross-isrc-spotify-alt.json")" == "$cross_isrc_track_id" ]]
+rest_get "$conductor_token" \
+  "provider_tracks?select=provider,provider_id,storefront&canonical_track_id=eq.$cross_isrc_track_id" \
+  "$smoke_tmp/cross-isrc-mappings.json"
+jq -e 'length == 3' "$smoke_tmp/cross-isrc-mappings.json" >/dev/null
+
+rpc "$conductor_token" resolve_harmony_track_v2 \
+  '{"p_provider":"spotify","p_provider_id":"spotify:track:harmony-variant-studio","p_title":"Same Name","p_artist":"Harmony Versions","p_album":"Studio","p_duration_ms":180000,"p_artwork_url":null,"p_is_explicit":false,"p_deep_link":null,"p_isrc":"QZHAR2600201","p_storefront":"global"}' \
+  "$smoke_tmp/variant-studio.json"
+rpc "$conductor_token" resolve_harmony_track_v2 \
+  '{"p_provider":"spotify","p_provider_id":"spotify:track:harmony-variant-live","p_title":"Same Name","p_artist":"Harmony Versions","p_album":"Live","p_duration_ms":205000,"p_artwork_url":null,"p_is_explicit":false,"p_deep_link":null,"p_isrc":"QZHAR2600202","p_storefront":"global"}' \
+  "$smoke_tmp/variant-live.json"
+[[ "$(jq -er '.' "$smoke_tmp/variant-studio.json")" != "$(jq -er '.' "$smoke_tmp/variant-live.json")" ]]
+
+rpc "$conductor_token" resolve_harmony_track_v2 \
+  '{"p_provider":"spotify","p_provider_id":"spotify:track:harmony-metadata-match","p_title":"  Metadata   Match  ","p_artist":"Harmony Identity","p_album":"Shared Album","p_duration_ms":180000,"p_artwork_url":null,"p_is_explicit":false,"p_deep_link":null,"p_isrc":null,"p_storefront":"global"}' \
+  "$smoke_tmp/metadata-match-spotify.json"
+metadata_match_track_id="$(jq -er '.' "$smoke_tmp/metadata-match-spotify.json")"
+rpc "$conductor_token" resolve_harmony_track_v2 \
+  '{"p_provider":"apple_music","p_provider_id":"harmony-metadata-match-apple","p_title":"metadata match","p_artist":"harmony identity","p_album":"shared album","p_duration_ms":181999,"p_artwork_url":null,"p_is_explicit":false,"p_deep_link":null,"p_isrc":null,"p_storefront":"us"}' \
+  "$smoke_tmp/metadata-match-apple.json"
+[[ "$(jq -er '.' "$smoke_tmp/metadata-match-apple.json")" == "$metadata_match_track_id" ]]
+rpc "$conductor_token" resolve_harmony_track_v2 \
+  '{"p_provider":"apple_music","p_provider_id":"harmony-metadata-missing-album","p_title":"Metadata Match","p_artist":"Harmony Identity","p_album":null,"p_duration_ms":180000,"p_artwork_url":null,"p_is_explicit":false,"p_deep_link":null,"p_isrc":null,"p_storefront":"us"}' \
+  "$smoke_tmp/metadata-missing-album.json"
+[[ "$(jq -er '.' "$smoke_tmp/metadata-missing-album.json")" != "$metadata_match_track_id" ]]
+
+canonical_pids=()
+for canonical_index in 1 2 3 4; do
+  rpc "$conductor_token" resolve_harmony_track_v2 \
+    "{\"p_provider\":\"spotify\",\"p_provider_id\":\"spotify:track:harmony-concurrent-$canonical_index\",\"p_title\":\"Concurrent Recording\",\"p_artist\":\"Harmony Identity\",\"p_album\":\"Concurrency\",\"p_duration_ms\":180000,\"p_artwork_url\":null,\"p_is_explicit\":false,\"p_deep_link\":null,\"p_isrc\":\"QZHAR2600102\",\"p_storefront\":\"global\"}" \
+    "$smoke_tmp/concurrent-canonical-$canonical_index.json" &
+  canonical_pids+=("$!")
+done
+for canonical_pid in "${canonical_pids[@]}"; do wait "$canonical_pid"; done
+jq -s -e 'unique | length == 1' "$smoke_tmp"/concurrent-canonical-*.json >/dev/null
+
 stage="follower listening visibility"
 presence_expires_at="$(date -u -v+5M '+%Y-%m-%dT%H:%M:%SZ')"
 rpc "$collaborator_token" publish_listening_presence \

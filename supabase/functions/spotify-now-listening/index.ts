@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { resolveSpotifyCanonicalTrack } from "../_shared/canonical-track.ts";
 
 type SpotifyTrack = {
   type?: string;
@@ -99,62 +100,7 @@ Deno.serve(async (request) => {
     }
     const track = playback.item as SpotifyTrack;
 
-    const { data: mapping, error: mappingReadError } = await admin
-      .from("provider_tracks")
-      .select("canonical_track_id")
-      .eq("provider", "spotify")
-      .eq("provider_id", track.uri)
-      .eq("storefront", "global")
-      .maybeSingle();
-    if (mappingReadError) throw mappingReadError;
-    let canonicalID = mapping?.canonical_track_id ?? null;
-
-    if (!canonicalID) {
-      const isrc = track.external_ids?.isrc?.toUpperCase() ?? null;
-      if (isrc) {
-        const { data: candidates, error: candidateError } = await admin
-          .from("canonical_tracks")
-          .select("id,provider_tracks!left(id)")
-          .eq("isrc", isrc)
-          .eq("provider_tracks.provider", "spotify")
-          .eq("provider_tracks.storefront", "global")
-          .limit(10);
-        if (candidateError) throw candidateError;
-        canonicalID = candidates?.find((candidate) => (candidate.provider_tracks?.length ?? 0) === 0)?.id ?? null;
-      }
-      if (!canonicalID) {
-        const { data: canonical, error: canonicalError } = await admin.from("canonical_tracks").insert({
-          title: track.name,
-          artist: track.artists.map((artist) => artist.name).join(", "),
-          album: track.album.name,
-          duration_ms: track.duration_ms,
-          isrc,
-          artwork_url: track.album.images?.[0]?.url ?? null,
-          is_explicit: track.explicit,
-        }).select("id").single();
-        if (canonicalError) throw canonicalError;
-        canonicalID = canonical.id;
-      }
-      const { error: mappingError } = await admin.from("provider_tracks").insert({
-        canonical_track_id: canonicalID,
-        provider: "spotify",
-        provider_id: track.uri,
-        storefront: "global",
-        deep_link: track.external_urls?.spotify ?? null,
-        availability: "playable",
-        match_confidence: 1,
-      });
-      if (mappingError) throw mappingError;
-    }
-
-    if (track.explicit) {
-      const { error: explicitError } = await admin
-        .from("canonical_tracks")
-        .update({ is_explicit: true })
-        .eq("id", canonicalID)
-        .eq("is_explicit", false);
-      if (explicitError) throw explicitError;
-    }
+    const canonicalID = await resolveSpotifyCanonicalTrack(admin, track);
 
     const startedAt = new Date();
     const expiresAt = new Date(startedAt.getTime() + 5 * 60 * 1000);

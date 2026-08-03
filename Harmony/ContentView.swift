@@ -2367,6 +2367,7 @@ private extension RemoteCatalogTrack {
     var harmonyTrack: HarmonyTrack {
         HarmonyTrack(
             id: id ?? UUID(),
+            canonicalTrackID: id,
             title: title,
             artist: artist,
             album: album ?? "",
@@ -2374,6 +2375,7 @@ private extension RemoteCatalogTrack {
             symbol: "music.note",
             artworkURL: artworkURL,
             isExplicit: isExplicit,
+            isrc: isrc,
             mappings: []
         )
     }

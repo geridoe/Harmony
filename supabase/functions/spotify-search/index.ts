@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { resolveSpotifyCanonicalTrack } from "../_shared/canonical-track.ts";
 
 type SearchRequest = { query: string };
 type SpotifyTrack = {
@@ -104,68 +105,9 @@ Deno.serve(async (request) => {
     const spotify = await spotifyResponse.json();
     const tracks = (spotify.tracks?.items ?? []) as SpotifyTrack[];
 
+    const canonicalIDs = new Map<string, string>();
     for (const track of tracks) {
-      const { data: existing } = await admin
-        .from("provider_tracks")
-        .select("canonical_track_id")
-        .eq("provider", "spotify")
-        .eq("provider_id", track.uri)
-        .eq("storefront", "global")
-        .maybeSingle();
-      if (existing) {
-        if (track.explicit) {
-          const { error: explicitError } = await admin
-            .from("canonical_tracks")
-            .update({ is_explicit: true })
-            .eq("id", existing.canonical_track_id);
-          if (explicitError) throw explicitError;
-        }
-        continue;
-      }
-
-      const isrc = track.external_ids?.isrc?.toUpperCase() ?? null;
-      let canonicalID: string | null = null;
-      if (isrc) {
-        const { data: candidates, error: candidateError } = await admin
-          .from("canonical_tracks")
-          .select("id,provider_tracks!left(id)")
-          .eq("isrc", isrc)
-          .eq("provider_tracks.provider", "spotify")
-          .eq("provider_tracks.storefront", "global")
-          .limit(10);
-        if (candidateError) throw candidateError;
-        canonicalID = candidates?.find((candidate) => (candidate.provider_tracks?.length ?? 0) === 0)?.id ?? null;
-        if (canonicalID && track.explicit) {
-          const { error: explicitError } = await admin
-            .from("canonical_tracks")
-            .update({ is_explicit: true })
-            .eq("id", canonicalID);
-          if (explicitError) throw explicitError;
-        }
-      }
-      if (!canonicalID) {
-        const { data: canonical, error: canonicalError } = await admin.from("canonical_tracks").insert({
-          title: track.name,
-          artist: track.artists.map((artist) => artist.name).join(", "),
-          album: track.album.name,
-          duration_ms: track.duration_ms,
-          isrc,
-          artwork_url: track.album.images?.[0]?.url ?? null,
-          is_explicit: track.explicit,
-        }).select("id").single();
-        if (canonicalError) throw canonicalError;
-        canonicalID = canonical.id;
-      }
-      const { error: mappingError } = await admin.from("provider_tracks").insert({
-        canonical_track_id: canonicalID,
-        provider: "spotify",
-        provider_id: track.uri,
-        storefront: "global",
-        deep_link: track.external_urls?.spotify ?? null,
-        availability: "playable",
-        match_confidence: 1,
-      });
-      if (mappingError) throw mappingError;
+      canonicalIDs.set(track.uri, await resolveSpotifyCanonicalTrack(admin, track));
     }
 
     return json({
@@ -174,10 +116,13 @@ Deno.serve(async (request) => {
         artist: track.artists.map((artist) => artist.name).join(", "),
         album: track.album.name,
         durationSeconds: Math.round(track.duration_ms / 1000),
+        durationMilliseconds: track.duration_ms,
         artworkURL: track.album.images?.[0]?.url ?? null,
         providerID: track.uri,
         deepLinkURL: track.external_urls?.spotify ?? null,
         isExplicit: track.explicit,
+        isrc: track.external_ids?.isrc?.toUpperCase() ?? null,
+        canonicalTrackID: canonicalIDs.get(track.uri) ?? null,
         albumProviderID: track.album.uri,
         albumArtist: track.album.artists.map((artist) => artist.name).join(", "),
         albumDeepLinkURL: track.album.external_urls?.spotify ?? null,
