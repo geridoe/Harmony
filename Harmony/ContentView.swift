@@ -33,6 +33,8 @@ struct ContentView_Previews: PreviewProvider {
 
 struct SocialView: View {
     @EnvironmentObject private var store: HarmonySessionStore
+    @State private var rating = 4.0
+    @State private var reviewBody = ""
 
     var body: some View {
         NavigationView {
@@ -93,10 +95,52 @@ struct SocialView: View {
                         }
                     }
                 }
+
+                Section("Your diary") {
+                    if let track = store.nowPlaying?.track {
+                        Text("Reviewing: \(track.title) · \(track.artist)")
+                            .font(.subheadline)
+                        HStack {
+                            Text("Rating")
+                            Slider(value: $rating, in: 0.5...5, step: 0.5)
+                            Text(String(format: "%.1f", rating))
+                                .monospacedDigit()
+                        }
+                        TextField("Write a short review (optional)", text: $reviewBody, axis: .vertical)
+                            .lineLimit(2...5)
+                        Button("Publish review to followers") {
+                            Task {
+                                await store.publishTrackReview(rating: rating, body: reviewBody)
+                                reviewBody = ""
+                            }
+                        }
+                        .disabled(store.isPublishingMusicReview)
+                    } else {
+                        Text("Start a Harmony track to write a review.").foregroundColor(.secondary)
+                    }
+                }
+
+                Section("Reviews") {
+                    if store.isRefreshingMusicReviews && store.musicReviews.isEmpty {
+                        ProgressView("Loading reviews…")
+                    } else if store.musicReviews.isEmpty {
+                        Text("No follower-visible reviews yet.").foregroundColor(.secondary)
+                    } else {
+                        ForEach(store.musicReviews) { review in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("\(review.profile.displayName) · \(String(format: "%.1f", review.rating)) ★").font(.headline)
+                                if let track = review.canonicalTrack {
+                                    Text("\(track.title) · \(track.artist)").font(.subheadline).foregroundColor(.secondary)
+                                }
+                                if !review.body.isEmpty { Text(review.body) }
+                            }
+                        }
+                    }
+                }
             }
             .navigationTitle("Listen")
-            .task { await store.refreshListeningFeed() }
-            .refreshable { await store.refreshListeningFeed() }
+            .task { await store.refreshListeningFeed(); await store.refreshMusicReviews() }
+            .refreshable { await store.refreshListeningFeed(); await store.refreshMusicReviews() }
         }
     }
 }

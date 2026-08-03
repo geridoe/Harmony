@@ -161,6 +161,9 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var isRefreshingListeningFeed = false
     @Published private(set) var isPublishingListeningPresence = false
     @Published private(set) var isEavesdropping = false
+    @Published private(set) var musicReviews: [RemoteMusicReview] = []
+    @Published private(set) var isRefreshingMusicReviews = false
+    @Published private(set) var isPublishingMusicReview = false
     private var remoteSessionID: UUID?
     private var liveQueueSubscription: LiveQueueSubscription?
     private var liveSessionSubscription: LiveSessionSubscription?
@@ -582,6 +585,25 @@ final class HarmonySessionStore: ObservableObject {
         } catch {
             collaborationMessage = "Could not update listening activity: \(error.localizedDescription)"
         }
+    }
+
+    func refreshMusicReviews() async {
+        guard !isRefreshingMusicReviews else { return }
+        isRefreshingMusicReviews = true
+        defer { isRefreshingMusicReviews = false }
+        do { musicReviews = try await collaborationRepository.musicReviews() }
+        catch { collaborationMessage = "Could not refresh reviews." }
+    }
+
+    func publishTrackReview(rating: Double, body: String) async {
+        guard let track = nowPlaying?.track, !isPublishingMusicReview else { return }
+        isPublishingMusicReview = true
+        defer { isPublishingMusicReview = false }
+        do {
+            try await collaborationRepository.createTrackReview(track: track, rating: rating, body: body)
+            collaborationMessage = "Review published to approved followers"
+            await refreshMusicReviews()
+        } catch { collaborationMessage = "Could not publish review: \(error.localizedDescription)" }
     }
 
     func resumeLiveSession(id: UUID) async {

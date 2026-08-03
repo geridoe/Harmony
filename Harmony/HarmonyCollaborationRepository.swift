@@ -71,6 +71,16 @@ private struct PublishListeningPresenceParameters: Encodable {
     let p_started_at: Date
     let p_expires_at: Date
 }
+private struct CreateTrackReviewParameters: Encodable {
+    let p_subject_kind = "track"
+    let p_canonical_track_id: UUID
+    let p_provider: String?
+    let p_provider_subject_id: String?
+    let p_rating: Double
+    let p_body: String
+    let p_visibility = "followers"
+    let p_contains_spoilers = false
+}
 private struct RemovePayload: Encodable { let queue_item_id: UUID }
 private struct MovePayload: Encodable { let queue_item_id: UUID; let position: Double }
 private struct PlaybackPayload: Encodable { let status: String }
@@ -163,6 +173,23 @@ struct RemoteListeningPresence: Decodable, Identifiable {
         case providerDeepLink = "provider_deep_link"
         case startedAt = "started_at"
         case expiresAt = "expires_at"
+        case canonicalTrack = "canonical_tracks"
+        case profile = "profiles"
+    }
+}
+
+struct RemoteMusicReview: Decodable, Identifiable {
+    let id: UUID
+    let profileID: UUID
+    let rating: Double
+    let body: String
+    let createdAt: Date
+    let canonicalTrack: RemoteCatalogTrack?
+    let profile: RemoteProfile
+    enum CodingKeys: String, CodingKey {
+        case id, rating, body
+        case profileID = "profile_id"
+        case createdAt = "created_at"
         case canonicalTrack = "canonical_tracks"
         case profile = "profiles"
     }
@@ -293,6 +320,13 @@ final class HarmonyCollaborationRepository {
             .value
     }
 
+    func musicReviews() async throws -> [RemoteMusicReview] {
+        try await authenticate()
+        return try await client.from("music_reviews")
+            .select("id,profile_id,rating,body,created_at,canonical_tracks(title,artist,album,duration_ms,artwork_url,is_explicit),profiles(display_name)")
+            .order("created_at", ascending: false).limit(50).execute().value
+    }
+
     func exchangeSpotifyAuthorization(_ response: SpotifyAuthorizationResponse) async throws {
         try await authenticate()
         try await client.functions.invoke(
@@ -386,6 +420,19 @@ final class HarmonyCollaborationRepository {
     func stopListeningPresence() async throws {
         try await authenticate()
         _ = try await client.rpc("stop_listening_presence").execute()
+    }
+
+    func createTrackReview(track: HarmonyTrack, rating: Double, body: String) async throws {
+        try await authenticate()
+        let mapping = track.mappings.first(where: { !$0.providerID.isEmpty })
+        let canonicalTrackID = try await canonicalTrackID(for: track)
+        _ = try await client.rpc("create_music_review", params: CreateTrackReviewParameters(
+            p_canonical_track_id: canonicalTrackID,
+            p_provider: mapping.map { $0.provider == .spotify ? "spotify" : "apple_music" },
+            p_provider_subject_id: mapping?.providerID,
+            p_rating: rating,
+            p_body: body
+        )).execute()
     }
 
     private func canonicalTrackID(for track: HarmonyTrack) async throws -> UUID {
