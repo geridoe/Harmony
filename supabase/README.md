@@ -54,6 +54,8 @@ supabase functions deploy spotify-token-exchange
 
 `publish_listening_presence(...)` writes a single user-owned, short-lived eavesdrop card. It must expire within ten minutes and is hidden by RLS unless its owner allows the viewer. `stop_listening_presence()` removes it. `record_listening_history(...)` is the user-owned history path; it never imports a provider’s data without an explicit client action.
 
+`create_music_review(...)` creates a follower/private/public review of a canonical track or provider-addressed album. Visible viewers can use `add_review_comment(...)` and `toggle_review_reaction(...)`; RLS reevaluates the review’s visibility and blocks before granting access.
+
 `resolve_harmony_track(provider, provider_id, title, artist, ...)` resolves a provider catalog item to a canonical Harmony track before queue insertion. It is idempotent by provider and provider ID, so provider-specific search clients can contribute tracks even before a cross-provider matcher has added mappings for the other services.
 
 ## Queue RPC contract

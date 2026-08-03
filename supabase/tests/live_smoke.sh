@@ -153,6 +153,23 @@ rest_get "$conductor_token" \
   "$smoke_tmp/follower-history.json"
 jq -e --arg profile "$collaborator_id" --arg track "$canonical_track_id" 'length == 1 and .[0].profile_id == $profile and .[0].canonical_track_id == $track' "$smoke_tmp/follower-history.json" >/dev/null
 
+stage="follower music reviews"
+rpc "$collaborator_token" create_music_review \
+  "{\"p_subject_kind\":\"track\",\"p_canonical_track_id\":\"$canonical_track_id\",\"p_provider\":\"apple_music\",\"p_provider_subject_id\":null,\"p_rating\":4.5,\"p_body\":\"A great Harmony smoke review.\",\"p_visibility\":\"followers\",\"p_contains_spoilers\":false}" \
+  "$smoke_tmp/review.json"
+review_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/review.json")"
+rest_get "$conductor_token" \
+  "music_reviews?select=id,profile_id,rating,body&id=eq.$review_id" \
+  "$smoke_tmp/follower-review.json"
+jq -e --arg profile "$collaborator_id" 'length == 1 and .[0].profile_id == $profile and .[0].rating == 4.5' "$smoke_tmp/follower-review.json" >/dev/null
+rpc "$conductor_token" add_review_comment \
+  "{\"p_review_id\":\"$review_id\",\"p_body\":\"Agreed.\"}" \
+  "$smoke_tmp/review-comment.json"
+rpc "$conductor_token" toggle_review_reaction \
+  "{\"p_review_id\":\"$review_id\",\"p_kind\":\"heart\"}" \
+  "$smoke_tmp/review-reaction.json"
+[[ "$(jq -er '.' "$smoke_tmp/review-reaction.json")" == "true" ]]
+
 stage="social block enforcement"
 rpc "$collaborator_token" block_social_profile \
   "{\"p_profile_id\":\"$conductor_id\"}" \
@@ -161,6 +178,10 @@ rest_get "$conductor_token" \
   "listening_presence?select=profile_id&profile_id=eq.$collaborator_id" \
   "$smoke_tmp/blocked-presence.json"
 [[ "$(jq 'length' "$smoke_tmp/blocked-presence.json")" -eq 0 ]]
+rest_get "$conductor_token" \
+  "music_reviews?select=id&id=eq.$review_id" \
+  "$smoke_tmp/blocked-review.json"
+[[ "$(jq 'length' "$smoke_tmp/blocked-review.json")" -eq 0 ]]
 blocked_follow_status="$(rpc_status "$conductor_token" request_social_follow \
   "{\"p_profile_id\":\"$collaborator_id\"}" \
   "$smoke_tmp/blocked-follow.json")"
