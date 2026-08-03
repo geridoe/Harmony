@@ -1391,7 +1391,12 @@ private struct MusicShelfView: View {
                     .accessibilityIdentifier("music-shelf-empty-state")
                 } else {
                     ForEach(visibleStates) { state in
-                        MusicShelfRow(state: state)
+                        NavigationLink {
+                            OwnerTrackDetailView(initialState: state)
+                        } label: {
+                            MusicShelfRow(state: state)
+                        }
+                        .accessibilityIdentifier("music-shelf-open-\(state.canonicalTrackID.uuidString)")
                     }
                 }
 
@@ -1415,8 +1420,259 @@ private struct MusicShelfView: View {
         .navigationTitle("Music shelf")
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("music-shelf-page")
-        .task { await store.refreshTrackSubjectShelf() }
+        .task {
+#if DEBUG
+            guard !ProcessInfo.processInfo.arguments.contains("--ui-test-diary-editor") else { return }
+#endif
+            await store.refreshTrackSubjectShelf()
+        }
         .refreshable { await store.refreshTrackSubjectShelf() }
+    }
+}
+
+private struct OwnerTrackDetailView: View {
+    @EnvironmentObject private var store: HarmonySessionStore
+    let initialState: RemoteTrackSubjectState
+    let canonicalTrack: RemoteCatalogTrack?
+    let track: HarmonyTrack
+    @State private var draft: TrackSubjectStateDraft
+    @State private var savedDraft: TrackSubjectStateDraft
+    @State private var saveMessage: String?
+
+    init(initialState: RemoteTrackSubjectState) {
+        self.initialState = initialState
+        self.canonicalTrack = initialState.canonicalTrack
+        let track = initialState.canonicalTrack?.harmonyTrack ?? HarmonyTrack(
+            id: initialState.canonicalTrackID,
+            title: "Unavailable track",
+            artist: "Unknown artist",
+            album: "",
+            duration: 0,
+            symbol: "music.note",
+            mappings: []
+        )
+        self.track = track
+        let draft = TrackSubjectStateDraft(state: initialState)
+        _draft = State(initialValue: draft)
+        _savedDraft = State(initialValue: draft)
+    }
+
+    private var relatedDiaryEntries: [RemoteListeningHistoryEntry] {
+        store.journalEntries.filter { $0.canonicalTrack?.id == initialState.canonicalTrackID }
+    }
+
+    private var relatedReviews: [RemoteMusicReview] {
+        store.musicReviews.filter {
+            store.isOwnReview($0)
+                && $0.subjectKind == "track"
+                && $0.canonicalTrack?.id == initialState.canonicalTrackID
+        }
+    }
+
+    private var isSaving: Bool {
+        canonicalTrack.map { store.isSavingTrackSubjectState(for: $0) } ?? false
+    }
+
+    private var isDirty: Bool { draft != savedDraft }
+
+    private var listenedBinding: Binding<Bool> {
+        Binding(
+            get: { draft.hasListened },
+            set: { isListened in
+                draft.hasListened = isListened
+                if isListened { draft.wantToListen = false }
+                if !isListened { draft.defaultRating = nil }
+                saveMessage = nil
+            }
+        )
+    }
+
+    private var lovedBinding: Binding<Bool> {
+        Binding(
+            get: { draft.isLoved },
+            set: { draft.isLoved = $0; saveMessage = nil }
+        )
+    }
+
+    private var wantBinding: Binding<Bool> {
+        Binding(
+            get: { draft.wantToListen },
+            set: { wantsToListen in
+                draft.wantToListen = wantsToListen
+                if wantsToListen {
+                    draft.hasListened = false
+                    draft.defaultRating = nil
+                }
+                saveMessage = nil
+            }
+        )
+    }
+
+    private var hasDefaultRating: Binding<Bool> {
+        Binding(
+            get: { draft.defaultRating != nil },
+            set: { isRated in
+                draft.defaultRating = isRated ? (draft.defaultRating ?? 4.0) : nil
+                if isRated {
+                    draft.hasListened = true
+                    draft.wantToListen = false
+                }
+                saveMessage = nil
+            }
+        )
+    }
+
+    private var defaultRating: Binding<Double> {
+        Binding(
+            get: { draft.defaultRating ?? 4.0 },
+            set: { rating in
+                draft.defaultRating = rating
+                draft.hasListened = true
+                draft.wantToListen = false
+                saveMessage = nil
+            }
+        )
+    }
+
+    var body: some View {
+        List {
+            Section {
+                VStack(spacing: 14) {
+                    TrackArtwork(track: track, size: 132, cornerRadius: 18)
+                    VStack(spacing: 4) {
+                        Text(track.title)
+                            .font(.title2.bold())
+                            .multilineTextAlignment(.center)
+                        Text(track.artist)
+                            .font(.headline)
+                            .foregroundColor(.secondary)
+                        if !track.album.isEmpty {
+                            Text(track.album)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .accessibilityIdentifier("owner-track-detail-header")
+            }
+
+            Section("Your music") {
+                Toggle(isOn: listenedBinding) {
+                    Label("Listened", systemImage: draft.hasListened ? "checkmark.circle.fill" : "checkmark.circle")
+                }
+                .accessibilityIdentifier("owner-track-listened")
+
+                Toggle(isOn: lovedBinding) {
+                    Label("Loved", systemImage: draft.isLoved ? "heart.fill" : "heart")
+                }
+                .accessibilityIdentifier("owner-track-loved")
+
+                Toggle(isOn: wantBinding) {
+                    Label("Want to listen", systemImage: draft.wantToListen ? "bookmark.fill" : "bookmark")
+                }
+                .accessibilityIdentifier("owner-track-want")
+
+                Toggle("Set an overall rating", isOn: hasDefaultRating)
+                    .accessibilityIdentifier("owner-track-rating-toggle")
+                RatingPicker(rating: defaultRating)
+                    .accessibilityLabel(draft.defaultRating == nil ? "Overall rating, unrated" : "Overall rating")
+                    .accessibilityIdentifier("owner-track-rating")
+                    .disabled(draft.defaultRating == nil)
+                    .opacity(draft.defaultRating == nil ? 0.55 : 1)
+
+                Text("This is your current overall rating for the song. Ratings on individual Diary entries are historical snapshots and are never rewritten when this changes.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                    .accessibilityIdentifier("owner-track-rating-semantics")
+
+                Text("Listened is retained while this song has any listening history or an active review. Remove those records before clearing it here.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                    .accessibilityIdentifier("owner-track-listened-semantics")
+
+                Button {
+                    save()
+                } label: {
+                    if isSaving {
+                        ProgressView().frame(maxWidth: .infinity)
+                    } else {
+                        Text("Save music status").frame(maxWidth: .infinity)
+                    }
+                }
+                .disabled(isSaving || !isDirty || canonicalTrack == nil)
+                .accessibilityIdentifier("owner-track-save")
+
+                if let saveMessage {
+                    Text(saveMessage)
+                        .font(.footnote)
+                        .foregroundColor(saveMessage.hasPrefix("Saved") ? .secondary : .red)
+                        .accessibilityIdentifier("owner-track-save-message")
+                }
+            }
+
+            Section("Diary") {
+                if relatedDiaryEntries.isEmpty {
+                    Text("No loaded Diary entries for this song yet.")
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(relatedDiaryEntries) { entry in
+                        ActivityDiarySummary(entry: entry)
+                            .accessibilityIdentifier("owner-track-diary-\(entry.id.uuidString)")
+                    }
+                }
+            }
+
+            Section("Reviews") {
+                if relatedReviews.isEmpty {
+                    Text("You have not reviewed this song yet.")
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(relatedReviews) { review in
+                        NavigationLink {
+                            ReviewDetailView(reviewID: review.id, fallbackReview: review) { _ in }
+                        } label: {
+                            ReviewSummary(review: review)
+                        }
+                        .accessibilityIdentifier("owner-track-review-\(review.id.uuidString)")
+                    }
+                }
+            }
+        }
+        .navigationTitle(track.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .accessibilityIdentifier("owner-track-detail-page")
+        .task { await refreshCurrentState() }
+    }
+
+    private func save() {
+        guard !isSaving, isDirty, let canonicalTrack else { return }
+        let submittedDraft = draft.normalizedForSubmission
+        Task {
+            let didSave = await store.saveTrackSubjectStateDraft(submittedDraft, for: canonicalTrack)
+            if didSave {
+                let persistedDraft = store.trackSubjectStateDraft(for: canonicalTrack)
+                draft = persistedDraft
+                savedDraft = persistedDraft
+                saveMessage = persistedDraft == submittedDraft
+                    ? "Saved"
+                    : "Saved. Listened remains on because this song has Diary history or an active review."
+            } else {
+                saveMessage = store.collaborationMessage.isEmpty
+                    ? "Could not save. Your changes are still here—try again."
+                    : store.collaborationMessage
+            }
+        }
+    }
+
+    private func refreshCurrentState() async {
+        guard let canonicalTrack, !isDirty else { return }
+        guard let refreshed = await store.refreshTrackSubjectState(for: canonicalTrack) else { return }
+        guard !isDirty else { return }
+        let refreshedDraft = TrackSubjectStateDraft(state: refreshed)
+        draft = refreshedDraft
+        savedDraft = refreshedDraft
     }
 }
 
@@ -2110,6 +2366,7 @@ private struct ReviewDetailView: View {
 private extension RemoteCatalogTrack {
     var harmonyTrack: HarmonyTrack {
         HarmonyTrack(
+            id: id ?? UUID(),
             title: title,
             artist: artist,
             album: album ?? "",

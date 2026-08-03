@@ -377,21 +377,21 @@ Migration `202608030028_track_subject_state.sql` adds a nullable half-step
 `profile_track_subject_states`, keyed by `(profile_id, canonical_track_id)`.
 The latter stores undated Listened, default rating, Loved, and Want to listen
 without requiring a review row. Existing history and the newest active track
-review per owner/track are backfilled for compatibility; `music_reviews`
-remains unchanged.
+review per owner/track are backfilled for compatibility.
 
 `record_listening_history` now has one nine-argument signature with optional
 trailing `p_rating`. `set_listening_diary_rating` updates or clears the rating
 snapshot on one owned manual entry. `set_my_track_subject_state` replaces the
 caller's private state, makes a rating imply Listened, clears Want to listen
 when Listened becomes true, and refuses to clear Listened while a Diary row or
-active review still exists. Database triggers keep newly logged music and the
-current default rating synchronized without rewriting older Diary ratings.
+active review still exists. Database triggers keep newly logged/reviewed music
+and the current default rating synchronized without rewriting older Diary or
+review snapshots.
 
 The migration is deployed. Hosted smoke covers rating validation, owner-only
 state reads, foreign-entry mutation rejection, rating-to-state synchronization,
-independent Loved and Want-to-listen values, and review-edit isolation. Swift
-decodes and caches this private track state for the next subject-detail slice.
+independent Loved and Want-to-listen values, and review-to-current-state
+synchronization. Swift decodes and caches this private track state.
 
 Diary creation and editing are already integrated. `DiaryEntryDraft.rating` is
 nullable, and **Rate this listen** activates the otherwise disabled shared
@@ -403,7 +403,8 @@ Journal rows show their historical score; unrated rows do not manufacture one.
 Migration `202608030029_atomic_diary_rating_update.sql` is deployed, and hosted
 smoke covers invalid-rating rejection, foreign-owner rejection, setting and
 clearing the rating/default state, normalized companion fields, incompatible
-review rollback, and isolation from later review edits. The older diary update
+review rollback, and historical Diary isolation from later current-state
+edits. The older diary update
 RPC remains available for installed-client compatibility.
 
 ### Implemented: private owner Music shelf
@@ -425,6 +426,28 @@ Migration `202608030030_paginated_track_subject_states.sql` deploys
 `updated_at DESC, canonical_track_id DESC` keyset pagination, paired cursor
 validation, a 1–100 limit, and a matching owner-first index. Hosted smoke covers
 owner isolation, continuation, partial-cursor rejection, and limit validation.
+
+### Implemented: canonical track detail and current state editing
+
+Every Music shelf row navigates to `OwnerTrackDetailView`, keyed by its
+nonoptional canonical UUID. It presents track metadata, current Listened,
+Loved, Want-to-listen and optional half-star rating, plus loaded owner Diary
+and Review sections. The rating copy explicitly distinguishes the current
+overall rating from historical Diary snapshots.
+
+`TrackSubjectStateDraft` is a value snapshot. It validates half-star input and
+mirrors backend normalization: a rating establishes Listened, while Listened
+clears Want to listen; Loved remains independent. The store mutation guard is
+keyed by canonical UUID, uses the repository's direct UUID overload, and
+updates cache/shelf only after success. A rejected clear retains the draft. An
+accepted all-empty response removes the track from cache and the Music shelf.
+
+Migrations `202608030032`–`034` delete empty current-state rows, clean legacy
+no-op rows, synchronize track-review create/edit to current rating/Loved, and
+serialize state/history/review writers with a shared owner/track advisory lock.
+Track review save marks Listened and clears Want; review deletion preserves
+current state. Album reviews remain outside track state. Clearing Listened
+still fails while any Diary/history entry or active review exists.
 
 ### Implemented: typed following Activity and member shelves
 
@@ -681,6 +704,15 @@ Diary, and Loved shelves; a second test verifies the separate Connections
 privacy control. Hosted smoke is the authority for first-publication
 idempotency, no import/backfill emission, current object visibility, blocks,
 profile shelf isolation, and stable keyset pagination.
+
+Track-detail unit coverage verifies half-step bounds, normalization, value
+snapshot isolation, failure-safe caches, direct canonical identity, and empty
+state removal. Its deterministic UI test opens the Music shelf detail, edits
+independent status, saves once, and reaches related Diary/review content.
+Hosted smoke verifies review create/update synchronization, preservation of
+historical Diary ratings, current-state rollback on a rejected clear, active
+review blocking, deletion followed by a successful clear, and physical removal
+of an all-empty row.
 
 ### Local development and deployment
 

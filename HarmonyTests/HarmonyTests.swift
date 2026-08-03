@@ -524,6 +524,113 @@ final class HarmonyTests: XCTestCase {
         )
     }
 
+    func testTrackSubjectDraftNormalizesOnlyDependentState() {
+        let independent = TrackSubjectStateDraft(
+            hasListened: false,
+            defaultRating: nil,
+            isLoved: true,
+            wantToListen: true
+        ).normalizedForSubmission
+
+        XCTAssertFalse(independent.hasListened)
+        XCTAssertTrue(independent.isLoved)
+        XCTAssertTrue(independent.wantToListen)
+        XCTAssertEqual(independent.activeStatuses, [.loved, .wantToListen])
+
+        let rated = TrackSubjectStateDraft(
+            hasListened: false,
+            defaultRating: 4.5,
+            isLoved: false,
+            wantToListen: true
+        ).normalizedForSubmission
+
+        XCTAssertTrue(rated.hasListened, "A current rating must establish Listened")
+        XCTAssertFalse(rated.wantToListen, "Listened must supersede Want to listen")
+        XCTAssertEqual(rated.defaultRating, 4.5)
+        XCTAssertEqual(rated.activeStatuses, [.listened, .rated])
+    }
+
+    func testTrackSubjectDraftIsAFailureSafeValueSnapshot() {
+        let persisted = trackSubjectState(
+            title: "Draft source",
+            hasListened: true,
+            defaultRating: 4,
+            isLoved: true
+        )
+        var draft = TrackSubjectStateDraft(state: persisted)
+        draft.defaultRating = nil
+        draft.hasListened = false
+        draft.wantToListen = true
+
+        XCTAssertTrue(persisted.hasListened)
+        XCTAssertEqual(persisted.defaultRating, 4)
+        XCTAssertTrue(persisted.isLoved)
+        XCTAssertFalse(persisted.wantToListen)
+        XCTAssertFalse(draft.hasListened)
+        XCTAssertNil(draft.defaultRating)
+        XCTAssertTrue(draft.isLoved)
+        XCTAssertTrue(draft.wantToListen)
+    }
+
+    func testTrackSubjectDraftValidatesHalfStarRatings() {
+        XCTAssertTrue(TrackSubjectStateDraft(defaultRating: nil).hasValidRating)
+        XCTAssertTrue(TrackSubjectStateDraft(defaultRating: 0.5).hasValidRating)
+        XCTAssertTrue(TrackSubjectStateDraft(defaultRating: 5).hasValidRating)
+        XCTAssertFalse(TrackSubjectStateDraft(defaultRating: 0).hasValidRating)
+        XCTAssertFalse(TrackSubjectStateDraft(defaultRating: 3.7).hasValidRating)
+        XCTAssertFalse(TrackSubjectStateDraft(defaultRating: 5.5).hasValidRating)
+    }
+
+#if DEBUG
+    func testFixtureTrackDraftSaveNormalizesAndCommitsOnlyAfterSuccess() async {
+        let store = HarmonySessionStore(seedSampleData: false)
+        store.seedDiaryEditorUITestFixture()
+        let track = try! XCTUnwrap(store.journalEntries.first?.canonicalTrack)
+        let original = try! XCTUnwrap(store.trackSubjectState(for: track))
+        let rejectedDraft = TrackSubjectStateDraft(
+            hasListened: false,
+            defaultRating: 3.7,
+            isLoved: false,
+            wantToListen: true
+        )
+
+        let rejected = await store.saveTrackSubjectStateDraft(rejectedDraft, for: track)
+        XCTAssertFalse(rejected)
+        let stateAfterFailure = try! XCTUnwrap(store.trackSubjectState(for: track))
+        XCTAssertEqual(stateAfterFailure.hasListened, original.hasListened)
+        XCTAssertEqual(stateAfterFailure.defaultRating, original.defaultRating)
+        XCTAssertEqual(stateAfterFailure.isLoved, original.isLoved)
+        XCTAssertEqual(stateAfterFailure.wantToListen, original.wantToListen)
+        XCTAssertEqual(rejectedDraft.defaultRating, 3.7, "A rejected save must leave the caller's retry draft intact")
+
+        let acceptedDraft = TrackSubjectStateDraft(
+            hasListened: false,
+            defaultRating: 4.5,
+            isLoved: false,
+            wantToListen: true
+        )
+        let accepted = await store.saveTrackSubjectStateDraft(acceptedDraft, for: track)
+        XCTAssertTrue(accepted)
+        let saved = try! XCTUnwrap(store.trackSubjectState(for: track))
+        XCTAssertTrue(saved.hasListened)
+        XCTAssertEqual(saved.defaultRating, 4.5)
+        XCTAssertFalse(saved.isLoved)
+        XCTAssertFalse(saved.wantToListen)
+    }
+
+    func testFixtureEmptyTrackDraftRemovesCacheAndShelf() async {
+        let store = HarmonySessionStore(seedSampleData: false)
+        store.seedDiaryEditorUITestFixture()
+        let track = try! XCTUnwrap(store.journalEntries.first?.canonicalTrack)
+        let trackID = try! XCTUnwrap(track.id)
+
+        let removed = await store.saveTrackSubjectStateDraft(.empty, for: track)
+        XCTAssertTrue(removed)
+        XCTAssertNil(store.trackSubjectState(for: track))
+        XCTAssertFalse(store.trackSubjectShelf.contains { $0.canonicalTrackID == trackID })
+    }
+#endif
+
     func testFollowingActivityPayloadsKeepTheirTypedPresentation() {
         let diary = journalEntry(title: "Diary track")
         let review = musicReview(title: "Reviewed track")

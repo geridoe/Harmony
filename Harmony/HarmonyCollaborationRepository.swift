@@ -1035,15 +1035,31 @@ final class HarmonyCollaborationRepository {
         isLoved: Bool,
         wantToListen: Bool
     ) async throws -> RemoteTrackSubjectState {
+        try await updateTrackSubjectState(
+            canonicalTrackID: canonicalTrackID,
+            draft: TrackSubjectStateDraft(
+                hasListened: hasListened,
+                defaultRating: defaultRating,
+                isLoved: isLoved,
+                wantToListen: wantToListen
+            )
+        )
+    }
+
+    func updateTrackSubjectState(
+        canonicalTrackID: UUID,
+        draft: TrackSubjectStateDraft
+    ) async throws -> RemoteTrackSubjectState {
         try await authenticate()
+        let draft = draft.normalizedForSubmission
         return try await client.rpc(
             "set_my_track_subject_state",
             params: SetTrackSubjectStateParameters(
                 p_canonical_track_id: canonicalTrackID,
-                p_has_listened: hasListened,
-                p_default_rating: defaultRating,
-                p_is_loved: isLoved,
-                p_want_to_listen: wantToListen
+                p_has_listened: draft.hasListened,
+                p_default_rating: draft.defaultRating,
+                p_is_loved: draft.isLoved,
+                p_want_to_listen: draft.wantToListen
             )
         ).execute().value
     }

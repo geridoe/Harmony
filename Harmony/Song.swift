@@ -70,6 +70,82 @@ struct HarmonyTrack: Identifiable, Hashable {
     func availability(for provider: MusicProvider) -> ProviderAvailability { mappings.first(where: { $0.provider == provider })?.availability ?? .unavailable }
     var durationText: String { String(format: "%d:%02d", Int(duration) / 60, Int(duration) % 60) }
 }
+
+/// Editable, value-typed owner state for one canonical track. Keeping this as
+/// a draft prevents controls on a detail page from mutating the persisted
+/// cache before the backend accepts the complete replacement.
+struct TrackSubjectStateDraft: Equatable {
+    var hasListened: Bool
+    var defaultRating: Double?
+    var isLoved: Bool
+    var wantToListen: Bool
+
+    static let empty = TrackSubjectStateDraft()
+
+    init(
+        hasListened: Bool = false,
+        defaultRating: Double? = nil,
+        isLoved: Bool = false,
+        wantToListen: Bool = false
+    ) {
+        self.hasListened = hasListened
+        self.defaultRating = defaultRating
+        self.isLoved = isLoved
+        self.wantToListen = wantToListen
+    }
+
+    init(state: RemoteTrackSubjectState?) {
+        self.init(
+            hasListened: state?.hasListened ?? false,
+            defaultRating: state?.defaultRating,
+            isLoved: state?.isLoved ?? false,
+            wantToListen: state?.wantToListen ?? false
+        )
+    }
+
+    /// Mirrors `set_my_track_subject_state`: a rating establishes Listened,
+    /// and Listened supersedes Want to listen. Loved remains independent.
+    var normalizedForSubmission: TrackSubjectStateDraft {
+        var result = self
+        if result.defaultRating != nil { result.hasListened = true }
+        if result.hasListened { result.wantToListen = false }
+        return result
+    }
+
+    var hasValidRating: Bool {
+        guard let defaultRating else { return true }
+        guard (0.5...5).contains(defaultRating) else { return false }
+        return (defaultRating * 2).rounded() == defaultRating * 2
+    }
+
+    var isEmpty: Bool {
+        let normalized = normalizedForSubmission
+        return !normalized.hasListened
+            && normalized.defaultRating == nil
+            && !normalized.isLoved
+            && !normalized.wantToListen
+    }
+}
+
+enum TrackSubjectStateStatus: String, Equatable {
+    case listened = "Listened"
+    case loved = "Loved"
+    case wantToListen = "Want to listen"
+    case rated = "Rated"
+}
+
+extension TrackSubjectStateDraft {
+    /// Stable display order shared by the detail page and accessibility copy.
+    var activeStatuses: [TrackSubjectStateStatus] {
+        let normalized = normalizedForSubmission
+        var statuses: [TrackSubjectStateStatus] = []
+        if normalized.hasListened { statuses.append(.listened) }
+        if normalized.isLoved { statuses.append(.loved) }
+        if normalized.wantToListen { statuses.append(.wantToListen) }
+        if normalized.defaultRating != nil { statuses.append(.rated) }
+        return statuses
+    }
+}
 enum SessionRole: Equatable { case conductor, collaborator; var label: String { self == .conductor ? "Conductor" : "Collaborator" } }
 struct SessionMember: Identifiable, Hashable { let id: UUID; let name: String; let initials: String; let role: SessionRole; let providers: Set<MusicProvider>; init(id: UUID = UUID(), name: String, initials: String, role: SessionRole, providers: Set<MusicProvider>) { self.id = id; self.name = name; self.initials = initials; self.role = role; self.providers = providers } }
 struct QueueItem: Identifiable, Hashable { let id: UUID; let track: HarmonyTrack; let addedBy: SessionMember; init(id: UUID = UUID(), track: HarmonyTrack, addedBy: SessionMember) { self.id = id; self.track = track; self.addedBy = addedBy } }
@@ -1051,6 +1127,47 @@ final class HarmonySessionStore: ObservableObject {
         }
     }
 
+    func trackSubjectState(for track: RemoteCatalogTrack) -> RemoteTrackSubjectState? {
+        guard let id = track.id else { return nil }
+        return trackSubjectStates[id]
+            ?? trackSubjectShelf.first { $0.canonicalTrackID == id }
+    }
+
+    func trackSubjectStateDraft(for track: RemoteCatalogTrack) -> TrackSubjectStateDraft {
+        TrackSubjectStateDraft(state: trackSubjectState(for: track))
+    }
+
+    func isSavingTrackSubjectState(for track: RemoteCatalogTrack) -> Bool {
+        track.id.map(mutatingTrackSubjectStateIDs.contains) ?? false
+    }
+
+    @discardableResult
+    func refreshTrackSubjectState(for track: RemoteCatalogTrack) async -> RemoteTrackSubjectState? {
+        guard let canonicalTrackID = track.id else {
+            collaborationMessage = "Could not identify this track."
+            return nil
+        }
+#if DEBUG
+        if isDiaryEditorUITestFixtureActive {
+            return trackSubjectState(for: track)
+        }
+#endif
+        do {
+            let state = try await collaborationRepository.trackSubjectState(
+                canonicalTrackID: canonicalTrackID
+            )
+            if let state {
+                cacheTrackSubjectState(state, fallbackTrack: track)
+            } else {
+                removeTrackSubjectState(canonicalTrackID: canonicalTrackID)
+            }
+            return state
+        } catch {
+            collaborationMessage = "Could not load your track status: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     @discardableResult
     func refreshTrackSubjectState(for track: HarmonyTrack) async -> RemoteTrackSubjectState? {
         do {
@@ -1114,26 +1231,89 @@ final class HarmonySessionStore: ObservableObject {
         isLoved: Bool,
         wantToListen: Bool
     ) async -> Bool {
+        let draft = TrackSubjectStateDraft(
+            hasListened: hasListened,
+            defaultRating: defaultRating,
+            isLoved: isLoved,
+            wantToListen: wantToListen
+        ).normalizedForSubmission
+        guard draft.hasValidRating else {
+            collaborationMessage = "Ratings must use half-star steps from 0.5 to 5.0."
+            return false
+        }
         guard !mutatingTrackSubjectStateIDs.contains(track.id) else { return false }
         mutatingTrackSubjectStateIDs.insert(track.id)
         defer { mutatingTrackSubjectStateIDs.remove(track.id) }
         do {
             let state = try await collaborationRepository.updateTrackSubjectState(
                 for: track,
-                hasListened: hasListened,
-                defaultRating: defaultRating,
-                isLoved: isLoved,
-                wantToListen: wantToListen
+                hasListened: draft.hasListened,
+                defaultRating: draft.defaultRating,
+                isLoved: draft.isLoved,
+                wantToListen: draft.wantToListen
             )
             let shelfTrack = trackSubjectShelf.first {
                 $0.canonicalTrackID == state.canonicalTrackID
             }?.canonicalTrack
             let mergedState = state.preservingCanonicalTrack(shelfTrack)
-            trackSubjectStates[mergedState.canonicalTrackID] = mergedState
-            trackSubjectShelf.removeAll {
-                $0.canonicalTrackID == mergedState.canonicalTrackID
-            }
-            trackSubjectShelf.insert(mergedState, at: 0)
+            applySavedTrackSubjectState(mergedState, submittedDraft: draft)
+            collaborationMessage = "Track status updated"
+            return true
+        } catch {
+            collaborationMessage = "Could not update track status: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    /// Saves the complete draft atomically. The cache changes only after a
+    /// successful response, so a failed save leaves both the persisted state
+    /// and the caller's value-typed draft available for retry.
+    @discardableResult
+    func saveTrackSubjectStateDraft(
+        _ proposedDraft: TrackSubjectStateDraft,
+        for track: RemoteCatalogTrack
+    ) async -> Bool {
+        guard let canonicalTrackID = track.id else {
+            collaborationMessage = "Could not identify this track."
+            return false
+        }
+        let draft = proposedDraft.normalizedForSubmission
+        guard draft.hasValidRating else {
+            collaborationMessage = "Ratings must use half-star steps from 0.5 to 5.0."
+            return false
+        }
+        guard !mutatingTrackSubjectStateIDs.contains(canonicalTrackID) else { return false }
+        mutatingTrackSubjectStateIDs.insert(canonicalTrackID)
+        defer { mutatingTrackSubjectStateIDs.remove(canonicalTrackID) }
+
+#if DEBUG
+        if isDiaryEditorUITestFixtureActive {
+            await Task.yield()
+            let now = Date()
+            let current = trackSubjectState(for: track)
+            let state = RemoteTrackSubjectState(
+                profileID: authenticatedProfileID ?? UUID(),
+                canonicalTrackID: canonicalTrackID,
+                hasListened: draft.hasListened,
+                defaultRating: draft.defaultRating,
+                isLoved: draft.isLoved,
+                wantToListen: draft.wantToListen,
+                createdAt: current?.createdAt ?? now,
+                updatedAt: now,
+                canonicalTrack: track
+            )
+            applySavedTrackSubjectState(state, submittedDraft: draft)
+            collaborationMessage = "Track status updated"
+            return true
+        }
+#endif
+
+        do {
+            let state = try await collaborationRepository.updateTrackSubjectState(
+                canonicalTrackID: canonicalTrackID,
+                draft: draft
+            )
+            cacheTrackSubjectState(state, fallbackTrack: track, submittedDraft: draft)
             collaborationMessage = "Track status updated"
             return true
         } catch {
@@ -1154,6 +1334,35 @@ final class HarmonySessionStore: ObservableObject {
         trackSubjectShelf[index] = state.preservingCanonicalTrack(
             trackSubjectShelf[index].canonicalTrack
         )
+    }
+
+    private func cacheTrackSubjectState(
+        _ state: RemoteTrackSubjectState,
+        fallbackTrack: RemoteCatalogTrack,
+        submittedDraft: TrackSubjectStateDraft? = nil
+    ) {
+        applySavedTrackSubjectState(
+            state.preservingCanonicalTrack(fallbackTrack),
+            submittedDraft: submittedDraft ?? TrackSubjectStateDraft(state: state)
+        )
+    }
+
+    private func applySavedTrackSubjectState(
+        _ state: RemoteTrackSubjectState,
+        submittedDraft: TrackSubjectStateDraft
+    ) {
+        if submittedDraft.isEmpty {
+            removeTrackSubjectState(canonicalTrackID: state.canonicalTrackID)
+            return
+        }
+        trackSubjectStates[state.canonicalTrackID] = state
+        trackSubjectShelf.removeAll { $0.canonicalTrackID == state.canonicalTrackID }
+        trackSubjectShelf.insert(state, at: 0)
+    }
+
+    private func removeTrackSubjectState(canonicalTrackID: UUID) {
+        trackSubjectStates.removeValue(forKey: canonicalTrackID)
+        trackSubjectShelf.removeAll { $0.canonicalTrackID == canonicalTrackID }
     }
 
     func refreshFollowingActivity() async {
@@ -1396,6 +1605,19 @@ final class HarmonySessionStore: ObservableObject {
         )
         listeningHistory = [entry]
         journalEntries = [entry]
+        let subjectState = RemoteTrackSubjectState(
+            profileID: profileID,
+            canonicalTrackID: trackID,
+            hasListened: true,
+            defaultRating: 4.0,
+            isLoved: true,
+            wantToListen: false,
+            createdAt: Date(),
+            updatedAt: Date(),
+            canonicalTrack: track
+        )
+        trackSubjectStates[trackID] = subjectState
+        trackSubjectShelf = [subjectState]
     }
 
     func seedSocialActivityUITestFixture() {
@@ -1658,6 +1880,7 @@ final class HarmonySessionStore: ObservableObject {
                 ? "Review published to approved followers"
                 : "Private review saved"
             await refreshMusicReviews()
+            await refreshTrackSubjectShelf()
             return true
         } catch {
             collaborationMessage = "Could not publish review: \(error.localizedDescription)"
@@ -1727,7 +1950,10 @@ final class HarmonySessionStore: ObservableObject {
 
     @discardableResult
     func updateReview(_ reviewID: UUID, rating: Double, body: String, visibility: SocialVisibilityOption, isLoved: Bool, containsSpoilers: Bool = false) async -> Bool {
-        await performReviewMutation(reviewID, successMessage: "Review updated") {
+        let updatesTrackState = musicReviews.contains {
+            $0.id == reviewID && $0.subjectKind == "track" && $0.canonicalTrack?.id != nil
+        }
+        let didUpdate = await performReviewMutation(reviewID, successMessage: "Review updated") {
             try await self.collaborationRepository.updateReview(
                 reviewID,
                 rating: rating,
@@ -1737,6 +1963,8 @@ final class HarmonySessionStore: ObservableObject {
                 containsSpoilers: containsSpoilers
             )
         }
+        if didUpdate && updatesTrackState { await refreshTrackSubjectShelf() }
+        return didUpdate
     }
 
     @discardableResult

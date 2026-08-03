@@ -169,6 +169,87 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Listened"].exists)
     }
 
+    func testMusicShelfTrackDetailEditsIndependentStatusAndShowsHistory() throws {
+        let app = XCUIApplication()
+        app.launchArguments.append("--ui-test-diary-editor")
+        app.launch()
+
+        let reviewsTab = app.tabBars.buttons["Reviews"]
+        XCTAssertTrue(reviewsTab.waitForExistence(timeout: 5))
+        reviewsTab.tap()
+        let reviewsNavigation = app.navigationBars["Reviews"]
+        if !reviewsNavigation.waitForExistence(timeout: 3) { reviewsTab.tap() }
+        XCTAssertTrue(reviewsNavigation.waitForExistence(timeout: 5))
+
+        let musicShelf = app.buttons["Music shelf"]
+        XCTAssertTrue(musicShelf.waitForExistence(timeout: 5))
+        musicShelf.tap()
+        XCTAssertTrue(app.navigationBars["Music shelf"].waitForExistence(timeout: 5))
+
+        let trackID = "20000000-0000-0000-0000-000000000002"
+        let track = app.descendants(matching: .any)["music-shelf-open-\(trackID)"]
+        XCTAssertTrue(track.waitForExistence(timeout: 5))
+        track.tap()
+
+        XCTAssertTrue(app.navigationBars["Afterglow"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["owner-track-detail-header"].exists)
+        XCTAssertTrue(app.staticTexts["Wolves at Noon"].exists)
+        XCTAssertTrue(app.staticTexts["Northern Lights"].exists)
+
+        let listened = app.switches["owner-track-listened"]
+        let loved = app.switches["owner-track-loved"]
+        let want = app.switches["owner-track-want"]
+        let ratingToggle = app.switches["owner-track-rating-toggle"]
+        XCTAssertEqual(listened.value as? String, "1")
+        XCTAssertEqual(loved.value as? String, "1")
+        XCTAssertEqual(want.value as? String, "0")
+        XCTAssertEqual(ratingToggle.value as? String, "1")
+        XCTAssertEqual(app.descendants(matching: .any)["owner-track-rating"].value as? String, "4.0 out of 5")
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS 'Diary entries are historical snapshots'"
+        )).firstMatch.exists)
+
+        for _ in 0..<3 where !ratingToggle.isHittable { app.swipeUp() }
+        XCTAssertTrue(ratingToggle.isHittable)
+        ratingToggle.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        let ratingCleared = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == '0'"),
+            object: ratingToggle
+        )
+        wait(for: [ratingCleared], timeout: 3)
+        XCTAssertEqual(ratingToggle.value as? String, "0")
+        for _ in 0..<2 where !want.isHittable { app.swipeDown() }
+        XCTAssertTrue(want.isHittable)
+        want.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        let wantEnabled = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == '1'"),
+            object: want
+        )
+        wait(for: [wantEnabled], timeout: 3)
+        XCTAssertEqual(want.value as? String, "1")
+        XCTAssertEqual(listened.value as? String, "0", "Want to listen clears Listened and its overall rating")
+
+        let save = app.buttons["owner-track-save"]
+        for _ in 0..<3 where !save.exists { app.swipeUp() }
+        XCTAssertTrue(save.waitForExistence(timeout: 5))
+        XCTAssertTrue(save.isEnabled)
+        save.tap()
+        XCTAssertTrue(app.staticTexts["Saved"].waitForExistence(timeout: 5))
+        XCTAssertFalse(save.isEnabled, "An unchanged status cannot be submitted twice")
+
+        let diary = app.descendants(matching: .any)["owner-track-diary-40000000-0000-0000-0000-000000000004"]
+        for _ in 0..<4 where !diary.exists { app.swipeUp() }
+        XCTAssertTrue(diary.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS '#party' AND label CONTAINS '#vinyl' ")).firstMatch.exists)
+
+        let review = app.descendants(matching: .any)["owner-track-review-30000000-0000-0000-0000-000000000003"]
+        for _ in 0..<3 where !review.exists { app.swipeUp() }
+        XCTAssertTrue(review.waitForExistence(timeout: 5))
+        review.tap()
+        XCTAssertTrue(app.navigationBars["Afterglow"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["A fixture opinion."].exists)
+    }
+
     func testTypedFollowingActivityNavigatesToMemberShelves() throws {
         let app = XCUIApplication()
         app.launchArguments.append("--ui-test-social-activity")

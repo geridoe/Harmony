@@ -101,9 +101,9 @@ tags, lists, or stats already exist.
 | --- | --- | --- |
 | Playing now | queue/provider playback | ephemeral; not automatically a social post |
 | Listening journal | `listening_history_entries` | dated and repeatable; manual entries may carry Relisten/tags and a historical rating, while provider imports are deduplicated |
-| Opinion | `music_reviews` | current 0.5–5.0 rating and optional review |
-| Track state | `profile_track_subject_states` | private owner-scoped Listened, default rating, Loved, and Want to listen state independent of reviews |
-| Compatibility affinity | `music_reviews.is_loved` | retained while the client migrates Loved controls to track state |
+| Opinion | `music_reviews` | authored 0.5–5.0 rating/Loved snapshot and optional review text |
+| Track state | `profile_track_subject_states` | authoritative private current Listened, default rating, Loved, and Want to listen state |
+| Review affinity snapshot | `music_reviews.is_loved` | the Loved value submitted with that review; saving a track review also updates current track state |
 | Spoiler disclosure | `music_reviews.contains_spoilers` | author-controlled metadata; clients conceal the body until the reader reveals it |
 | Community reaction | `review_reactions` | another listener reacting to a published review |
 
@@ -241,9 +241,10 @@ copy that distinguishes a complete result from a loaded-page preview.
 Migration `202608030028_track_subject_state.sql` is deployed. It adds an
 optional half-step `rating` snapshot to manual Diary rows and introduces
 `profile_track_subject_states`, keyed by owner and canonical track. That state
-holds undated Listened, default rating, Loved, and Want to listen independently
-of any review. Existing active track reviews seed the initial state, but review
-edits do not rewrite the new state or old Diary ratings.
+holds undated Listened, default rating, Loved, and Want to listen without
+requiring a review. Existing active track reviews seed the initial state.
+Saving a track review updates current state while old Diary and review rows
+retain their own authored snapshots.
 
 History writes mark the track Listened and clear Want to listen. A manual Diary
 rating becomes the current default through a database trigger, while earlier
@@ -251,12 +252,15 @@ Diary rows preserve their own value. `set_listening_diary_rating` updates or
 clears one owned manual entry; `set_my_track_subject_state` replaces the
 caller's private state and rejects clearing Listened while history or an active
 track review still exists. Direct client mutation is revoked and owner-only RLS
-protects reads. The existing `music_reviews` schema is intentionally unchanged
-until Swift stops assuming a required review rating and review-scoped Loved.
+protects reads. Track review creation/editing marks Listened, clears Want to
+listen, and makes the submitted rating/Loved the current track state. Album
+reviews do not have a canonical track relationship and therefore do not mutate
+track state.
 
 Hosted smoke covers half-step validation, owner isolation, foreign-entry
 rejection, state synchronization, independent Loved/Want-to-listen behavior,
-and the guarantee that later review edits do not mutate historical ratings.
+and the guarantee that later current-state or review edits do not mutate older
+Diary rating snapshots.
 
 Migration `202608030029_atomic_diary_rating_update.sql` adds
 `update_listening_diary_entry_with_rating`, keeping the older update RPC for
@@ -268,7 +272,8 @@ The iOS Diary composer and editor now expose an optional **Rate this listen**
 control. An unrated log remains `nil` with a disabled scale; enabling it starts
 at 4.0 and uses the same half-star picker as reviews. Journal rows display only ratings actually
 stored on that listen. Swift also decodes/caches the new private track state,
-but Loved/Listened/Want-to-listen UI remains a later subject-detail slice.
+and the owner subject-detail UI edits Loved/Listened/Want-to-listen/current
+rating without rewriting historical Diary rows.
 
 ### Owner Music shelf
 
@@ -287,6 +292,25 @@ The app requests 51 rows, displays 50, and exposes Load more when the sentinel
 exists. Search and scopes intentionally apply to loaded pages, as in Diary.
 Hosted smoke covers owner isolation, continuation, partial-cursor rejection,
 and the page-size cap.
+
+### Owner track detail and state invariants
+
+Selecting a Music shelf row opens a first-class canonical-track page. Its
+identity is the canonical UUID carried by `RemoteCatalogTrack`; it never
+round-trips through title/artist matching. The page keeps a value-typed draft
+for Listened, current rating, Loved, and Want to listen, normalizes Rating →
+Listened and Listened → not Want before submission, and changes its cache only
+after the server accepts the complete replacement. Failed saves retain the
+draft for retry. Loaded owner Diary entries and reviews for the track appear as
+separate sections so historical occurrences remain distinct from current
+state.
+
+Migrations 032–034 remove all-empty state rows (including legacy rows), sync
+track-review create/edit into current state, and serialize direct state,
+history, and review writers with the same owner/track advisory lock. Clearing
+Listened is rejected while any history or active track review still proves the
+relationship; deleting a review does not roll current state backward. Direct
+current-state changes never rewrite a historical Diary or review snapshot.
 
 Album review creation remains available on Spotify/Apple catalog results in
 Add music. The server migration `202608020023_review_affinity.sql` adds the

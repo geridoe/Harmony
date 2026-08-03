@@ -348,6 +348,10 @@ rest_get "$conductor_token" \
   "music_reviews?select=id,profile_id,subject_kind,subject_title,subject_artist,rating,contains_spoilers,is_loved,body&id=eq.$review_id" \
   "$smoke_tmp/follower-review.json"
 jq -e --arg profile "$collaborator_id" 'length == 1 and .[0].profile_id == $profile and .[0].subject_kind == "track" and .[0].subject_title == "Harmony Smoke Track" and .[0].rating == 4.5 and .[0].contains_spoilers == true and .[0].is_loved == true' "$smoke_tmp/follower-review.json" >/dev/null
+rest_get "$collaborator_token" \
+  "profile_track_subject_states?select=has_listened,default_rating,is_loved,want_to_listen&canonical_track_id=eq.$canonical_track_id" \
+  "$smoke_tmp/review-created-track-state.json"
+jq -e 'length == 1 and .[0].has_listened == true and .[0].default_rating == 4.5 and .[0].is_loved == true and .[0].want_to_listen == false' "$smoke_tmp/review-created-track-state.json" >/dev/null
 
 stage="following activity keyset and current visibility"
 rpc "$conductor_token" list_following_activity \
@@ -515,6 +519,29 @@ rpc "$conductor_token" list_profile_loved_tracks \
   "{\"p_profile_id\":\"$collaborator_id\",\"p_before_updated_at\":\"$loved_first_updated_at\",\"p_before_canonical_track_id\":\"$loved_first_track_id\",\"p_limit\":10}" \
   "$smoke_tmp/loved-shelf-second-page.json"
 jq -e --arg first "$loved_first_track_id" 'length == 1 and .[0].canonical_track_id != $first' "$smoke_tmp/loved-shelf-second-page.json" >/dev/null
+rpc "$collaborator_token" create_music_review \
+  "{\"p_subject_kind\":\"track\",\"p_canonical_track_id\":\"$spotify_url_track_id\",\"p_rating\":3.0,\"p_body\":\"Private blocker review.\",\"p_visibility\":\"private\",\"p_is_loved\":false}" \
+  "$smoke_tmp/private-blocker-review.json"
+private_blocker_review_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/private-blocker-review.json")"
+clear_listened_with_review_status="$(rpc_status "$collaborator_token" set_my_track_subject_state \
+  "{\"p_canonical_track_id\":\"$spotify_url_track_id\",\"p_has_listened\":false,\"p_default_rating\":null,\"p_is_loved\":false,\"p_want_to_listen\":false}" \
+  "$smoke_tmp/clear-listened-with-review.json")"
+[[ "$clear_listened_with_review_status" == "400" ]]
+rest_get "$collaborator_token" \
+  "profile_track_subject_states?select=has_listened,default_rating,is_loved,want_to_listen&canonical_track_id=eq.$spotify_url_track_id" \
+  "$smoke_tmp/rejected-clear-preserved-state.json"
+jq -e 'length == 1 and .[0].has_listened == true and .[0].default_rating == 3.0 and .[0].is_loved == false and .[0].want_to_listen == false' "$smoke_tmp/rejected-clear-preserved-state.json" >/dev/null
+rpc "$collaborator_token" delete_music_review \
+  "{\"p_review_id\":\"$private_blocker_review_id\"}" \
+  "$smoke_tmp/deleted-private-blocker-review.json"
+rpc "$collaborator_token" set_my_track_subject_state \
+  "{\"p_canonical_track_id\":\"$spotify_url_track_id\",\"p_has_listened\":false,\"p_default_rating\":null,\"p_is_loved\":false,\"p_want_to_listen\":false}" \
+  "$smoke_tmp/empty-track-subject-state.json"
+jq -e '(if type == "array" then .[0] else . end) | .has_listened == false and .default_rating == null and .is_loved == false and .want_to_listen == false' "$smoke_tmp/empty-track-subject-state.json" >/dev/null
+rest_get "$collaborator_token" \
+  "profile_track_subject_states?select=canonical_track_id&canonical_track_id=eq.$spotify_url_track_id" \
+  "$smoke_tmp/removed-empty-track-subject-state.json"
+[[ "$(jq 'length' "$smoke_tmp/removed-empty-track-subject-state.json")" -eq 0 ]]
 rpc "$conductor_token" list_profile_listening_diary \
   "{\"p_profile_id\":\"$collaborator_id\",\"p_before_played_at\":null,\"p_before_id\":null,\"p_limit\":1}" \
   "$smoke_tmp/profile-diary-first-page.json"
@@ -563,8 +590,8 @@ rest_get "$conductor_token" \
 jq -e 'length == 1 and .[0].rating == 5.0 and .[0].contains_spoilers == false and .[0].is_loved == false and .[0].body == "Updated Harmony smoke review."' "$smoke_tmp/updated-review.json" >/dev/null
 rest_get "$collaborator_token" \
   "profile_track_subject_states?select=default_rating,is_loved&canonical_track_id=eq.$canonical_track_id" \
-  "$smoke_tmp/review-independent-track-state.json"
-jq -e 'length == 1 and .[0].default_rating == 2.5 and .[0].is_loved == true' "$smoke_tmp/review-independent-track-state.json" >/dev/null
+  "$smoke_tmp/review-synchronized-track-state.json"
+jq -e 'length == 1 and .[0].default_rating == 5.0 and .[0].is_loved == false' "$smoke_tmp/review-synchronized-track-state.json" >/dev/null
 rest_get "$collaborator_token" \
   "listening_history_entries?select=rating&id=eq.$history_entry_id" \
   "$smoke_tmp/review-independent-diary-rating.json"
