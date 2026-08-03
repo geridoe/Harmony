@@ -482,9 +482,15 @@ struct EavesdropBroadcast: Identifiable {
     let isExplicit: Bool
     let startedAt: Date
     let expiresAt: Date
+    let endedAt: Date?
+    let endedReason: String?
     let sourceProvider: String?
     let sourceDeepLink: URL?
     var destinations: [MusicProvider: EavesdropProviderDestination]
+
+    var isActive: Bool {
+        endedAt == nil && expiresAt > Date()
+    }
 
     var harmonyTrack: HarmonyTrack? {
         guard let title, let artist else { return nil }
@@ -543,6 +549,8 @@ func mergedEavesdropBroadcasts(_ rows: [RemoteEavesdropBroadcastRow]) -> [Eavesd
             isExplicit: row.trackIsExplicit ?? false,
             startedAt: row.startedAt,
             expiresAt: row.expiresAt,
+            endedAt: row.effectiveEndedAt ?? row.endedAt,
+            endedReason: row.endedReason,
             sourceProvider: row.sourceProvider,
             sourceDeepLink: row.sourceDeepLink,
             destinations: [:]
@@ -1320,6 +1328,9 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     func refreshEavesdropDetail(_ broadcast: EavesdropBroadcast) async {
+#if DEBUG
+        if isDiaryEditorUITestFixtureActive { return }
+#endif
         guard eavesdropDetails[broadcast.id]?.isRefreshing != true else { return }
         eavesdropDetails[broadcast.id, default: EavesdropBroadcastDetailState()].broadcast = broadcast
         eavesdropDetails[broadcast.id]?.isRefreshing = true
@@ -1367,7 +1378,9 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     func canDeleteEavesdropComment(_ comment: RemoteEavesdropComment, broadcast: EavesdropBroadcast) -> Bool {
-        comment.authorID == authenticatedProfileID || broadcast.hostProfileID == authenticatedProfileID
+        broadcast.isActive && (
+            comment.authorID == authenticatedProfileID || broadcast.hostProfileID == authenticatedProfileID
+        )
     }
 
     func hasEavesdropReaction(_ broadcastID: UUID, kind: String) -> Bool {
@@ -1378,7 +1391,8 @@ final class HarmonySessionStore: ObservableObject {
     }
 
     func startEavesdropPlayback(_ broadcast: EavesdropBroadcast, provider: MusicProvider) async -> Bool {
-        guard !mutatingEavesdropBroadcastIDs.contains(broadcast.id),
+        guard broadcast.isActive,
+              !mutatingEavesdropBroadcastIDs.contains(broadcast.id),
               let track = broadcast.harmonyTrack,
               broadcast.destinations[provider] != nil else { return false }
         mutatingEavesdropBroadcastIDs.insert(broadcast.id)
@@ -1409,7 +1423,8 @@ final class HarmonySessionStore: ObservableObject {
         success: String,
         operation: @escaping () async throws -> Void
     ) async -> Bool {
-        guard !mutatingEavesdropBroadcastIDs.contains(broadcast.id) else { return false }
+        guard broadcast.isActive,
+              !mutatingEavesdropBroadcastIDs.contains(broadcast.id) else { return false }
         mutatingEavesdropBroadcastIDs.insert(broadcast.id)
         defer { mutatingEavesdropBroadcastIDs.remove(broadcast.id) }
         do {
@@ -3073,6 +3088,42 @@ final class HarmonySessionStore: ObservableObject {
             canonicalTrack: track
         )]
         publicProfileShelves[entry.profileID] = shelves
+        let endedBroadcastID = UUID(uuidString: "72000000-0000-0000-0000-000000000007")!
+        let endedBroadcast = EavesdropBroadcast(
+            id: endedBroadcastID,
+            hostProfileID: entry.profileID,
+            hostDisplayName: "UI Test Listener",
+            status: "listening",
+            visibility: .followers,
+            canonicalTrackID: canonicalTrackID,
+            title: track.title,
+            artist: track.artist,
+            album: track.album,
+            durationMilliseconds: track.durationMilliseconds,
+            artworkURL: track.artworkURL,
+            isExplicit: track.isExplicit,
+            startedAt: Date().addingTimeInterval(-180),
+            expiresAt: Date().addingTimeInterval(120),
+            endedAt: Date().addingTimeInterval(-60),
+            endedReason: "stopped",
+            sourceProvider: "spotify",
+            sourceDeepLink: nil,
+            destinations: [:]
+        )
+        eavesdropDetails[endedBroadcastID] = EavesdropBroadcastDetailState(
+            broadcast: endedBroadcast,
+            comments: [
+                RemoteEavesdropComment(
+                    id: UUID(uuidString: "73000000-0000-0000-0000-000000000007")!,
+                    broadcastID: endedBroadcastID,
+                    authorID: UUID(uuidString: "91000000-0000-0000-0000-000000000009")!,
+                    body: "That bridge was incredible.",
+                    createdAt: Date().addingTimeInterval(-90),
+                    author: RemoteProfile(displayName: "UI Test Live Listener")
+                )
+            ],
+            reactions: []
+        )
         socialNotifications = [
             RemoteSocialNotification(
                 id: UUID(uuidString: "70000000-0000-0000-0000-000000000007")!,
@@ -3101,7 +3152,7 @@ final class HarmonySessionStore: ObservableObject {
                 musicListID: nil,
                 review: nil,
                 musicList: nil,
-                listeningBroadcastID: UUID(uuidString: "72000000-0000-0000-0000-000000000007")!
+                listeningBroadcastID: endedBroadcastID
             )
         ]
         unreadSocialNotificationCount = 1
@@ -3319,26 +3370,26 @@ final class HarmonySessionStore: ObservableObject {
         return list
     }
 
-    func resolveActiveNotificationBroadcast(_ broadcastID: UUID) async throws -> EavesdropBroadcast? {
+    func resolveNotificationBroadcast(_ broadcastID: UUID) async throws -> EavesdropBroadcast? {
 #if DEBUG
         if isDiaryEditorUITestFixtureActive {
-            let broadcast = eavesdropFeed.first(where: { $0.id == broadcastID && $0.expiresAt > Date() })
-            if let broadcast {
-                eavesdropDetails[broadcastID] = EavesdropBroadcastDetailState(broadcast: broadcast)
-            }
+            let broadcast = eavesdropDetails[broadcastID]?.broadcast
+                ?? eavesdropFeed.first(where: { $0.id == broadcastID })
             return broadcast
         }
 #endif
-        var rows = try await collaborationRepository.eavesdropBroadcastRows(broadcastID: broadcastID)
+        var rows = try await collaborationRepository.eavesdropBroadcastSnapshotRows(
+            broadcastID: broadcastID
+        )
         if providerState(for: .spotify) == .connected {
-            rows += (try? await collaborationRepository.eavesdropBroadcastRows(
+            rows += (try? await collaborationRepository.eavesdropBroadcastSnapshotRows(
                 broadcastID: broadcastID,
                 viewerProvider: .spotify,
                 storefront: "global"
             )) ?? []
         }
         if providerState(for: .appleMusic) == .connected {
-            rows += (try? await collaborationRepository.eavesdropBroadcastRows(
+            rows += (try? await collaborationRepository.eavesdropBroadcastSnapshotRows(
                 broadcastID: broadcastID,
                 viewerProvider: .appleMusic,
                 storefront: "us"

@@ -706,10 +706,11 @@ failure remains unread and offers Retry. Before showing an available target,
 the store clears its profile shelves, review thread, list detail, or Eavesdrop
 conversation cache so content retained from an older visibility context cannot
 flash on screen. Read state is attempted before publishing a consuming
-destination and is idempotently guarded across retries. Eavesdrop currently
-reopens only an active exact broadcast; ended/expired activity gets a truthful
-ended page because durable broadcasts do not yet snapshot enough track/provider
-metadata to reconstruct the old conversation.
+destination and is idempotently guarded across retries. Eavesdrop notifications
+resolve through `get_listening_broadcast_snapshot`: an ended/expired broadcast
+reopens for its host with the immutable original track/provider snapshot and
+RLS-filtered conversation. Historical Eavesdrop is read-only and host-only;
+the active feed remains limited to live current-consent rows.
 
 ### Realtime
 

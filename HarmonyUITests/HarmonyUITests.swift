@@ -103,7 +103,7 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["A fixture opinion."].exists)
     }
 
-    func testEndedBroadcastNotificationShowsTruthfulTerminalDestination() throws {
+    func testEndedBroadcastNotificationReopensSnapshotConversation() throws {
         let app = XCUIApplication()
         app.launchArguments.append("--ui-test-social-activity")
         app.launch()
@@ -119,12 +119,15 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(notification.waitForExistence(timeout: 5))
         notification.tap()
 
-        XCTAssertTrue(app.staticTexts["Listening activity ended"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts[
-            "This live listening activity has ended or is no longer available to you."
+        XCTAssertTrue(app.descendants(matching: .any)[
+            "eavesdrop-detail-72000000-0000-0000-0000-000000000007"
+        ].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)[
+            "eavesdrop-ended-72000000-0000-0000-0000-000000000007"
         ].exists)
-        XCTAssertTrue(app.descendants(matching: .any)["notification-destination-unavailable"].exists)
-        XCTAssertFalse(app.buttons["Retry"].exists, "A terminal ended broadcast must not masquerade as a transient failure")
+        XCTAssertTrue(app.staticTexts["Afterglow"].exists)
+        XCTAssertTrue(app.staticTexts["That bridge was incredible."].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["notification-destination-unavailable"].exists)
     }
 
     func testReviewsTabIsAFirstClassDestination() throws {

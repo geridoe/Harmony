@@ -1,6 +1,6 @@
 # Eavesdrop live-listening design
 
-**Status:** migration 041 deployed on 2026-08-03; hosted smoke coverage passes.
+**Status:** migrations 041 and 054 deployed on 2026-08-03; hosted smoke coverage passes.
 
 ## Product contract
 
@@ -27,11 +27,22 @@ an immutable `broadcast_id` and a durable `listening_broadcasts` parent.
 - Stopping deletes the presence row and marks its broadcast ended.
 - Comments and reactions remain attached to their original broadcast identity;
   new interaction is rejected after end/expiry.
+- Each broadcast snapshots its host name, canonical identity, track display
+  metadata, source provider ID/link, and last status. A stopped notification
+  therefore reopens the original recording and conversation instead of the
+  host's newer presence. Lifecycle distinguishes stopped, superseded, and
+  expired broadcasts; passive expiry uses the original expiry timestamp.
 
 ## Privacy and authority
 
 Broadcast visibility reuses `social_visibility`, accepted-follower checks, and
 two-way block enforcement. RLS covers broadcasts, comments, and reactions.
+Nonhosts can read a broadcast only while it is active and currently shared with
+them. Ended/expired snapshots and their conversation are host-only because live
+visibility is temporary consent, not archival sharing. Changing Connections
+live visibility is synchronized in the database transaction: Only me removes
+the presence and closes the broadcast, while an allowed audience update changes
+the active presence and parent together.
 Authenticated clients have SELECT only; all writes use actor-derived RPCs:
 
 - `add_listening_broadcast_comment`
@@ -56,11 +67,21 @@ types, and a live comment thread. Failed comments retain their draft. Provider
 playback is routed through the existing adapter boundary and never mutates the
 collaborative queue or creates listening history by itself.
 
+`get_listening_broadcast_snapshot(broadcast_id, viewer_provider, storefront)`
+is the exact notification resolver. It returns the immutable snapshot plus
+`ended_at`, effective end time, and lifecycle reason. The active feed never uses
+this RPC. An authorized ended detail is read-only: it shows the original track
+and conversation, disables playback/add/reaction mutations in both UI and store,
+and labels any surviving catalog link as a passive Open track action. Older
+rows that predate snapshots remain truthful shells rather than borrowing a
+newer presence from the same host.
+
 ## Verification
 
-The hosted smoke suite proves stable refresh identity, a new ID after stop,
-accepted-follower visibility, block hiding, Apple-to-Spotify resolution,
-reaction/comment notifications, host moderation, ended-interaction rejection,
-and account cleanup. Swift unit tests cover provider-row merging without
-collapsing distinct broadcasts from the same host. Simulator UI coverage should
-next add a deterministic two-provider eavesdrop fixture.
+The hosted smoke suite proves stable refresh identity, immutable snapshot
+fields, settings-driven stop, active exact lookup, random-ID absence, block
+hiding, Apple-to-Spotify resolution, host-only stopped/expired lookup, child
+conversation privacy, ended-interaction rejection, lifecycle materialization,
+and account cleanup. Swift tests cover provider-row merging and stopped-before-
+expiry state. Simulator UI reopens an exact ended notification with its original
+track/comment and verifies the read-only presentation.

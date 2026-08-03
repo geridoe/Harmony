@@ -429,9 +429,9 @@ struct SocialView: View {
             NavigationLink {
                 ExactNotificationDestination(
                     notificationID: notification.readAt == nil ? notification.id : nil,
-                    unavailableTitle: "Listening activity ended",
-                    unavailableMessage: "This live listening activity has ended or is no longer available to you.",
-                    resolver: { try await store.resolveActiveNotificationBroadcast(broadcastID) }
+                    unavailableTitle: "Listening activity unavailable",
+                    unavailableMessage: "This listening activity was removed or is no longer available to you.",
+                    resolver: { try await store.resolveNotificationBroadcast(broadcastID) }
                 ) { broadcast in
                     EavesdropBroadcastDetailView(broadcast: broadcast)
                 }
@@ -894,7 +894,15 @@ private struct EavesdropBroadcastDetailView: View {
     }
 
     private var isActive: Bool {
-        broadcast.expiresAt > Date()
+        broadcast.isActive
+    }
+
+    private var endedLabel: String {
+        switch broadcast.endedReason {
+        case "expired": "Broadcast expired"
+        case "superseded": "Broadcast ended when the track changed"
+        default: "Broadcast ended"
+        }
     }
 
     var body: some View {
@@ -917,7 +925,7 @@ private struct EavesdropBroadcastDetailView: View {
 
             Section("Listen in") {
                 if !isActive {
-                    Label("Broadcast ended", systemImage: "clock.badge.xmark")
+                    Label(endedLabel, systemImage: "clock.badge.xmark")
                         .foregroundStyle(.secondary)
                         .accessibilityIdentifier("eavesdrop-ended-\(broadcast.id.uuidString)")
                 }
@@ -936,7 +944,10 @@ private struct EavesdropBroadcastDetailView: View {
                         .accessibilityIdentifier("eavesdrop-listen-\(provider.rawValue)-\(broadcast.id.uuidString)")
                         if let deepLink = destination.deepLink {
                             Link(destination: deepLink) {
-                                Label("Open in \(provider.name)", systemImage: "arrow.up.right.square")
+                                Label(
+                                    isActive ? "Open in \(provider.name)" : "Open track in \(provider.name)",
+                                    systemImage: "arrow.up.right.square"
+                                )
                             }
                         }
                     }
@@ -967,7 +978,7 @@ private struct EavesdropBroadcastDetailView: View {
                             Text(comment.body)
                         }
                         Spacer()
-                        if store.canDeleteEavesdropComment(comment, broadcast: broadcast) {
+                        if isActive && store.canDeleteEavesdropComment(comment, broadcast: broadcast) {
                             Button(role: .destructive) {
                                 Task { await store.deleteEavesdropComment(comment, from: broadcast) }
                             } label: { Image(systemName: "trash") }
@@ -976,20 +987,27 @@ private struct EavesdropBroadcastDetailView: View {
                     }
                     .accessibilityIdentifier("eavesdrop-comment-\(comment.id.uuidString)")
                 }
-                HStack {
-                    TextField("Add a live comment", text: $commentDraft, axis: .vertical)
-                        .lineLimit(1...4)
-                        .accessibilityIdentifier("eavesdrop-comment-field-\(broadcast.id.uuidString)")
-                    Button {
-                        let submitted = commentDraft
-                        Task {
-                            if await store.addEavesdropComment(to: broadcast, body: submitted) {
-                                commentDraft = ""
+                if isActive {
+                    HStack {
+                        TextField("Add a live comment", text: $commentDraft, axis: .vertical)
+                            .lineLimit(1...4)
+                            .accessibilityIdentifier("eavesdrop-comment-field-\(broadcast.id.uuidString)")
+                        Button {
+                            let submitted = commentDraft
+                            Task {
+                                if await store.addEavesdropComment(to: broadcast, body: submitted) {
+                                    commentDraft = ""
+                                }
                             }
-                        }
-                    } label: { Image(systemName: "paperplane.fill") }
-                    .disabled(!isActive || commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .accessibilityIdentifier("eavesdrop-comment-post-\(broadcast.id.uuidString)")
+                        } label: { Image(systemName: "paperplane.fill") }
+                        .disabled(commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityIdentifier("eavesdrop-comment-post-\(broadcast.id.uuidString)")
+                    }
+                } else {
+                    Text("This conversation is read-only because the broadcast ended.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("eavesdrop-read-only-\(broadcast.id.uuidString)")
                 }
             }
         }

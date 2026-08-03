@@ -690,8 +690,12 @@ struct RemoteEavesdropBroadcastRow: Decodable {
     let trackIsExplicit: Bool?
     let startedAt: Date
     let expiresAt: Date
+    let endedAt: Date?
+    let effectiveEndedAt: Date?
+    let endedReason: String?
     let updatedAt: Date
     let sourceProvider: String?
+    let sourceProviderTrackID: String?
     let sourceDeepLink: URL?
     let viewerProvider: String?
     let viewerProviderTrackID: String?
@@ -712,8 +716,12 @@ struct RemoteEavesdropBroadcastRow: Decodable {
         case trackIsExplicit = "track_is_explicit"
         case startedAt = "started_at"
         case expiresAt = "expires_at"
+        case endedAt = "ended_at"
+        case effectiveEndedAt = "effective_ended_at"
+        case endedReason = "ended_reason"
         case updatedAt = "updated_at"
         case sourceProvider = "source_provider"
+        case sourceProviderTrackID = "source_provider_track_id"
         case sourceDeepLink = "source_deep_link"
         case viewerProvider = "viewer_provider"
         case viewerProviderTrackID = "viewer_provider_track_id"
@@ -1519,6 +1527,25 @@ final class HarmonyCollaborationRepository {
         try await authenticate()
         return try await client.rpc(
             "list_eavesdrop_broadcasts",
+            params: EavesdropBroadcastParameters(
+                p_broadcast_id: broadcastID,
+                p_viewer_provider: viewerProvider.map { $0 == .spotify ? "spotify" : "apple_music" },
+                p_storefront: storefront
+            )
+        ).execute().value
+    }
+
+    /// Resolves one durable broadcast snapshot for a notification. Unlike the
+    /// active feed RPC, this may return an ended broadcast when RLS still
+    /// permits the viewer to reopen its original conversation.
+    func eavesdropBroadcastSnapshotRows(
+        broadcastID: UUID,
+        viewerProvider: MusicProvider? = nil,
+        storefront: String = "us"
+    ) async throws -> [RemoteEavesdropBroadcastRow] {
+        try await authenticate()
+        return try await client.rpc(
+            "get_listening_broadcast_snapshot",
             params: EavesdropBroadcastParameters(
                 p_broadcast_id: broadcastID,
                 p_viewer_provider: viewerProvider.map { $0 == .spotify ? "spotify" : "apple_music" },

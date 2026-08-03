@@ -1567,6 +1567,23 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(merged.destinations[.appleMusic]?.providerTrackID, "123456789")
     }
 
+    func testEndedEavesdropSnapshotPreservesEndedStateBeforeExpiry() throws {
+        let endedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let row = eavesdropRow(
+            broadcastID: UUID(),
+            hostID: UUID(),
+            viewerProvider: nil,
+            viewerTrackID: nil,
+            expiresAt: .distantFuture,
+            endedAt: endedAt
+        )
+
+        let broadcast = try XCTUnwrap(mergedEavesdropBroadcasts([row]).first)
+
+        XCTAssertEqual(broadcast.endedAt, endedAt)
+        XCTAssertFalse(broadcast.isActive, "An explicitly ended snapshot must not allow live mutations or playback")
+    }
+
     func testClearingSessionRemovesRoomStateAndRestoresLocalOwnership() {
         let store = HarmonySessionStore()
 
@@ -1815,7 +1832,9 @@ final class HarmonyTests: XCTestCase {
         broadcastID: UUID,
         hostID: UUID,
         viewerProvider: String?,
-        viewerTrackID: String?
+        viewerTrackID: String?,
+        expiresAt: Date = Date(timeIntervalSince1970: 1_700_000_300),
+        endedAt: Date? = nil
     ) -> RemoteEavesdropBroadcastRow {
         RemoteEavesdropBroadcastRow(
             broadcastID: broadcastID,
@@ -1831,9 +1850,13 @@ final class HarmonyTests: XCTestCase {
             trackArtworkURL: nil,
             trackIsExplicit: false,
             startedAt: Date(timeIntervalSince1970: 1_700_000_000),
-            expiresAt: Date(timeIntervalSince1970: 1_700_000_300),
+            expiresAt: expiresAt,
+            endedAt: endedAt,
+            effectiveEndedAt: endedAt,
+            endedReason: endedAt == nil ? nil : "stopped",
             updatedAt: Date(timeIntervalSince1970: 1_700_000_000),
             sourceProvider: "apple_music",
+            sourceProviderTrackID: "source-track",
             sourceDeepLink: nil,
             viewerProvider: viewerProvider,
             viewerProviderTrackID: viewerTrackID,

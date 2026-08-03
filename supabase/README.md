@@ -107,10 +107,12 @@ newest inbox window without discarding already loaded older pages. Future APNs
 delivery should consume these rows rather than duplicate notification logic.
 
 Notification destination clients revalidate exact targets with RLS-filtered
-array reads. Visible profiles, reviews, lists, and active broadcasts return one
-row; private, deleted, blocked, stopped, or expired targets return an empty
-array rather than a stale cached object. A transport failure remains distinct
-from that terminal empty result so clients do not consume an unread event merely
+array reads. Visible profiles, reviews, and lists return one row or an empty
+terminal result. `get_listening_broadcast_snapshot(...)` additionally lets a
+broadcast host reopen a stopped/expired notification with the immutable original
+track/provider snapshot and conversation; nonhosts lose access when live consent
+ends. Active feed queries remain live-only. A transport failure remains distinct
+from a terminal empty result so clients do not consume an unread event merely
 because the network failed.
 
 `resolve_harmony_track(provider, provider_id, title, artist, ...)` resolves a provider catalog item to a canonical Harmony track before queue insertion. It is idempotent by provider and provider ID, so provider-specific search clients can contribute tracks even before a cross-provider matcher has added mappings for the other services.
