@@ -714,8 +714,233 @@ struct EavesdropProviderDestination: Equatable {
     let availability: ProviderAvailability
 }
 
+enum EavesdropHostPlaybackStatus: String, Codable, Equatable {
+    case playing
+    case paused
+    case ended
+}
+
+struct EavesdropPlaybackAnchor: Equatable {
+    enum State: String, Equatable {
+        case playing
+        case paused
+        case ended
+
+        init?(serverValue: String) {
+            switch serverValue {
+            case "listening", "playing": self = .playing
+            case "paused": self = .paused
+            case "ended", "stopped": self = .ended
+            default: return nil
+            }
+        }
+    }
+
+    let generation: Int64
+    let revision: Int64
+    let canonicalTrackID: UUID?
+    let state: State
+    let positionMilliseconds: Int
+    let anchoredAt: Date
+    let durationMilliseconds: Int
+    /// Server time returned with the snapshot. Clients use this to avoid
+    /// projecting from an uncorrected device clock during initial join.
+    let serverNow: Date?
+
+    init(
+        generation: Int64 = 0,
+        revision: Int64 = 0,
+        canonicalTrackID: UUID? = nil,
+        state: State,
+        positionMilliseconds: Int,
+        anchoredAt: Date,
+        durationMilliseconds: Int,
+        serverNow: Date? = nil
+    ) {
+        self.generation = generation
+        self.revision = revision
+        self.canonicalTrackID = canonicalTrackID
+        self.state = state
+        self.positionMilliseconds = positionMilliseconds
+        self.anchoredAt = anchoredAt
+        self.durationMilliseconds = durationMilliseconds
+        self.serverNow = serverNow
+    }
+
+    var sequence: Int64 { revision }
+    var status: EavesdropHostPlaybackStatus {
+        switch state {
+        case .playing: .playing
+        case .paused: .paused
+        case .ended: .ended
+        }
+    }
+    var position: TimeInterval { TimeInterval(positionMilliseconds) / 1_000 }
+    var effectiveAt: Date { anchoredAt }
+
+    func projectedPosition(at serverNow: Date) -> Int {
+        let base = max(0, positionMilliseconds)
+        let elapsed = state == .playing
+            ? max(0, Int(serverNow.timeIntervalSince(anchoredAt) * 1_000))
+            : 0
+        return min(max(0, durationMilliseconds), base + elapsed)
+    }
+}
+
+enum EavesdropSynchronizationPhase: Equatable {
+    case joining
+    case hostPaused
+    case waitingForNextTrack
+    case synchronized
+    case suspended
+    case reconnecting
+    case ended
+    case failed(String)
+}
+
+struct EavesdropSynchronizationState: Equatable {
+    var shareID: UUID? = nil
+    var broadcastID: UUID
+    var generation: Int64 = 0
+    let provider: MusicProvider
+    var phase: EavesdropSynchronizationPhase
+    var expectedPosition: TimeInterval
+    var lastSequence: Int64
+}
+
+enum EavesdropSynchronizationDirective: Equatable {
+    case play(position: TimeInterval)
+    case pause
+    case resume
+    case seek(position: TimeInterval)
+    case end
+}
+
+struct EavesdropSynchronizationEngine {
+    static let defaultDriftThreshold: TimeInterval = 1.5
+
+    private(set) var lastGeneration: Int64 = -1
+    private(set) var lastSequence: Int64 = -1
+    private(set) var lastAnchor: EavesdropPlaybackAnchor?
+    private(set) var lastReceivedAt: Date?
+    let driftThreshold: TimeInterval
+
+    init(driftThreshold: TimeInterval = Self.defaultDriftThreshold) {
+        self.driftThreshold = driftThreshold
+    }
+
+    mutating func accept(
+        _ anchor: EavesdropPlaybackAnchor,
+        local: ProviderPlaybackSnapshot?,
+        now: Date = Date()
+    ) -> [EavesdropSynchronizationDirective] {
+        guard anchor.generation > lastGeneration || (
+            anchor.generation == lastGeneration && anchor.sequence > lastSequence
+        ) else { return [] }
+        let trackChanged = lastAnchor?.canonicalTrackID != nil
+            && lastAnchor?.canonicalTrackID != anchor.canonicalTrackID
+        lastGeneration = anchor.generation
+        lastSequence = anchor.sequence
+        lastAnchor = anchor
+        lastReceivedAt = now
+        return directives(for: anchor, local: trackChanged ? nil : local, now: now, joining: local == nil || trackChanged)
+    }
+
+    func correction(
+        local: ProviderPlaybackSnapshot?,
+        now: Date = Date()
+    ) -> [EavesdropSynchronizationDirective] {
+        guard let anchor = lastAnchor else { return [] }
+        return directives(for: anchor, local: local, now: now, joining: false)
+    }
+
+    func expectedPosition(at now: Date = Date()) -> TimeInterval? {
+        guard let anchor = lastAnchor else { return nil }
+        let projectionClock: Date
+        if let serverNow = anchor.serverNow, let lastReceivedAt {
+            projectionClock = serverNow.addingTimeInterval(max(0, now.timeIntervalSince(lastReceivedAt)))
+        } else {
+            projectionClock = now
+        }
+        return TimeInterval(anchor.projectedPosition(at: projectionClock)) / 1_000
+    }
+
+    private func directives(
+        for anchor: EavesdropPlaybackAnchor,
+        local: ProviderPlaybackSnapshot?,
+        now: Date,
+        joining: Bool
+    ) -> [EavesdropSynchronizationDirective] {
+        let target = expectedPosition(at: now) ?? max(0, anchor.position)
+        if anchor.status == .ended { return [.end] }
+        guard let local else {
+            return anchor.status == .playing ? [.play(position: target)] : [.play(position: target), .pause]
+        }
+
+        var directives: [EavesdropSynchronizationDirective] = []
+        if anchor.status == .playing, !local.isPlaying { directives.append(.resume) }
+        if anchor.status == .paused, local.isPlaying { directives.append(.pause) }
+        let projectedLocal = local.position + (local.isPlaying ? max(0, now.timeIntervalSince(local.observedAt)) : 0)
+        if joining || abs(projectedLocal - target) > driftThreshold {
+            directives.append(.seek(position: target))
+        }
+        return directives
+    }
+}
+
+enum EavesdropJoinPlan: Equatable {
+    /// Resolve the viewer's provider mapping, start it locally, then seek to
+    /// this projected position. No action is sent to the broadcaster.
+    case synchronized(positionMilliseconds: Int, startsPaused: Bool)
+    /// Avoid launching the final moments of a song; stay joined for the next
+    /// generation instead.
+    case waitForNextTrack
+    /// Historical/recently-played content always begins independently and is
+    /// never represented as a live synchronized session.
+    case independentFromBeginning
+    case unavailable
+}
+
+enum EavesdropDriftCorrection: Equatable {
+    case none
+    case seek(toMilliseconds: Int)
+}
+
+func liveEavesdropJoinPlan(
+    anchor: EavesdropPlaybackAnchor,
+    serverNow: Date,
+    hasPlayableMapping: Bool,
+    minimumRemainingMilliseconds: Int = 5_000
+) -> EavesdropJoinPlan {
+    guard hasPlayableMapping, anchor.durationMilliseconds > 0 else { return .unavailable }
+    let target = anchor.projectedPosition(at: serverNow)
+    guard anchor.durationMilliseconds - target > max(0, minimumRemainingMilliseconds) else {
+        return .waitForNextTrack
+    }
+    return .synchronized(
+        positionMilliseconds: target,
+        startsPaused: anchor.state == .paused
+    )
+}
+
+func recentlyPlayedEavesdropPlan(hasPlayableMapping: Bool) -> EavesdropJoinPlan {
+    hasPlayableMapping ? .independentFromBeginning : .unavailable
+}
+
+func eavesdropDriftCorrection(
+    localPositionMilliseconds: Int,
+    targetPositionMilliseconds: Int,
+    toleranceMilliseconds: Int = 1_500
+) -> EavesdropDriftCorrection {
+    abs(localPositionMilliseconds - targetPositionMilliseconds) <= max(0, toleranceMilliseconds)
+        ? .none
+        : .seek(toMilliseconds: max(0, targetPositionMilliseconds))
+}
+
 struct EavesdropBroadcast: Identifiable {
     let id: UUID
+    var listeningShareID: UUID? = nil
+    var generation: Int64 = 0
     let hostProfileID: UUID
     let hostDisplayName: String
     let status: String
@@ -734,6 +959,7 @@ struct EavesdropBroadcast: Identifiable {
     let sourceProvider: String?
     let sourceDeepLink: URL?
     var destinations: [MusicProvider: EavesdropProviderDestination]
+    var playbackAnchor: EavesdropPlaybackAnchor? = nil
 
     var isActive: Bool {
         endedAt == nil && expiresAt > Date()
@@ -808,8 +1034,37 @@ func mergedEavesdropBroadcasts(_ rows: [RemoteEavesdropBroadcastRow]) -> [Eavesd
             endedReason: row.endedReason,
             sourceProvider: row.sourceProvider,
             sourceDeepLink: row.sourceDeepLink,
-            destinations: [:]
+            destinations: [:],
+            playbackAnchor: row.playbackSequence.flatMap { sequence in
+                guard let statusValue = row.playbackStatus,
+                      let state = EavesdropPlaybackAnchor.State(serverValue: statusValue),
+                      let position = row.playbackPositionMilliseconds,
+                      let effectiveAt = row.playbackEffectiveAt else { return nil }
+                return EavesdropPlaybackAnchor(
+                    revision: sequence,
+                    canonicalTrackID: row.canonicalTrackID,
+                    state: state,
+                    positionMilliseconds: position,
+                    anchoredAt: effectiveAt,
+                    durationMilliseconds: row.trackDurationMilliseconds ?? 0
+                )
+            }
         )
+        if let incomingSequence = row.playbackSequence,
+           incomingSequence > (broadcast.playbackAnchor?.sequence ?? -1),
+           let statusValue = row.playbackStatus,
+           let state = EavesdropPlaybackAnchor.State(serverValue: statusValue),
+           let position = row.playbackPositionMilliseconds,
+           let effectiveAt = row.playbackEffectiveAt {
+            broadcast.playbackAnchor = EavesdropPlaybackAnchor(
+                revision: incomingSequence,
+                canonicalTrackID: row.canonicalTrackID,
+                state: state,
+                positionMilliseconds: position,
+                anchoredAt: effectiveAt,
+                durationMilliseconds: row.trackDurationMilliseconds ?? 0
+            )
+        }
         if let providerName = row.viewerProvider,
            let providerID = row.viewerProviderTrackID,
            let provider = providerName == "spotify"
@@ -831,6 +1086,63 @@ func mergedEavesdropBroadcasts(_ rows: [RemoteEavesdropBroadcastRow]) -> [Eavesd
         if $0.startedAt == $1.startedAt { return $0.id.uuidString > $1.id.uuidString }
         return $0.startedAt > $1.startedAt
     }
+}
+
+func mergedLiveListenAlongs(_ rows: [RemoteLiveListenAlongState]) -> [EavesdropBroadcast] {
+    var broadcasts: [UUID: EavesdropBroadcast] = [:]
+    for row in rows {
+        let boundedPosition = Int(clamping: row.positionAnchorMilliseconds)
+        var broadcast = broadcasts[row.broadcastID] ?? EavesdropBroadcast(
+            id: row.broadcastID,
+            listeningShareID: row.listeningShareID,
+            generation: row.generation,
+            hostProfileID: row.hostProfileID,
+            hostDisplayName: row.hostDisplayName,
+            status: "listening",
+            visibility: .followers,
+            canonicalTrackID: row.canonicalTrackID,
+            title: row.trackTitle,
+            artist: row.trackArtist,
+            album: row.trackAlbum,
+            durationMilliseconds: row.trackDurationMilliseconds,
+            artworkURL: row.trackArtworkURL,
+            isExplicit: row.trackIsExplicit,
+            startedAt: row.anchorServerAt,
+            expiresAt: row.expiresAt,
+            endedAt: nil,
+            endedReason: nil,
+            sourceProvider: row.sourceProvider,
+            sourceDeepLink: row.sourceDeepLink,
+            destinations: [:],
+            playbackAnchor: EavesdropPlaybackAnchor(
+                generation: row.generation,
+                revision: row.clientSequence,
+                canonicalTrackID: row.canonicalTrackID,
+                state: EavesdropPlaybackAnchor.State(serverValue: row.playbackState) ?? .paused,
+                positionMilliseconds: boundedPosition,
+                anchoredAt: row.anchorServerAt,
+                durationMilliseconds: row.trackDurationMilliseconds,
+                serverNow: row.serverNow
+            )
+        )
+        if let providerName = row.viewerProvider,
+           let providerID = row.viewerProviderTrackID,
+           let provider = providerName == "spotify"
+            ? MusicProvider.spotify
+            : (providerName == "apple_music" ? MusicProvider.appleMusic : nil) {
+            let availability: ProviderAvailability = row.viewerAvailability == "playable"
+                ? .playable
+                : (row.viewerAvailability == "open_in_provider" ? .openInProvider : .unavailable)
+            broadcast.destinations[provider] = EavesdropProviderDestination(
+                provider: provider,
+                providerTrackID: providerID,
+                deepLink: row.viewerProviderDeepLink,
+                availability: availability
+            )
+        }
+        broadcasts[row.broadcastID] = broadcast
+    }
+    return broadcasts.values.sorted { $0.startedAt > $1.startedAt }
 }
 
 enum CatalogSearchPurpose: Hashable {
@@ -883,6 +1195,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published private(set) var eavesdropFeed: [EavesdropBroadcast] = []
     @Published private(set) var eavesdropDetails: [UUID: EavesdropBroadcastDetailState] = [:]
     @Published private(set) var mutatingEavesdropBroadcastIDs: Set<UUID> = []
+    @Published private(set) var eavesdropSynchronization: EavesdropSynchronizationState?
     @Published private(set) var isRefreshingListeningFeed = false
     @Published private(set) var isPublishingListeningPresence = false
     @Published private(set) var isEavesdropping = false
@@ -985,7 +1298,18 @@ final class HarmonySessionStore: ObservableObject {
     private let collaborationRepository = HarmonyCollaborationRepository()
     private let spotifyRemote: any SpotifyPlaybackProviding
     private let appleMusicProvider: any AppleMusicProviding
+    private var eavesdropSynchronizationEngine = EavesdropSynchronizationEngine()
+    private var synchronizedEavesdropBroadcast: EavesdropBroadcast?
+    private var eavesdropDriftTask: Task<Void, Never>?
+    /// Invalidates provider work that crossed an `await` after the host moved
+    /// to a newer playback state (or the listener left the share).
+    private var eavesdropPlaybackOperationID: UUID?
+    private var listeningShareHeartbeatTask: Task<Void, Never>?
+    private var listeningShareGeneration: Int64 = 0
+    private var listeningShareClientSequence: Int64 = 0
+    private var listeningShareProvider: MusicProvider?
     private var spotifyLoadedProviderID: String?
+    private var appleMusicLoadedProviderID: String?
     private lazy var queueCommandCoordinator = SerializedQueueCommandCoordinator(
         execute: { [weak self] command, revision, mappings in
             guard let self, self.remoteSessionID == command.sessionID else {
@@ -1202,7 +1526,10 @@ final class HarmonySessionStore: ObservableObject {
         do {
             socialSettings = try await collaborationRepository.updateSocialSettings(updated)
             if category == .liveListening, visibility == .privateOnly, isEavesdropping {
-                try await collaborationRepository.stopListeningPresence()
+                _ = try await collaborationRepository.stopListeningShare()
+                try? await collaborationRepository.stopListeningPresence()
+                listeningShareHeartbeatTask?.cancel()
+                listeningShareHeartbeatTask = nil
                 isEavesdropping = false
                 await refreshListeningFeed()
             }
@@ -1512,6 +1839,23 @@ final class HarmonySessionStore: ObservableObject {
             } catch {
                 collaborationMessage = "Spotify playback command failed: \(error.localizedDescription)"
             }
+        } else if appleMusicProvider.connectionState.isConnected {
+            do {
+                if playbackState == .playing {
+                    let didPlayCurrentTrack = try await playCurrentAppleMusicTrackIfAvailable()
+                    if !didPlayCurrentTrack {
+                        _ = try await appleMusicProvider.perform(.resume)
+                    }
+                } else {
+                    _ = try await appleMusicProvider.perform(.pause)
+                }
+                collaborationMessage = playbackState == .playing ? "Playing on Apple Music" : "Apple Music paused"
+            } catch {
+                collaborationMessage = "Apple Music playback command failed: \(error.localizedDescription)"
+            }
+        }
+        if isEavesdropping {
+            _ = await publishCurrentLiveListeningState(trackChanged: false)
         }
         guard let remoteSessionID else { return }
         await applyRemotePlayback(sessionID: remoteSessionID, expectedRevision: queueRevision - 1)
@@ -1524,6 +1868,7 @@ final class HarmonySessionStore: ObservableObject {
         queue.removeFirst()
         playbackState = .playing
         spotifyLoadedProviderID = nil
+        appleMusicLoadedProviderID = nil
         record(.skip)
 
         if spotifyPlaybackConnection.isConnected {
@@ -1536,9 +1881,22 @@ final class HarmonySessionStore: ObservableObject {
             } catch {
                 collaborationMessage = "Spotify skip failed: \(error.localizedDescription)"
             }
+        } else if appleMusicProvider.connectionState.isConnected {
+            do {
+                if try await playCurrentAppleMusicTrackIfAvailable() {
+                    collaborationMessage = "Skipped to the next Harmony track"
+                } else {
+                    collaborationMessage = "Next track is unavailable on Apple Music"
+                }
+            } catch {
+                collaborationMessage = "Apple Music skip failed: \(error.localizedDescription)"
+            }
         }
         if recordsHarmonyPlays, let completedTrack {
             await recordListeningHistory(completedTrack)
+        }
+        if isEavesdropping {
+            _ = await publishCurrentLiveListeningState(trackChanged: true)
         }
         guard let remoteSessionID else { return }
         do {
@@ -1650,8 +2008,13 @@ final class HarmonySessionStore: ObservableObject {
         defer { isRefreshingListeningFeed = false }
         do {
             var rows = try await collaborationRepository.eavesdropBroadcastRows()
+            var liveRows = (try? await collaborationRepository.liveListenAlongs()) ?? []
             if providerState(for: .spotify) == .connected {
                 rows += (try? await collaborationRepository.eavesdropBroadcastRows(
+                    viewerProvider: .spotify,
+                    storefront: "global"
+                )) ?? []
+                liveRows += (try? await collaborationRepository.liveListenAlongs(
                     viewerProvider: .spotify,
                     storefront: "global"
                 )) ?? []
@@ -1661,10 +2024,25 @@ final class HarmonySessionStore: ObservableObject {
                     viewerProvider: .appleMusic,
                     storefront: "us"
                 )) ?? []
+                liveRows += (try? await collaborationRepository.liveListenAlongs(
+                    viewerProvider: .appleMusic,
+                    storefront: "us"
+                )) ?? []
             }
             let userID = try await collaborationRepository.currentUserID()
-            eavesdropFeed = mergedEavesdropBroadcasts(rows)
+            let live = mergedLiveListenAlongs(liveRows)
+            let liveIDs = Set(live.map(\.id))
+            eavesdropFeed = live + mergedEavesdropBroadcasts(rows).filter { !liveIDs.contains($0.id) }
             isEavesdropping = eavesdropFeed.contains { $0.hostProfileID == userID }
+            if let synchronization = eavesdropSynchronization,
+               let updated = eavesdropFeed.first(where: {
+                   if let shareID = synchronization.shareID {
+                       return $0.listeningShareID == shareID
+                   }
+                   return $0.id == synchronization.broadcastID
+               }) {
+                await applyEavesdropPlaybackUpdate(updated)
+            }
         } catch {
             collaborationMessage = "Could not refresh listening activity."
         }
@@ -1737,27 +2115,240 @@ final class HarmonySessionStore: ObservableObject {
         guard broadcast.isActive,
               !mutatingEavesdropBroadcastIDs.contains(broadcast.id),
               let track = broadcast.harmonyTrack,
-              broadcast.destinations[provider] != nil else { return false }
+              broadcast.destinations[provider]?.availability == .playable else { return false }
+        guard let anchor = broadcast.playbackAnchor else {
+            collaborationMessage = "Live synchronization is unavailable for this broadcast. You can still open the track independently."
+            return false
+        }
         mutatingEavesdropBroadcastIDs.insert(broadcast.id)
         defer { mutatingEavesdropBroadcastIDs.remove(broadcast.id) }
         do {
+            let operationID = UUID()
+            eavesdropPlaybackOperationID = operationID
             let adapter: any HarmonyMusicProvider = provider == .spotify ? spotifyRemote : appleMusicProvider
-            let resolved = try await adapter.resolve(track: track)
-            let result = try await adapter.perform(.play(resolved))
-            switch result {
-            case .applied:
-                collaborationMessage = "Started in \(provider.name)"
+            eavesdropSynchronizationEngine = EavesdropSynchronizationEngine()
+            synchronizedEavesdropBroadcast = broadcast
+            eavesdropSynchronization = EavesdropSynchronizationState(
+                shareID: broadcast.listeningShareID,
+                broadcastID: broadcast.id,
+                generation: broadcast.generation,
+                provider: provider,
+                phase: .joining,
+                expectedPosition: anchor.position,
+                lastSequence: -1
+            )
+            let directives = eavesdropSynchronizationEngine.accept(anchor, local: nil)
+            guard eavesdropPlaybackOperationID == operationID else { return false }
+            let joinClock = anchor.serverNow ?? Date()
+            if liveEavesdropJoinPlan(
+                anchor: anchor,
+                serverNow: joinClock,
+                hasPlayableMapping: true
+            ) == .waitForNextTrack {
+                eavesdropSynchronization?.phase = .waitingForNextTrack
+                eavesdropSynchronization?.lastSequence = anchor.sequence
+                eavesdropSynchronization?.generation = anchor.generation
+                eavesdropSynchronization?.expectedPosition = eavesdropSynchronizationEngine.expectedPosition() ?? anchor.position
+                collaborationMessage = "Waiting for \(broadcast.hostDisplayName)’s next track"
+                startEavesdropDriftMonitor()
                 return true
-            case .requiresOpenInProvider:
-                collaborationMessage = "Open \(provider.name) to listen to this track."
-                return false
-            case .unavailable(let reason):
-                collaborationMessage = reason
-                return false
+            }
+            if anchor.state == .paused {
+                // Do not briefly start audible playback merely to mirror a
+                // paused host. The track is resolved and started at the fresh
+                // projected position when the host resumes.
+                _ = try? await adapter.perform(.pause)
+                guard eavesdropPlaybackOperationID == operationID else { return false }
+                eavesdropSynchronization?.phase = .hostPaused
+                eavesdropSynchronization?.lastSequence = anchor.sequence
+                eavesdropSynchronization?.generation = anchor.generation
+                eavesdropSynchronization?.expectedPosition = anchor.position
+                collaborationMessage = "Joined \(broadcast.hostDisplayName)’s paused live share"
+                startEavesdropDriftMonitor()
+                return true
+            }
+            let resolved = try await adapter.resolve(track: track)
+            guard eavesdropPlaybackOperationID == operationID else { return false }
+            try await executeEavesdropDirectives(directives, adapter: adapter, resolvedTrack: resolved)
+            guard eavesdropPlaybackOperationID == operationID else { return false }
+            guard eavesdropSynchronization?.phase != .ended else { return false }
+            eavesdropSynchronization?.phase = .synchronized
+            eavesdropSynchronization?.lastSequence = anchor.sequence
+            eavesdropSynchronization?.generation = anchor.generation
+            eavesdropSynchronization?.expectedPosition = eavesdropSynchronizationEngine.expectedPosition() ?? anchor.position
+            collaborationMessage = "Listening live with \(broadcast.hostDisplayName) in \(provider.name)"
+            startEavesdropDriftMonitor()
+            return true
+        } catch {
+            eavesdropSynchronization?.phase = .failed(error.localizedDescription)
+            collaborationMessage = "Could not join live playback in \(provider.name): \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func leaveEavesdropPlayback() {
+        eavesdropPlaybackOperationID = nil
+        eavesdropDriftTask?.cancel()
+        eavesdropDriftTask = nil
+        synchronizedEavesdropBroadcast = nil
+        eavesdropSynchronization = nil
+        eavesdropSynchronizationEngine = EavesdropSynchronizationEngine()
+        collaborationMessage = "Left live playback"
+    }
+
+    func resumeEavesdropPlayback() async {
+        guard eavesdropSynchronization != nil else { return }
+        eavesdropSynchronization?.phase = .reconnecting
+        await correctEavesdropDrift()
+    }
+
+    private func applyEavesdropPlaybackUpdate(_ broadcast: EavesdropBroadcast) async {
+        guard let state = eavesdropSynchronization,
+              (state.shareID.map { $0 == broadcast.listeningShareID } ?? (state.broadcastID == broadcast.id)),
+              let anchor = broadcast.playbackAnchor,
+              let track = broadcast.harmonyTrack else { return }
+        let operationID = UUID()
+        eavesdropPlaybackOperationID = operationID
+        let priorTrackID = synchronizedEavesdropBroadcast?.canonicalTrackID
+        if state.phase == .waitingForNextTrack,
+           priorTrackID == broadcast.canonicalTrackID {
+            _ = eavesdropSynchronizationEngine.accept(anchor, local: nil)
+            eavesdropSynchronization?.lastSequence = anchor.sequence
+            eavesdropSynchronization?.generation = anchor.generation
+            eavesdropSynchronization?.expectedPosition = eavesdropSynchronizationEngine.expectedPosition() ?? anchor.position
+            return
+        }
+        let adapter: any HarmonyMusicProvider = state.provider == .spotify ? spotifyRemote : appleMusicProvider
+        do {
+            if anchor.state == .paused,
+               state.phase == .hostPaused || priorTrackID != broadcast.canonicalTrackID {
+                _ = eavesdropSynchronizationEngine.accept(anchor, local: nil)
+                _ = try? await adapter.perform(.pause)
+                guard eavesdropPlaybackOperationID == operationID else { return }
+                synchronizedEavesdropBroadcast = broadcast
+                eavesdropSynchronization?.broadcastID = broadcast.id
+                eavesdropSynchronization?.phase = .hostPaused
+                eavesdropSynchronization?.lastSequence = anchor.sequence
+                eavesdropSynchronization?.generation = anchor.generation
+                eavesdropSynchronization?.expectedPosition = anchor.position
+                return
+            }
+            let local = try await adapter.playbackSnapshot()
+            guard eavesdropPlaybackOperationID == operationID else { return }
+            let wasWaitingForResume = state.phase == .hostPaused
+            let directives = eavesdropSynchronizationEngine.accept(
+                anchor,
+                local: wasWaitingForResume ? nil : local
+            )
+            guard !directives.isEmpty else { return }
+            let resolved = try await adapter.resolve(track: track)
+            guard eavesdropPlaybackOperationID == operationID else { return }
+            synchronizedEavesdropBroadcast = broadcast
+            eavesdropSynchronization?.broadcastID = broadcast.id
+            try await executeEavesdropDirectives(directives, adapter: adapter, resolvedTrack: resolved)
+            guard eavesdropPlaybackOperationID == operationID else { return }
+            eavesdropSynchronization?.lastSequence = anchor.sequence
+            eavesdropSynchronization?.generation = anchor.generation
+            eavesdropSynchronization?.expectedPosition = eavesdropSynchronizationEngine.expectedPosition() ?? anchor.position
+            if eavesdropSynchronization?.phase != .ended {
+                eavesdropSynchronization?.phase = .synchronized
             }
         } catch {
-            collaborationMessage = "Could not start \(provider.name): \(error.localizedDescription)"
-            return false
+            eavesdropSynchronization?.phase = adapter.connectionState.isConnected
+                ? .failed(error.localizedDescription)
+                : .suspended
+        }
+    }
+
+    private func executeEavesdropDirectives(
+        _ directives: [EavesdropSynchronizationDirective],
+        adapter: any HarmonyMusicProvider,
+        resolvedTrack: ResolvedProviderTrack
+    ) async throws {
+        for directive in directives {
+            let result: ProviderPlaybackResult
+            switch directive {
+            case .play(let position):
+                result = try await adapter.perform(.play(resolvedTrack))
+                guard result == .applied else { throw ProviderAdapterError.unsupportedPlayback(adapter.provider) }
+                if position > 0 { _ = try await adapter.perform(.seek(position: position)) }
+            case .pause:
+                result = try await adapter.perform(.pause)
+            case .resume:
+                result = try await adapter.perform(.resume)
+            case .seek(let position):
+                result = try await adapter.perform(.seek(position: position))
+            case .end:
+                eavesdropSynchronization?.phase = .ended
+                eavesdropDriftTask?.cancel()
+                return
+            }
+            if case .unavailable = result {
+                throw ProviderAdapterError.unsupportedPlayback(adapter.provider)
+            }
+            if result == .requiresOpenInProvider {
+                throw ProviderAdapterError.unsupportedPlayback(adapter.provider)
+            }
+        }
+    }
+
+    private func startEavesdropDriftMonitor() {
+        eavesdropDriftTask?.cancel()
+        eavesdropDriftTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard !Task.isCancelled else { return }
+                await self?.correctEavesdropDrift()
+            }
+        }
+    }
+
+    private func correctEavesdropDrift() async {
+        guard let state = eavesdropSynchronization,
+              let broadcast = synchronizedEavesdropBroadcast,
+              let track = broadcast.harmonyTrack else { return }
+        if let shareID = state.shareID {
+            do {
+                guard let remote = try await collaborationRepository.liveListenAlongState(
+                    shareID: shareID,
+                    viewerProvider: state.provider,
+                    storefront: state.provider == .spotify ? "global" : "us"
+                ), let fresh = mergedLiveListenAlongs([remote]).first else {
+                    eavesdropSynchronization?.phase = .ended
+                    eavesdropDriftTask?.cancel()
+                    collaborationMessage = "Live playback is no longer available"
+                    return
+                }
+                await applyEavesdropPlaybackUpdate(fresh)
+                return
+            } catch {
+                eavesdropSynchronization?.phase = .reconnecting
+                return
+            }
+        }
+        if state.phase == .waitingForNextTrack || state.phase == .hostPaused { return }
+        let adapter: any HarmonyMusicProvider = state.provider == .spotify ? spotifyRemote : appleMusicProvider
+        guard adapter.connectionState.isConnected else {
+            eavesdropSynchronization?.phase = .suspended
+            return
+        }
+        do {
+            if eavesdropSynchronization?.phase == .suspended {
+                eavesdropSynchronization?.phase = .reconnecting
+            }
+            let local = try await adapter.playbackSnapshot()
+            if local == nil, eavesdropSynchronization?.phase == .synchronized { return }
+            let directives = eavesdropSynchronizationEngine.correction(local: local)
+            let resolved = try await adapter.resolve(track: track)
+            try await executeEavesdropDirectives(directives, adapter: adapter, resolvedTrack: resolved)
+            eavesdropSynchronization?.expectedPosition = eavesdropSynchronizationEngine.expectedPosition() ?? state.expectedPosition
+            if eavesdropSynchronization?.phase != .ended {
+                eavesdropSynchronization?.phase = .synchronized
+            }
+        } catch {
+            eavesdropSynchronization?.phase = adapter.connectionState.isConnected
+                ? .failed(error.localizedDescription)
+                : .suspended
         }
     }
 
@@ -4381,23 +4972,86 @@ final class HarmonySessionStore: ObservableObject {
         defer { isPublishingListeningPresence = false }
         do {
             if isEavesdropping {
-                try await collaborationRepository.stopListeningPresence()
+                _ = try await collaborationRepository.stopListeningShare()
+                try? await collaborationRepository.stopListeningPresence()
+                listeningShareHeartbeatTask?.cancel()
+                listeningShareHeartbeatTask = nil
                 isEavesdropping = false
                 listeningFeed.removeAll { $0.profileID == currentMember.id }
                 collaborationMessage = "Stopped sharing listening activity"
             } else {
-                guard let track = nowPlaying?.track else {
+                guard nowPlaying?.track != nil else {
                     collaborationMessage = "Start a Harmony queue track before sharing listening activity."
                     return
                 }
-                try await collaborationRepository.publishListeningPresence(track: track, visibility: liveSocialVisibility)
-                collaborationMessage = liveSocialVisibility == .followers
-                    ? "Sharing this track with approved followers for five minutes"
-                    : "Saved a private now-listening entry for five minutes"
+                guard liveSocialVisibility == .followers else {
+                    collaborationMessage = "Choose Followers for Live listening before starting a share."
+                    return
+                }
+                listeningShareGeneration = -1
+                listeningShareClientSequence = 0
+                guard await publishCurrentLiveListeningState(trackChanged: true) else {
+                    collaborationMessage = "Connect observable playback in Spotify or Apple Music before sharing live."
+                    return
+                }
+                isEavesdropping = true
+                startListeningShareHeartbeat()
+                collaborationMessage = "Sharing synchronized live playback with approved followers"
                 await refreshListeningFeed()
             }
         } catch {
             collaborationMessage = "Could not update listening activity: \(error.localizedDescription)"
+        }
+    }
+
+    private func publishCurrentLiveListeningState(trackChanged: Bool) async -> Bool {
+        guard let track = nowPlaying?.track else { return false }
+        let candidates: [MusicProvider] = listeningShareProvider.map { [$0] } ?? [.spotify, .appleMusic]
+        for provider in candidates {
+            guard providerState(for: provider) == .connected,
+                  let mapping = track.mappings.first(where: {
+                      $0.provider == provider && $0.availability == .playable
+                  }) else { continue }
+            let adapter: any HarmonyMusicProvider = provider == .spotify ? spotifyRemote : appleMusicProvider
+            guard let snapshot = try? await adapter.playbackSnapshot() else { continue }
+            if let observedTrackID = snapshot.providerTrackID,
+               observedTrackID != mapping.providerID {
+                continue
+            }
+            if trackChanged {
+                listeningShareGeneration += 1
+                listeningShareClientSequence = 0
+            }
+            listeningShareClientSequence += 1
+            do {
+                _ = try await collaborationRepository.publishListeningState(
+                    track: track,
+                    sourceProvider: provider,
+                    sourceProviderTrackID: mapping.providerID,
+                    playbackState: snapshot.isPlaying ? .playing : .paused,
+                    observedPositionMilliseconds: Int64(max(0, snapshot.position) * 1_000),
+                    generation: listeningShareGeneration,
+                    clientSequence: listeningShareClientSequence
+                )
+                listeningShareProvider = provider
+                return true
+            } catch {
+                return false
+            }
+        }
+        return false
+    }
+
+    private func startListeningShareHeartbeat() {
+        listeningShareHeartbeatTask?.cancel()
+        listeningShareHeartbeatTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                guard !Task.isCancelled, let self, self.isEavesdropping else { return }
+                if !(await self.publishCurrentLiveListeningState(trackChanged: false)) {
+                    self.collaborationMessage = "Live sharing is reconnecting to playback"
+                }
+            }
         }
     }
 
@@ -5501,6 +6155,20 @@ final class HarmonySessionStore: ObservableObject {
             let resolved = try await spotifyRemote.resolve(track: track)
             _ = try await spotifyRemote.perform(.play(resolved))
             spotifyLoadedProviderID = mapping.providerID
+        }
+        return true
+    }
+
+    private func playCurrentAppleMusicTrackIfAvailable() async throws -> Bool {
+        guard let track = nowPlaying?.track,
+              let mapping = track.mappings.first(where: { $0.provider == .appleMusic && $0.availability == .playable }),
+              !mapping.providerID.isEmpty else { return false }
+        if appleMusicLoadedProviderID == mapping.providerID {
+            _ = try await appleMusicProvider.perform(.resume)
+        } else {
+            let resolved = try await appleMusicProvider.resolve(track: track)
+            _ = try await appleMusicProvider.perform(.play(resolved))
+            appleMusicLoadedProviderID = mapping.providerID
         }
         return true
     }

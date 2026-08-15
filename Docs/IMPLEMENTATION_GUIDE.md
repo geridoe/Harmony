@@ -12,18 +12,19 @@ Harmony is a provider-neutral coordination service for shared music. A
 Members contribute to one canonical queue. Each person listens using their own
 music-service account and device.
 
-Harmony coordinates queue intent and social activity; it never carries,
-rebroadcasts, or synchronizes audio. “Listen along” therefore means each
-device resolves the intended track in its provider. It is deliberately not a
-promise of sample-accurate synchronization.
+Harmony coordinates queue intent, social activity, and—under the target
+Eavesdrop contract—a short-lived playback timeline. It never carries or
+rebroadcasts audio. “Listen along” means each device resolves and controls its
+own licensed provider player; synchronization is bounded best effort and never
+a promise of sample-accurate audio.
 
 The social layer adds four opt-in experiences:
 
 | Feature | What it stores | What it does not do |
 | --- | --- | --- |
 | Collaborative rooms | canonical queue and playback intent | stream audio or share a provider account |
-| Eavesdrop | short-lived now-listening card and provider deep link | expose position, library, or audio |
-| Listening history | user-approved Harmony plays and explicit provider imports | silently scrape a provider history |
+| Eavesdrop | current card/conversation plus target ephemeral server-stamped playback anchor | expose provider identity/tokens, library, host controls, historical position, or audio |
+| Listening history | user-approved Harmony plays and explicit provider imports | silently scrape a provider history or represent a past play as live sync |
 | Reviews | track/album rating, review, comments, and reactions | require a subscription or connected provider |
 
 The architectural rule throughout is: the server owns shared state and
@@ -89,13 +90,19 @@ playback/catalog interaction.
   reachable without revealing people who blocked the caller.
 - Blocking removes both follow edges and hides each person’s follower-visible
   data immediately through database policy.
-- Eavesdrop is an explicit foreground action. It publishes one active card per
-  user, backed by a durable broadcast identity so comments, Heart/Fire/Headphones
-  reactions, moderation, and notifications cannot attach to a later song by
-  mistake. The active window has a five-minute normal lifetime and a
-  database-enforced ten-minute maximum. Users can stop it explicitly. Spotify
-  “now playing” is an explicit snapshot, not a background polling system. See
-  `EAVESDROP_DESIGN.md` for the identity, cross-provider, and privacy contract.
+- The deployed Eavesdrop foundation is an explicit foreground action. It
+  publishes one active card per user, backed by a durable per-track broadcast
+  identity so comments, Heart/Fire/Headphones reactions, moderation, and
+  notifications cannot attach to a later song by mistake. Its compatibility
+  snapshot uses the existing five-minute lifetime/ten-minute ceiling and can be
+  stopped explicitly.
+- The clarified Eavesdrop target is a read-only remote listen-along for accepted
+  followers on their own provider/device. Server-stamped playback anchors,
+  short heartbeat freshness, late join/seek, multi-track generations, drift
+  correction, and joined-state UI replace the active-card playback path without
+  granting host queue or transport authority. Recently played starts
+  independently from zero and is never synchronized. See
+  `EAVESDROP_DESIGN.md` for the low-level contract and acceptance matrix.
 - Listening history supports manual dated track logs with Relisten, normalized
   tags, and a per-entry audience; opt-in Harmony skip logging; and explicit
   import of up to 20 recently played Spotify tracks. Imported plays are exactly

@@ -27,5 +27,9 @@
 	</array>
 	<key>NSAppleMusicUsageDescription</key>
 	<string>Harmony uses Apple Music to search for songs and play your shared session queue.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 </dict>
 </plist>

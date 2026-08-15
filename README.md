@@ -10,6 +10,14 @@ Harmony stores canonical music intent and social data. Spotify or Apple Music
 remains responsible for licensed playback on each listener's own account and
 device; Harmony never rebroadcasts audio.
 
+Eavesdrop's target experience is a read-only remote listen-along to an
+opted-in followed member. Each follower plays on their own provider/device;
+Harmony supplies only canonical identity and an ephemeral server-anchored
+timeline for late join and bounded drift correction. Recently played remains
+independent playback from the beginning. The deployed foundation currently
+provides live cards, cross-provider resolution, and conversation identity while
+the position-aware path is implemented.
+
 ## Current product surfaces
 
 | iOS destination | Responsibility |

@@ -811,7 +811,7 @@ private struct EavesdropBroadcastDetailView: View {
                         Text("Shared by \(broadcast.hostDisplayName)").font(.caption)
                     }
                 }
-                Text("Harmony starts the same song in your service. It does not stream audio or guarantee synchronized position.")
+                Text("Harmony follows the host’s live play, pause, seek, and track changes on your connected service. The host remains in control; Harmony never relays audio.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -826,24 +826,47 @@ private struct EavesdropBroadcastDetailView: View {
                     Text("No connected-provider mapping is available for this recording.")
                         .foregroundStyle(.secondary)
                 }
+                if isActive && broadcast.playbackAnchor == nil {
+                    Text("This share has no authoritative live playback anchor. Open the track independently or wait for the host to share playback from Harmony.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
                 ForEach(MusicProvider.allCases) { provider in
                     if let destination = broadcast.destinations[provider] {
-                        Button {
-                            Task { _ = await store.startEavesdropPlayback(broadcast, provider: provider) }
-                        } label: {
-                            Label("Play in \(provider.name)", systemImage: "play.fill")
+                        if isActive && broadcast.playbackAnchor != nil && destination.availability == .playable {
+                            Button {
+                                Task { _ = await store.startEavesdropPlayback(broadcast, provider: provider) }
+                            } label: {
+                                Label("Join live in \(provider.name)", systemImage: "ear.fill")
+                            }
+                            .disabled(store.mutatingEavesdropBroadcastIDs.contains(broadcast.id))
+                            .accessibilityIdentifier("eavesdrop-join-live-\(provider.rawValue)-\(broadcast.id.uuidString)")
                         }
-                        .disabled(!isActive || store.mutatingEavesdropBroadcastIDs.contains(broadcast.id))
-                        .accessibilityIdentifier("eavesdrop-listen-\(provider.rawValue)-\(broadcast.id.uuidString)")
                         if let deepLink = destination.deepLink {
                             Link(destination: deepLink) {
                                 Label(
-                                    isActive ? "Open in \(provider.name)" : "Open track in \(provider.name)",
+                                    isActive
+                                        ? "Open independently in \(provider.name)"
+                                        : "Play from beginning in \(provider.name)",
                                     systemImage: "arrow.up.right.square"
                                 )
                             }
                         }
                     }
+                }
+                if let synchronization = store.eavesdropSynchronization,
+                   synchronization.broadcastID == broadcast.id {
+                    Label(
+                        synchronizationLabel(synchronization.phase),
+                        systemImage: "waveform.path"
+                    )
+                    .accessibilityIdentifier("eavesdrop-sync-status-\(broadcast.id.uuidString)")
+                    if canReconnect(synchronization.phase) {
+                        Button("Rejoin live") { Task { await store.resumeEavesdropPlayback() } }
+                            .accessibilityIdentifier("eavesdrop-sync-reconnect-\(broadcast.id.uuidString)")
+                    }
+                    Button("Stop listening", role: .destructive) { store.leaveEavesdropPlayback() }
+                        .accessibilityIdentifier("eavesdrop-sync-stop-\(broadcast.id.uuidString)")
                 }
             }
 
@@ -931,6 +954,27 @@ private struct EavesdropBroadcastDetailView: View {
         .disabled(!isActive || store.mutatingEavesdropBroadcastIDs.contains(broadcast.id))
         .accessibilityLabel("\(label), \(count) reactions")
         .accessibilityIdentifier("eavesdrop-reaction-\(kind)-\(broadcast.id.uuidString)")
+    }
+
+    private func synchronizationLabel(_ phase: EavesdropSynchronizationPhase) -> String {
+        switch phase {
+        case .joining: "Correcting position…"
+        case .hostPaused: "Host paused"
+        case .waitingForNextTrack: "Waiting for the next track…"
+        case .synchronized:
+            broadcast.playbackAnchor?.state == .paused ? "Host paused" : "In sync · Host controls playback"
+        case .suspended: "Playback connection suspended"
+        case .reconnecting: "Reconnecting…"
+        case .ended: "Live playback ended"
+        case .failed(let message): "Out of sync · \(message)"
+        }
+    }
+
+    private func canReconnect(_ phase: EavesdropSynchronizationPhase) -> Bool {
+        switch phase {
+        case .suspended, .failed: true
+        default: false
+        }
     }
 }
 

@@ -4,7 +4,10 @@
 
 Harmony is a shared, provider-neutral music room. A Conductor creates a room, invites collaborators, and owns playback control. Everyone can contribute to a single Harmony queue, while each listener can resolve that queue through their own Apple Music or Spotify account when supported.
 
-Harmony coordinates _intent_ and social state; it does not host, transmit, or synchronize audio streams.
+Harmony coordinates _intent_, social state, and short-lived playback timing;
+it does not host, transmit, or synchronize audio streams. Eavesdrop may align
+independent provider players to one server-anchored timeline without carrying
+audio or exposing control of the host's provider.
 
 ## 2. MVP boundaries
 
@@ -75,6 +78,17 @@ Search each connected catalog concurrently, normalize results into a single cano
 
 Each provider has states: disconnected, connecting, connected, unavailable, permission denied, subscription required, or open-in-provider only. Include a clear disconnect action and explain that the provider authorizes only the user’s device.
 
+### Listen / Eavesdrop
+
+Listening now shows active shares from accepted followed members anywhere, not
+only nearby party-room members. **Join live** resolves the canonical track in
+the viewer's own provider, projects a server-timestamped host position, and
+best-effort corrects local drift across later host states. The view exposes no
+host queue or transport control. Recently played is a separate history surface:
+its action starts independent playback from the beginning and never claims a
+live subscription. Full timing, privacy, failure, and acceptance semantics are
+in `EAVESDROP_DESIGN.md`.
+
 ### Reviews
 
 Reviews is a first-class root destination for durable music opinion, separate
@@ -117,6 +131,10 @@ stays refreshed and the user receives explicit Retry or Dismiss actions.
 | Queue-only | Queue only | Member opens their provider manually |
 
 “Personal listen-along” is intentionally approximate. The UI must say “Ready to listen” rather than claim universal synchronization.
+
+This room playback mode is distinct from social Eavesdrop. Eavesdrop follows a
+specific opted-in member's ephemeral provider timeline, remains read-only with
+respect to that member, and never joins or edits the member's party queue.
 
 ## 6. Track matching model
 

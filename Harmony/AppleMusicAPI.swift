@@ -98,8 +98,20 @@ final class AppleMusicProvider: AppleMusicProviding {
             try await player.play()
         case .skip:
             try await player.skipToNextEntry()
+        case .seek(let position):
+            player.playbackTime = max(0, position)
         }
         return .applied
+    }
+
+    func playbackSnapshot() async throws -> ProviderPlaybackSnapshot? {
+        guard connectionState.isConnected else { throw ProviderAdapterError.notConnected(provider) }
+        return ProviderPlaybackSnapshot(
+            providerTrackID: nil,
+            position: player.playbackTime,
+            isPlaying: player.state.playbackStatus == .playing,
+            observedAt: Date()
+        )
     }
 
     private func song(for providerID: String) async throws -> MusicKit.Song {

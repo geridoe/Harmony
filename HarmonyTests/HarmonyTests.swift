@@ -173,6 +173,23 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(spotify.commands, [.pause, .resume])
     }
 
+    func testTogglePlaybackUsesConnectedAppleMusicWhenSpotifyPlaybackIsDisconnected() async {
+        let spotify = RecordingSpotifyProvider()
+        spotify.connectionState = .disconnected
+        let appleMusic = RecordingAppleMusicProvider()
+        let store = HarmonySessionStore(spotifyRemote: spotify, appleMusicProvider: appleMusic)
+        await store.connectAppleMusic()
+
+        await store.togglePlayback()
+        await store.togglePlayback()
+
+        XCTAssertEqual(appleMusic.commands.count, 2)
+        XCTAssertEqual(appleMusic.commands.first, .pause)
+        guard let lastCommand = appleMusic.commands.last, case .play = lastCommand else {
+            return XCTFail("Expected Apple Music to load the current Harmony track")
+        }
+    }
+
     func testSkipAdvancesCanonicalQueueAndRevision() async {
         let store = HarmonySessionStore()
         let previousNext = store.queue[1]
@@ -1942,6 +1959,258 @@ final class HarmonyTests: XCTestCase {
         XCTAssertFalse(broadcast.isActive, "An explicitly ended snapshot must not allow live mutations or playback")
     }
 
+    func testLiveEavesdropLateJoinProjectsServerAnchoredPosition() {
+        let anchoredAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let anchor = EavesdropPlaybackAnchor(
+            state: .playing,
+            positionMilliseconds: 42_000,
+            anchoredAt: anchoredAt,
+            durationMilliseconds: 240_000
+        )
+
+        XCTAssertEqual(
+            liveEavesdropJoinPlan(
+                anchor: anchor,
+                serverNow: anchoredAt.addingTimeInterval(8.25),
+                hasPlayableMapping: true
+            ),
+            .synchronized(positionMilliseconds: 50_250, startsPaused: false)
+        )
+    }
+
+    func testLiveListenAlongProjectionDecodesStableShareAndGeneration() throws {
+        let shareID = UUID()
+        let broadcastID = UUID()
+        let hostID = UUID()
+        let trackID = UUID()
+        let json = """
+        [{
+          "listening_share_id":"\(shareID.uuidString)",
+          "broadcast_id":"\(broadcastID.uuidString)",
+          "generation":7,"client_sequence":3,
+          "host_profile_id":"\(hostID.uuidString)","host_display_name":"DJ",
+          "canonical_track_id":"\(trackID.uuidString)","track_title":"Song","track_artist":"Artist",
+          "track_album":null,"track_duration_ms":180000,"track_artwork_url":null,"track_is_explicit":false,
+          "playback_state":"playing","position_anchor_ms":42000,
+          "anchor_server_at":"2026-08-14T20:00:00Z","server_now":"2026-08-14T20:00:02Z",
+          "projected_position_ms":44000,"heartbeat_at":"2026-08-14T20:00:02Z","expires_at":"2026-08-14T20:00:32Z",
+          "source_provider":"spotify","source_provider_track_id":"spotify:track:abc","source_deep_link":null,
+          "viewer_provider":"apple_music","viewer_provider_track_id":"123","viewer_provider_deep_link":"music://song/123","viewer_availability":"playable"
+        }]
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let rows = try decoder.decode([RemoteLiveListenAlongState].self, from: Data(json.utf8))
+        let broadcast = try XCTUnwrap(mergedLiveListenAlongs(rows).first)
+
+        XCTAssertEqual(broadcast.listeningShareID, shareID)
+        XCTAssertEqual(broadcast.id, broadcastID)
+        XCTAssertEqual(broadcast.generation, 7)
+        XCTAssertEqual(broadcast.playbackAnchor?.generation, 7)
+        XCTAssertEqual(broadcast.playbackAnchor?.sequence, 3)
+        XCTAssertEqual(broadcast.destinations[.appleMusic]?.providerTrackID, "123")
+    }
+
+    func testLiveEavesdropPausedJoinDoesNotAdvanceAnchor() {
+        let anchoredAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let anchor = EavesdropPlaybackAnchor(
+            state: .paused,
+            positionMilliseconds: 63_500,
+            anchoredAt: anchoredAt,
+            durationMilliseconds: 240_000
+        )
+
+        XCTAssertEqual(
+            liveEavesdropJoinPlan(
+                anchor: anchor,
+                serverNow: anchoredAt.addingTimeInterval(30),
+                hasPlayableMapping: true
+            ),
+            .synchronized(positionMilliseconds: 63_500, startsPaused: true)
+        )
+    }
+
+    func testLiveEavesdropNearEndWaitsForNextTrack() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let anchor = EavesdropPlaybackAnchor(
+            state: .playing,
+            positionMilliseconds: 198_000,
+            anchoredAt: now,
+            durationMilliseconds: 200_000
+        )
+
+        XCTAssertEqual(
+            liveEavesdropJoinPlan(anchor: anchor, serverNow: now, hasPlayableMapping: true),
+            .waitForNextTrack
+        )
+    }
+
+    func testRecentlyPlayedPlaybackIsIndependentRatherThanLiveSync() {
+        XCTAssertEqual(
+            recentlyPlayedEavesdropPlan(hasPlayableMapping: true),
+            .independentFromBeginning
+        )
+        XCTAssertEqual(
+            recentlyPlayedEavesdropPlan(hasPlayableMapping: false),
+            .unavailable
+        )
+    }
+
+    func testEavesdropDriftCorrectionUsesTolerance() {
+        XCTAssertEqual(
+            eavesdropDriftCorrection(
+                localPositionMilliseconds: 80_000,
+                targetPositionMilliseconds: 81_400
+            ),
+            .none
+        )
+        XCTAssertEqual(
+            eavesdropDriftCorrection(
+                localPositionMilliseconds: 80_000,
+                targetPositionMilliseconds: 83_000
+            ),
+            .seek(toMilliseconds: 83_000)
+        )
+    }
+
+    func testEavesdropSynchronizationIgnoresStaleAndDuplicateRevisions() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        var engine = EavesdropSynchronizationEngine()
+        let current = EavesdropPlaybackAnchor(
+            revision: 4,
+            state: .paused,
+            positionMilliseconds: 40_000,
+            anchoredAt: now,
+            durationMilliseconds: 180_000
+        )
+        let stale = EavesdropPlaybackAnchor(
+            revision: 3,
+            state: .playing,
+            positionMilliseconds: 10_000,
+            anchoredAt: now,
+            durationMilliseconds: 180_000
+        )
+
+        XCTAssertFalse(engine.accept(current, local: nil, now: now).isEmpty)
+        XCTAssertTrue(engine.accept(current, local: nil, now: now).isEmpty)
+        XCTAssertTrue(engine.accept(stale, local: nil, now: now).isEmpty)
+        XCTAssertEqual(engine.lastSequence, 4)
+        XCTAssertEqual(engine.expectedPosition(at: now.addingTimeInterval(30)), 40)
+    }
+
+    func testEavesdropSynchronizationAcceptsNewGenerationWhenSequenceRestarts() {
+        let now = Date(timeIntervalSince1970: 2_000)
+        var engine = EavesdropSynchronizationEngine()
+        let first = EavesdropPlaybackAnchor(
+            generation: 4,
+            revision: 99,
+            canonicalTrackID: UUID(),
+            state: .playing,
+            positionMilliseconds: 10_000,
+            anchoredAt: now,
+            durationMilliseconds: 180_000,
+            serverNow: now
+        )
+        let next = EavesdropPlaybackAnchor(
+            generation: 5,
+            revision: 1,
+            canonicalTrackID: UUID(),
+            state: .playing,
+            positionMilliseconds: 500,
+            anchoredAt: now,
+            durationMilliseconds: 200_000,
+            serverNow: now
+        )
+
+        XCTAssertFalse(engine.accept(first, local: nil, now: now).isEmpty)
+        XCTAssertFalse(engine.accept(next, local: nil, now: now).isEmpty)
+        XCTAssertEqual(engine.lastGeneration, 5)
+        XCTAssertEqual(engine.lastSequence, 1)
+    }
+
+    func testEavesdropSynchronizationUsesServerClockAndCorrectsOnlyMaterialDrift() {
+        let deviceNow = Date(timeIntervalSince1970: 2_000_000_000)
+        let serverNow = Date(timeIntervalSince1970: 1_800_000_010)
+        var engine = EavesdropSynchronizationEngine(driftThreshold: 1.5)
+        let anchor = EavesdropPlaybackAnchor(
+            revision: 1,
+            state: .playing,
+            positionMilliseconds: 20_000,
+            anchoredAt: serverNow.addingTimeInterval(-5),
+            durationMilliseconds: 180_000,
+            serverNow: serverNow
+        )
+        _ = engine.accept(anchor, local: nil, now: deviceNow)
+        XCTAssertEqual(engine.expectedPosition(at: deviceNow), 25)
+
+        let close = ProviderPlaybackSnapshot(
+            providerTrackID: nil,
+            position: 25.8,
+            isPlaying: true,
+            observedAt: deviceNow
+        )
+        XCTAssertTrue(engine.correction(local: close, now: deviceNow).isEmpty)
+
+        let drifting = ProviderPlaybackSnapshot(
+            providerTrackID: nil,
+            position: 29,
+            isPlaying: true,
+            observedAt: deviceNow
+        )
+        XCTAssertEqual(engine.correction(local: drifting, now: deviceNow), [.seek(position: 25)])
+    }
+
+    func testEavesdropSynchronizationFollowsPauseTrackChangeAndEndReadOnly() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let firstTrackID = UUID()
+        var engine = EavesdropSynchronizationEngine()
+        let playing = EavesdropPlaybackAnchor(
+            revision: 1,
+            canonicalTrackID: firstTrackID,
+            state: .playing,
+            positionMilliseconds: 12_000,
+            anchoredAt: now,
+            durationMilliseconds: 180_000
+        )
+        _ = engine.accept(playing, local: nil, now: now)
+
+        let paused = EavesdropPlaybackAnchor(
+            revision: 2,
+            canonicalTrackID: firstTrackID,
+            state: .paused,
+            positionMilliseconds: 15_000,
+            anchoredAt: now,
+            durationMilliseconds: 180_000
+        )
+        let localPlaying = ProviderPlaybackSnapshot(
+            providerTrackID: nil,
+            position: 15,
+            isPlaying: true,
+            observedAt: now
+        )
+        XCTAssertEqual(engine.accept(paused, local: localPlaying, now: now), [.pause])
+
+        let nextTrack = EavesdropPlaybackAnchor(
+            revision: 3,
+            canonicalTrackID: UUID(),
+            state: .playing,
+            positionMilliseconds: 2_000,
+            anchoredAt: now,
+            durationMilliseconds: 200_000
+        )
+        XCTAssertEqual(engine.accept(nextTrack, local: localPlaying, now: now), [.play(position: 2)])
+
+        let ended = EavesdropPlaybackAnchor(
+            revision: 4,
+            canonicalTrackID: nextTrack.canonicalTrackID,
+            state: .ended,
+            positionMilliseconds: 3_000,
+            anchoredAt: now,
+            durationMilliseconds: 200_000
+        )
+        XCTAssertEqual(engine.accept(ended, local: localPlaying, now: now), [.end])
+    }
+
     func testClearingSessionRemovesRoomStateAndRestoresLocalOwnership() {
         let store = HarmonySessionStore()
 
@@ -2421,7 +2690,11 @@ final class HarmonyTests: XCTestCase {
             viewerProvider: viewerProvider,
             viewerProviderTrackID: viewerTrackID,
             viewerProviderDeepLink: nil,
-            viewerAvailability: "playable"
+            viewerAvailability: "playable",
+            playbackSequence: nil,
+            playbackStatus: nil,
+            playbackPositionMilliseconds: nil,
+            playbackEffectiveAt: nil
         )
     }
 }
@@ -2451,6 +2724,7 @@ private final class RecordingAppleMusicProvider: AppleMusicProviding {
     let provider: MusicProvider = .appleMusic
     var connectionState: ProviderConnectionState = .disconnected
     let capabilities = ProviderCapabilities.appleMusicMock
+    var commands: [ProviderPlaybackCommand] = []
 
     func authorize() async throws {
         connectionState = .connected(accountName: "Test Apple Music")
@@ -2471,5 +2745,8 @@ private final class RecordingAppleMusicProvider: AppleMusicProviding {
         ResolvedProviderTrack(provider: .appleMusic, providerID: "apple-test-track", title: track.title, artist: track.artist, playbackCapability: .queuePlayback)
     }
 
-    func perform(_ command: ProviderPlaybackCommand) async throws -> ProviderPlaybackResult { .applied }
+    func perform(_ command: ProviderPlaybackCommand) async throws -> ProviderPlaybackResult {
+        commands.append(command)
+        return .applied
+    }
 }

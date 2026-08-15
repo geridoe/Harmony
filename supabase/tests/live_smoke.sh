@@ -711,6 +711,105 @@ done
 for canonical_pid in "${canonical_pids[@]}"; do wait "$canonical_pid"; done
 jq -s -e 'unique | length == 1' "$smoke_tmp"/concurrent-canonical-*.json >/dev/null
 
+stage="synchronized Eavesdrop share lifecycle"
+rpc "$conductor_token" publish_listening_state \
+  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_source_provider\":\"apple_music\",\"p_source_provider_track_id\":\"harmony-cross-isrc-apple\",\"p_playback_state\":\"playing\",\"p_observed_position_ms\":10123,\"p_duration_ms\":180000,\"p_generation\":0,\"p_client_sequence\":0}" \
+  "$smoke_tmp/listen-along-start.json"
+listen_along_share_id="$(jq -er '.[0].listening_share_id' "$smoke_tmp/listen-along-start.json")"
+listen_along_first_broadcast_id="$(jq -er '.[0].broadcast_id' "$smoke_tmp/listen-along-start.json")"
+jq -e '
+  length == 1 and .[0].generation == 0 and .[0].client_sequence == 0
+  and .[0].playback_state == "playing"
+  and .[0].position_anchor_ms == 10000 and .[0].idempotent == false
+  and .[0].anchor_server_at != null and .[0].heartbeat_at != null
+  and .[0].expires_at != null
+' "$smoke_tmp/listen-along-start.json" >/dev/null
+
+rpc "$collaborator_token" get_live_listen_along_state \
+  "{\"p_listening_share_id\":\"$listen_along_share_id\",\"p_viewer_provider\":\"spotify\",\"p_storefront\":\"global\"}" \
+  "$smoke_tmp/listen-along-follower-state.json"
+jq -e --arg share "$listen_along_share_id" --arg host "$conductor_id" '
+  length == 1 and .[0].listening_share_id == $share
+  and .[0].host_profile_id == $host and .[0].generation == 0
+  and .[0].canonical_track_id != null
+  and .[0].track_title == "Cross Provider Recording"
+  and .[0].source_provider == "apple_music"
+  and .[0].viewer_provider == "spotify"
+  and (.[] | .viewer_provider_track_id | length) > 0
+  and .[0].projected_position_ms >= .[0].position_anchor_ms
+  and .[0].projected_position_ms <= .[0].track_duration_ms
+  and .[0].server_now != null
+' "$smoke_tmp/listen-along-follower-state.json" >/dev/null
+rpc "$collaborator_token" list_live_listen_alongs \
+  '{"p_viewer_provider":"spotify","p_storefront":"global"}' \
+  "$smoke_tmp/listen-along-follower-list.json"
+jq -e --arg share "$listen_along_share_id" \
+  'any(.[]; .listening_share_id == $share)' \
+  "$smoke_tmp/listen-along-follower-list.json" >/dev/null
+rpc "$directory_token" get_live_listen_along_state \
+  "{\"p_listening_share_id\":\"$listen_along_share_id\",\"p_viewer_provider\":\"spotify\",\"p_storefront\":\"global\"}" \
+  "$smoke_tmp/listen-along-nonfollower-state.json"
+[[ "$(jq 'length' "$smoke_tmp/listen-along-nonfollower-state.json")" -eq 0 ]]
+
+listen_along_patch_status="$(rest_patch_status "$collaborator_token" \
+  "listening_presence?profile_id=eq.$conductor_id" \
+  '{"position_anchor_ms":0}' \
+  "$smoke_tmp/listen-along-forbidden-follower-write.json")"
+[[ "$listen_along_patch_status" == "401" || "$listen_along_patch_status" == "403" ]]
+
+rpc "$conductor_token" publish_listening_state \
+  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_source_provider\":\"apple_music\",\"p_source_provider_track_id\":\"harmony-cross-isrc-apple\",\"p_playback_state\":\"paused\",\"p_observed_position_ms\":22222,\"p_duration_ms\":180000,\"p_generation\":0,\"p_client_sequence\":1}" \
+  "$smoke_tmp/listen-along-pause.json"
+jq -e --arg broadcast "$listen_along_first_broadcast_id" '
+  length == 1 and .[0].broadcast_id == $broadcast
+  and .[0].generation == 0 and .[0].client_sequence == 1
+  and .[0].playback_state == "paused"
+  and .[0].position_anchor_ms == 22250 and .[0].idempotent == false
+' "$smoke_tmp/listen-along-pause.json" >/dev/null
+rpc "$conductor_token" publish_listening_state \
+  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_source_provider\":\"apple_music\",\"p_source_provider_track_id\":\"harmony-cross-isrc-apple\",\"p_playback_state\":\"paused\",\"p_observed_position_ms\":22222,\"p_duration_ms\":180000,\"p_generation\":0,\"p_client_sequence\":1}" \
+  "$smoke_tmp/listen-along-duplicate.json"
+jq -e --arg broadcast "$listen_along_first_broadcast_id" '
+  length == 1 and .[0].broadcast_id == $broadcast
+  and .[0].idempotent == true and .[0].position_anchor_ms == 22250
+' "$smoke_tmp/listen-along-duplicate.json" >/dev/null
+listen_along_stale_status="$(rpc_status "$conductor_token" publish_listening_state \
+  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_source_provider\":\"apple_music\",\"p_source_provider_track_id\":\"harmony-cross-isrc-apple\",\"p_playback_state\":\"playing\",\"p_observed_position_ms\":1000,\"p_duration_ms\":180000,\"p_generation\":0,\"p_client_sequence\":0}" \
+  "$smoke_tmp/listen-along-stale.json")"
+[[ "$listen_along_stale_status" == "409" ]]
+jq -e '.details == "listening_state_stale"' \
+  "$smoke_tmp/listen-along-stale.json" >/dev/null
+
+rpc "$conductor_token" publish_listening_state \
+  "{\"p_canonical_track_id\":\"$canonical_track_id\",\"p_source_provider\":\"apple_music\",\"p_source_provider_track_id\":\"harmony-smoke-apple-track\",\"p_playback_state\":\"playing\",\"p_observed_position_ms\":500,\"p_duration_ms\":180000,\"p_generation\":1,\"p_client_sequence\":0}" \
+  "$smoke_tmp/listen-along-next-track.json"
+listen_along_second_broadcast_id="$(jq -er '.[0].broadcast_id' "$smoke_tmp/listen-along-next-track.json")"
+[[ "$listen_along_second_broadcast_id" != "$listen_along_first_broadcast_id" ]]
+jq -e --arg share "$listen_along_share_id" '
+  length == 1 and .[0].listening_share_id == $share
+  and .[0].generation == 1 and .[0].client_sequence == 0
+  and .[0].position_anchor_ms == 500
+' "$smoke_tmp/listen-along-next-track.json" >/dev/null
+rpc "$conductor_token" get_listening_broadcast_snapshot \
+  "{\"p_broadcast_id\":\"$listen_along_first_broadcast_id\",\"p_viewer_provider\":\"apple_music\",\"p_storefront\":\"us\"}" \
+  "$smoke_tmp/listen-along-old-host-snapshot.json"
+jq -e '
+  length == 1 and .[0].ended_at != null
+  and .[0].ended_reason == "superseded"
+' "$smoke_tmp/listen-along-old-host-snapshot.json" >/dev/null
+rpc "$collaborator_token" get_listening_broadcast_snapshot \
+  "{\"p_broadcast_id\":\"$listen_along_first_broadcast_id\",\"p_viewer_provider\":\"apple_music\",\"p_storefront\":\"us\"}" \
+  "$smoke_tmp/listen-along-old-follower-snapshot.json"
+[[ "$(jq 'length' "$smoke_tmp/listen-along-old-follower-snapshot.json")" -eq 0 ]]
+
+rpc "$conductor_token" stop_listening_share '{}' \
+  "$smoke_tmp/listen-along-stop.json"
+[[ "$(jq -er '.' "$smoke_tmp/listen-along-stop.json")" == "true" ]]
+rpc "$collaborator_token" get_live_listen_along_state \
+  "{\"p_listening_share_id\":\"$listen_along_share_id\",\"p_viewer_provider\":\"apple_music\",\"p_storefront\":\"us\"}" \
+  "$smoke_tmp/listen-along-ended-state.json"
+[[ "$(jq 'length' "$smoke_tmp/listen-along-ended-state.json")" -eq 0 ]]
+
 stage="follower listening visibility"
 presence_expires_at="$(date -u -v+5M '+%Y-%m-%dT%H:%M:%SZ')"
 rpc "$collaborator_token" publish_listening_presence \

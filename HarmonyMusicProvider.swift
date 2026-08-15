@@ -205,6 +205,14 @@ enum ProviderPlaybackCommand: Hashable {
     case pause
     case resume
     case skip
+    case seek(position: TimeInterval)
+}
+
+struct ProviderPlaybackSnapshot: Equatable {
+    let providerTrackID: String?
+    let position: TimeInterval
+    let isPlaying: Bool
+    let observedAt: Date
 }
 
 enum ProviderPlaybackResult: Hashable {
@@ -238,6 +246,11 @@ protocol HarmonyMusicProvider: AnyObject {
     func search(query: String) async throws -> [HarmonyTrack]
     func resolve(track: HarmonyTrack) async throws -> ResolvedProviderTrack
     func perform(_ command: ProviderPlaybackCommand) async throws -> ProviderPlaybackResult
+    func playbackSnapshot() async throws -> ProviderPlaybackSnapshot?
+}
+
+extension HarmonyMusicProvider {
+    func playbackSnapshot() async throws -> ProviderPlaybackSnapshot? { nil }
 }
 
 @MainActor
@@ -340,6 +353,7 @@ final class SpotifyAppRemoteProvider: NSObject, SpotifyPlaybackProviding, @preco
     let capabilities = ProviderCapabilities.spotifyMock
     private var connectionContinuation: CheckedContinuation<Void, Error>?
     private var connectionTimeoutTask: Task<Void, Never>?
+    private var latestPlaybackSnapshot: ProviderPlaybackSnapshot?
 
     private lazy var configuration = SPTConfiguration(
         clientID: HarmonySupabaseConfiguration.spotifyClientID,
@@ -445,8 +459,17 @@ final class SpotifyAppRemoteProvider: NSObject, SpotifyPlaybackProviding, @preco
             try await invoke { callback in playerAPI.resume(callback) }
         case .skip:
             try await invoke { callback in playerAPI.skip(toNext: callback) }
+        case .seek(let position):
+            try await invoke { callback in
+                playerAPI.seek(toPosition: max(0, Int(position * 1_000)), callback: callback)
+            }
         }
         return .applied
+    }
+
+    func playbackSnapshot() async throws -> ProviderPlaybackSnapshot? {
+        guard appRemote.isConnected else { throw ProviderAdapterError.notConnected(provider) }
+        return latestPlaybackSnapshot
     }
 
     func appRemoteDidEstablishConnection(_ appRemote: SPTAppRemote) {
@@ -467,7 +490,14 @@ final class SpotifyAppRemoteProvider: NSObject, SpotifyPlaybackProviding, @preco
         if let error { finishConnection(with: .failure(error)) }
     }
 
-    func playerStateDidChange(_ playerState: SPTAppRemotePlayerState) {}
+    func playerStateDidChange(_ playerState: SPTAppRemotePlayerState) {
+        latestPlaybackSnapshot = ProviderPlaybackSnapshot(
+            providerTrackID: playerState.track.uri,
+            position: TimeInterval(playerState.playbackPosition) / 1_000,
+            isPlaying: !playerState.isPaused,
+            observedAt: Date()
+        )
+    }
 
     private func finishConnection(with result: Result<Void, Error>) {
         guard let continuation = connectionContinuation else { return }

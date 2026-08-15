@@ -7,6 +7,7 @@ private enum HarmonyRepositoryError: LocalizedError {
     case reviewCommentDeletionUnavailable
     case invalidTrackRatingSaveResult
     case profileUnavailable
+    case invalidLiveListeningState
 
     var errorDescription: String? {
         switch self {
@@ -20,6 +21,8 @@ private enum HarmonyRepositoryError: LocalizedError {
             "Harmony could not read the saved track rating."
         case .profileUnavailable:
             "This profile is unavailable."
+        case .invalidLiveListeningState:
+            "Harmony could not read the published live playback state."
         }
     }
 }
@@ -281,6 +284,25 @@ private struct EavesdropBroadcastParameters: Encodable {
     let p_broadcast_id: UUID?
     let p_viewer_provider: String?
     let p_storefront: String
+}
+private struct LiveListenAlongParameters: Encodable {
+    let p_viewer_provider: String?
+    let p_storefront: String
+}
+private struct LiveListenAlongStateParameters: Encodable {
+    let p_listening_share_id: UUID
+    let p_viewer_provider: String?
+    let p_storefront: String
+}
+private struct PublishListeningStateParameters: Encodable {
+    let p_canonical_track_id: UUID
+    let p_source_provider: String?
+    let p_source_provider_track_id: String?
+    let p_playback_state: String
+    let p_observed_position_ms: Int64
+    let p_duration_ms: Int
+    let p_generation: Int64
+    let p_client_sequence: Int64
 }
 private struct EavesdropCommentParameters: Encodable {
     let p_broadcast_id: UUID
@@ -784,6 +806,10 @@ struct RemoteEavesdropBroadcastRow: Decodable {
     let viewerProviderTrackID: String?
     let viewerProviderDeepLink: URL?
     let viewerAvailability: String?
+    let playbackSequence: Int64?
+    let playbackStatus: String?
+    let playbackPositionMilliseconds: Int?
+    let playbackEffectiveAt: Date?
 
     enum CodingKeys: String, CodingKey {
         case status, visibility
@@ -810,6 +836,97 @@ struct RemoteEavesdropBroadcastRow: Decodable {
         case viewerProviderTrackID = "viewer_provider_track_id"
         case viewerProviderDeepLink = "viewer_provider_deep_link"
         case viewerAvailability = "viewer_availability"
+        case playbackSequence = "playback_sequence"
+        case playbackStatus = "playback_status"
+        case playbackPositionMilliseconds = "playback_position_ms"
+        case playbackEffectiveAt = "playback_effective_at"
+    }
+}
+
+/// RLS-filtered, ephemeral synchronization state. This is intentionally
+/// separate from the durable per-track social broadcast snapshot.
+struct RemoteLiveListenAlongState: Decodable, Equatable {
+    let listeningShareID: UUID
+    let broadcastID: UUID
+    let generation: Int64
+    let clientSequence: Int64
+    let hostProfileID: UUID
+    let hostDisplayName: String
+    let canonicalTrackID: UUID
+    let trackTitle: String
+    let trackArtist: String
+    let trackAlbum: String?
+    let trackDurationMilliseconds: Int
+    let trackArtworkURL: URL?
+    let trackIsExplicit: Bool
+    let playbackState: String
+    let positionAnchorMilliseconds: Int64
+    let anchorServerAt: Date
+    let serverNow: Date
+    let projectedPositionMilliseconds: Int64
+    let heartbeatAt: Date
+    let expiresAt: Date
+    let sourceProvider: String?
+    let sourceProviderTrackID: String?
+    let sourceDeepLink: URL?
+    let viewerProvider: String?
+    let viewerProviderTrackID: String?
+    let viewerProviderDeepLink: URL?
+    let viewerAvailability: String?
+
+    enum CodingKeys: String, CodingKey {
+        case listeningShareID = "listening_share_id"
+        case broadcastID = "broadcast_id"
+        case generation, clientSequence = "client_sequence"
+        case hostProfileID = "host_profile_id"
+        case hostDisplayName = "host_display_name"
+        case canonicalTrackID = "canonical_track_id"
+        case trackTitle = "track_title"
+        case trackArtist = "track_artist"
+        case trackAlbum = "track_album"
+        case trackDurationMilliseconds = "track_duration_ms"
+        case trackArtworkURL = "track_artwork_url"
+        case trackIsExplicit = "track_is_explicit"
+        case playbackState = "playback_state"
+        case positionAnchorMilliseconds = "position_anchor_ms"
+        case anchorServerAt = "anchor_server_at"
+        case serverNow = "server_now"
+        case projectedPositionMilliseconds = "projected_position_ms"
+        case heartbeatAt = "heartbeat_at"
+        case expiresAt = "expires_at"
+        case sourceProvider = "source_provider"
+        case sourceProviderTrackID = "source_provider_track_id"
+        case sourceDeepLink = "source_deep_link"
+        case viewerProvider = "viewer_provider"
+        case viewerProviderTrackID = "viewer_provider_track_id"
+        case viewerProviderDeepLink = "viewer_provider_deep_link"
+        case viewerAvailability = "viewer_availability"
+    }
+}
+
+struct RemotePublishedListeningState: Decodable, Equatable {
+    let listeningShareID: UUID
+    let broadcastID: UUID
+    let generation: Int64
+    let clientSequence: Int64
+    let playbackState: String
+    let positionAnchorMilliseconds: Int64
+    let anchorServerAt: Date
+    let heartbeatAt: Date
+    let expiresAt: Date
+    let idempotent: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case listeningShareID = "listening_share_id"
+        case broadcastID = "broadcast_id"
+        case generation
+        case clientSequence = "client_sequence"
+        case playbackState = "playback_state"
+        case positionAnchorMilliseconds = "position_anchor_ms"
+        case anchorServerAt = "anchor_server_at"
+        case heartbeatAt = "heartbeat_at"
+        case expiresAt = "expires_at"
+        case idempotent
     }
 }
 
@@ -1917,6 +2034,92 @@ final class HarmonyCollaborationRepository {
                 p_storefront: storefront
             )
         ).execute().value
+    }
+
+    func liveListenAlongs(
+        viewerProvider: MusicProvider? = nil,
+        storefront: String = "us"
+    ) async throws -> [RemoteLiveListenAlongState] {
+        try await authenticate()
+        return try await client.rpc(
+            "list_live_listen_alongs",
+            params: LiveListenAlongParameters(
+                p_viewer_provider: viewerProvider.map { $0 == .spotify ? "spotify" : "apple_music" },
+                p_storefront: storefront
+            )
+        ).execute().value
+    }
+
+    func liveListenAlongState(
+        shareID: UUID,
+        viewerProvider: MusicProvider? = nil,
+        storefront: String = "us"
+    ) async throws -> RemoteLiveListenAlongState? {
+        try await authenticate()
+        let rows: [RemoteLiveListenAlongState] = try await client.rpc(
+            "get_live_listen_along_state",
+            params: LiveListenAlongStateParameters(
+                p_listening_share_id: shareID,
+                p_viewer_provider: viewerProvider.map { $0 == .spotify ? "spotify" : "apple_music" },
+                p_storefront: storefront
+            )
+        ).execute().value
+        return rows.first
+    }
+
+    func publishListeningState(
+        canonicalTrackID: UUID,
+        sourceProvider: MusicProvider?,
+        sourceProviderTrackID: String?,
+        playbackState: EavesdropPlaybackAnchor.State,
+        observedPositionMilliseconds: Int64,
+        durationMilliseconds: Int,
+        generation: Int64,
+        clientSequence: Int64
+    ) async throws -> RemotePublishedListeningState {
+        try await authenticate()
+        let rows: [RemotePublishedListeningState] = try await client.rpc(
+            "publish_listening_state",
+            params: PublishListeningStateParameters(
+                p_canonical_track_id: canonicalTrackID,
+                p_source_provider: sourceProvider.map { $0 == .spotify ? "spotify" : "apple_music" },
+                p_source_provider_track_id: sourceProviderTrackID,
+                p_playback_state: playbackState == .paused ? "paused" : "playing",
+                p_observed_position_ms: max(0, observedPositionMilliseconds),
+                p_duration_ms: max(1, durationMilliseconds),
+                p_generation: max(0, generation),
+                p_client_sequence: max(0, clientSequence)
+            )
+        ).execute().value
+        guard let row = rows.first else { throw HarmonyRepositoryError.invalidLiveListeningState }
+        return row
+    }
+
+    func publishListeningState(
+        track: HarmonyTrack,
+        sourceProvider: MusicProvider?,
+        sourceProviderTrackID: String?,
+        playbackState: EavesdropPlaybackAnchor.State,
+        observedPositionMilliseconds: Int64,
+        generation: Int64,
+        clientSequence: Int64
+    ) async throws -> RemotePublishedListeningState {
+        let canonicalTrackID = try await canonicalTrackID(for: track)
+        return try await publishListeningState(
+            canonicalTrackID: canonicalTrackID,
+            sourceProvider: sourceProvider,
+            sourceProviderTrackID: sourceProviderTrackID,
+            playbackState: playbackState,
+            observedPositionMilliseconds: observedPositionMilliseconds,
+            durationMilliseconds: max(1, Int(track.duration * 1_000)),
+            generation: generation,
+            clientSequence: clientSequence
+        )
+    }
+
+    func stopListeningShare() async throws -> Bool {
+        try await authenticate()
+        return try await client.rpc("stop_listening_share").execute().value
     }
 
     /// Resolves one durable broadcast snapshot for a notification. Unlike the
