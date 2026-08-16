@@ -84,8 +84,14 @@ class HarmonyUITests: XCTestCase {
 
         XCTAssertTrue(app.navigationBars["Connections"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Harmony profile"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Social privacy"].waitForExistence(timeout: 5))
-        app.swipeUp()
+        let socialPrivacy = app.staticTexts["Social privacy"]
+        for _ in 0..<8 where !socialPrivacy.exists {
+            app.swipeUp()
+        }
+        XCTAssertTrue(socialPrivacy.waitForExistence(timeout: 5))
+        for _ in 0..<8 where !app.staticTexts["Your listening services"].exists {
+            app.swipeUp()
+        }
         XCTAssertTrue(app.staticTexts["Your listening services"].waitForExistence(timeout: 5))
     }
 
@@ -95,7 +101,7 @@ class HarmonyUITests: XCTestCase {
 
         app.tabBars.buttons["Connections"].tap()
         let privacy = app.descendants(matching: .any)["music-shelf-privacy"]
-        for _ in 0..<4 where !privacy.exists { app.swipeUp() }
+        for _ in 0..<8 where !privacy.exists { app.swipeUp() }
         XCTAssertTrue(privacy.waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Music shelf"].exists || app.buttons["Music shelf"].exists)
     }

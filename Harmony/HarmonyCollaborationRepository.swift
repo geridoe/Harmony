@@ -318,7 +318,7 @@ private struct SocialProfileDiscoveryParameters: Encodable {
     let p_after_id: UUID?
     let p_limit: Int
 }
-private struct ResolveCanonicalAlbumParameters: Encodable {
+struct ResolveCanonicalAlbumParameters: Encodable {
     let p_provider: String
     let p_provider_id: String
     let p_title: String

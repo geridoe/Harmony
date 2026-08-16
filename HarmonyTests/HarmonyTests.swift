@@ -3,6 +3,34 @@ import XCTest
 
 @MainActor
 final class HarmonyTests: XCTestCase {
+    func testCanonicalAlbumRPCPayloadEncodesOptionalEvidenceAsExplicitNulls() throws {
+        let payload = ResolveCanonicalAlbumParameters(
+            p_provider: "apple_music",
+            p_provider_id: "12345",
+            p_title: "Album",
+            p_artist: "Artist",
+            p_artwork_url: nil,
+            p_deep_link: nil,
+            p_storefront: "us"
+        )
+
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(payload)) as? [String: Any]
+        )
+
+        XCTAssertEqual(object.count, 11)
+        for key in [
+            "p_artwork_url",
+            "p_deep_link",
+            "p_upc",
+            "p_release_date",
+            "p_total_tracks",
+            "p_album_type"
+        ] {
+            XCTAssertTrue(object[key] is NSNull, "Expected explicit JSON null for \(key)")
+        }
+    }
+
     func testProductionStoreStartsWithoutPrototypeSessionData() {
         let store = HarmonySessionStore(
             spotifyRemote: RecordingSpotifyProvider(),
