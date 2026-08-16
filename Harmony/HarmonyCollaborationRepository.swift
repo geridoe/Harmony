@@ -330,6 +330,35 @@ private struct ResolveCanonicalAlbumParameters: Encodable {
     let p_total_tracks: Int? = nil
     let p_album_type: String? = nil
     let p_storefront: String
+
+    private enum CodingKeys: String, CodingKey {
+        case p_provider
+        case p_provider_id
+        case p_title
+        case p_artist
+        case p_artwork_url
+        case p_deep_link
+        case p_upc
+        case p_release_date
+        case p_total_tracks
+        case p_album_type
+        case p_storefront
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(p_provider, forKey: .p_provider)
+        try container.encode(p_provider_id, forKey: .p_provider_id)
+        try container.encode(p_title, forKey: .p_title)
+        try container.encode(p_artist, forKey: .p_artist)
+        try container.encode(p_artwork_url, forKey: .p_artwork_url)
+        try container.encode(p_deep_link, forKey: .p_deep_link)
+        try container.encode(p_upc, forKey: .p_upc)
+        try container.encode(p_release_date, forKey: .p_release_date)
+        try container.encode(p_total_tracks, forKey: .p_total_tracks)
+        try container.encode(p_album_type, forKey: .p_album_type)
+        try container.encode(p_storefront, forKey: .p_storefront)
+    }
 }
 private struct FollowingActivityPageParameters: Encodable {
     let p_before_published_at: Date?
