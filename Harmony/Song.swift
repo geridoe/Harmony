@@ -45,6 +45,10 @@ struct ReviewableAlbum: Hashable, Identifiable {
     let artist: String
     let artworkURL: URL?
     let deepLinkURL: URL?
+    let upc: String?
+    let releaseDate: Date?
+    let totalTracks: Int?
+    let albumType: String?
     var id: String { "\(provider.rawValue):\(providerID)" }
 
     init(
@@ -55,7 +59,11 @@ struct ReviewableAlbum: Hashable, Identifiable {
         title: String,
         artist: String,
         artworkURL: URL?,
-        deepLinkURL: URL?
+        deepLinkURL: URL?,
+        upc: String? = nil,
+        releaseDate: Date? = nil,
+        totalTracks: Int? = nil,
+        albumType: String? = nil
     ) {
         self.canonicalAlbumID = canonicalAlbumID
         self.provider = provider
@@ -65,6 +73,10 @@ struct ReviewableAlbum: Hashable, Identifiable {
         self.artist = artist
         self.artworkURL = artworkURL
         self.deepLinkURL = deepLinkURL
+        self.upc = upc
+        self.releaseDate = releaseDate
+        self.totalTracks = totalTracks
+        self.albumType = albumType
     }
 }
 struct HarmonyTrack: Identifiable, Hashable {
@@ -1170,6 +1182,7 @@ final class HarmonySessionStore: ObservableObject {
     @Published var sessionName = "Friday Night Finds"
     @Published var inviteCode = "HARMONY-8Q4"
     @Published var collaborationMessage = "Local prototype"
+    @Published private(set) var pendingNotificationDestination: HarmonyNotificationDestination?
     @Published private(set) var queueCommandConflict: QueueCommandTerminalConflict?
     @Published private(set) var pendingQueueCommandCount = 0
     @Published private(set) var isConnectingSpotify = false
@@ -1292,9 +1305,11 @@ final class HarmonySessionStore: ObservableObject {
     private var livePresenceSubscription: LivePresenceSubscription?
     private var liveSocialSubscription: LiveSocialSubscription?
     private var pendingSocialRefreshTask: Task<Void, Never>?
+    private var pendingSocialRefreshTables: Set<String> = []
     private var hasBootstrapped = false
     private var isBootstrapping = false
     private var catalogSearchRequestIDs: [CatalogSearchPurpose: UUID] = [:]
+    private var journalServerQuery = ""
     private let collaborationRepository = HarmonyCollaborationRepository()
     private let spotifyRemote: any SpotifyPlaybackProviding
     private let appleMusicProvider: any AppleMusicProviding
@@ -1755,9 +1770,16 @@ final class HarmonySessionStore: ObservableObject {
         guard url.scheme?.lowercased() == "harmony" else { return }
         if url.host?.lowercased() == "spotify-auth" {
             handleSpotifyOpenURL(url)
+        } else if url.host?.lowercased() == "notification",
+                  let destination = HarmonyNotificationDestination(url: url) {
+            pendingNotificationDestination = destination
         } else if let code = Self.inviteCode(from: url) {
             Task { await joinLiveSession(inviteCode: code) }
         }
+    }
+
+    func clearNotificationDestination() {
+        pendingNotificationDestination = nil
     }
 
     static func inviteCode(from url: URL) -> String? {
@@ -2007,28 +2029,21 @@ final class HarmonySessionStore: ObservableObject {
         isRefreshingListeningFeed = true
         defer { isRefreshingListeningFeed = false }
         do {
-            var rows = try await collaborationRepository.eavesdropBroadcastRows()
-            var liveRows = (try? await collaborationRepository.liveListenAlongs()) ?? []
-            if providerState(for: .spotify) == .connected {
-                rows += (try? await collaborationRepository.eavesdropBroadcastRows(
-                    viewerProvider: .spotify,
-                    storefront: "global"
-                )) ?? []
-                liveRows += (try? await collaborationRepository.liveListenAlongs(
-                    viewerProvider: .spotify,
-                    storefront: "global"
-                )) ?? []
-            }
-            if providerState(for: .appleMusic) == .connected {
-                rows += (try? await collaborationRepository.eavesdropBroadcastRows(
-                    viewerProvider: .appleMusic,
-                    storefront: "us"
-                )) ?? []
-                liveRows += (try? await collaborationRepository.liveListenAlongs(
-                    viewerProvider: .appleMusic,
-                    storefront: "us"
-                )) ?? []
-            }
+            // One projection includes the canonical source plus the preferred
+            // playable destination. Previously this fetched the same feed up
+            // to three times whenever both providers were connected.
+            let viewerProvider: MusicProvider? = providerState(for: .spotify) == .connected
+                ? .spotify
+                : (providerState(for: .appleMusic) == .connected ? .appleMusic : nil)
+            let storefront = viewerProvider == .spotify ? "global" : "us"
+            let rows = try await collaborationRepository.eavesdropBroadcastRows(
+                viewerProvider: viewerProvider,
+                storefront: storefront
+            )
+            let liveRows = (try? await collaborationRepository.liveListenAlongs(
+                viewerProvider: viewerProvider,
+                storefront: storefront
+            )) ?? []
             let userID = try await collaborationRepository.currentUserID()
             let live = mergedLiveListenAlongs(liveRows)
             let liveIDs = Set(live.map(\.id))
@@ -2375,45 +2390,73 @@ final class HarmonySessionStore: ObservableObject {
     func activateSocialRealtime() async {
         guard liveSocialSubscription == nil else { return }
         do {
-            liveSocialSubscription = try await collaborationRepository.observeSocialActivity { [weak self] in
-                Task { @MainActor in self?.scheduleSocialRefresh() }
+            liveSocialSubscription = try await collaborationRepository.observeSocialActivity { [weak self] table in
+                Task { @MainActor in self?.scheduleSocialRefresh(for: table) }
             }
         } catch {
             // Pull to refresh remains available when Realtime cannot connect.
         }
     }
 
-    private func scheduleSocialRefresh() {
+    private func scheduleSocialRefresh(for table: String) {
+        pendingSocialRefreshTables.insert(table)
         pendingSocialRefreshTask?.cancel()
         pendingSocialRefreshTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 250_000_000)
             guard !Task.isCancelled, let self else { return }
-            async let profiles: Void = self.refreshSocialProfiles()
-            async let feed: Void = self.refreshListeningFeed()
-            async let history: Void = self.refreshListeningHistory()
-            async let journal: Void = self.refreshJournalEntries()
-            async let followingReviews: Void = self.refreshLoadedFollowingReviews()
-            async let ratingDistributions: Void = self.refreshLoadedRatingDistributions()
-            async let ownerReviews: Void = self.refreshOwnerReviews()
-            async let reviewDetails: Void = self.refreshCachedReviewDetails()
-            async let eavesdropDetails: Void = self.refreshCachedEavesdropDetails()
-            async let memberProfiles: Void = self.refreshCachedMemberProfiles()
-            async let notifications: Void = self.refreshSocialNotifications(preservingLoadedPages: true)
-            async let followingActivity: Void = self.refreshFollowingActivity()
-            _ = await (
-                profiles,
-                feed,
-                history,
-                journal,
-                followingReviews,
-                ratingDistributions,
-                ownerReviews,
-                reviewDetails,
-                eavesdropDetails,
-                memberProfiles,
-                notifications,
-                followingActivity
-            )
+            let tables = self.pendingSocialRefreshTables
+            self.pendingSocialRefreshTables.removeAll()
+            await self.refreshSocialChanges(from: tables)
+        }
+    }
+
+    /// Realtime is a cache-invalidation signal, not a reason to reload every
+    /// social surface. In particular, a live-listening heartbeat must not fan
+    /// out into reviews, journals, profiles, notifications, and activity reads.
+    private func refreshSocialChanges(from tables: Set<String>) async {
+        let relationshipTables: Set<String> = [
+            "profiles", "social_follows", "profile_blocks", "profile_social_settings",
+        ]
+        if !tables.isDisjoint(with: relationshipTables) {
+            async let profiles: Void = refreshSocialProfiles()
+            async let feed: Void = refreshListeningFeed()
+            async let history: Void = refreshListeningHistory()
+            async let memberProfiles: Void = refreshCachedMemberProfiles()
+            async let followingReviews: Void = refreshLoadedFollowingReviews()
+            async let activity: Void = refreshFollowingActivity()
+            _ = await (profiles, feed, history, memberProfiles, followingReviews, activity)
+        }
+
+        if !tables.isDisjoint(with: ["listening_presence", "listening_broadcasts"]) {
+            async let feed: Void = refreshListeningFeed()
+            async let details: Void = refreshCachedEavesdropDetails()
+            _ = await (feed, details)
+        } else if !tables.isDisjoint(with: [
+            "listening_broadcast_comments", "listening_broadcast_reactions",
+        ]) {
+            await refreshCachedEavesdropDetails()
+        }
+
+        if tables.contains("listening_history_entries") {
+            async let history: Void = refreshListeningHistory()
+            async let journal: Void = refreshJournalEntries()
+            _ = await (history, journal)
+        }
+
+        if !tables.isDisjoint(with: ["music_reviews", "review_comments", "review_reactions"]) {
+            async let followingReviews: Void = refreshLoadedFollowingReviews()
+            async let distributions: Void = refreshLoadedRatingDistributions()
+            async let ownerReviews: Void = refreshOwnerReviews()
+            async let details: Void = refreshCachedReviewDetails()
+            async let activity: Void = refreshFollowingActivity()
+            _ = await (followingReviews, distributions, ownerReviews, details, activity)
+        }
+
+        if tables.contains("social_notifications") {
+            await refreshSocialNotifications(preservingLoadedPages: true)
+        }
+        if tables.contains("social_activity_events") {
+            await refreshFollowingActivity()
         }
     }
 
@@ -2488,12 +2531,19 @@ final class HarmonySessionStore: ObservableObject {
         isRefreshingJournalEntries = true
         defer { isRefreshingJournalEntries = false }
         do {
-            let page = try await collaborationRepository.listeningDiaryPage(limit: journalPageSize + 1)
+            let page = try await journalPage(limit: journalPageSize + 1)
             journalEntries = Array(page.prefix(journalPageSize))
             hasMoreJournalEntries = page.count > journalPageSize
         } catch {
             collaborationMessage = "Could not refresh your journal."
         }
+    }
+
+    func updateJournalSearch(query: String) async {
+        let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized != journalServerQuery else { return }
+        journalServerQuery = normalized
+        await refreshJournalEntries()
     }
 
     func loadMoreJournalEntries() async {
@@ -2504,7 +2554,7 @@ final class HarmonySessionStore: ObservableObject {
         isLoadingMoreJournalEntries = true
         defer { isLoadingMoreJournalEntries = false }
         do {
-            let page = try await collaborationRepository.listeningDiaryPage(
+            let page = try await journalPage(
                 beforePlayedAt: cursor.playedAt,
                 beforeID: cursor.id,
                 limit: journalPageSize + 1
@@ -2516,6 +2566,26 @@ final class HarmonySessionStore: ObservableObject {
         } catch {
             collaborationMessage = "Could not load older journal entries."
         }
+    }
+
+    private func journalPage(
+        beforePlayedAt: Date? = nil,
+        beforeID: UUID? = nil,
+        limit: Int
+    ) async throws -> [RemoteListeningHistoryEntry] {
+        if journalServerQuery.isEmpty {
+            return try await collaborationRepository.listeningDiaryPage(
+                beforePlayedAt: beforePlayedAt,
+                beforeID: beforeID,
+                limit: limit
+            )
+        }
+        return try await collaborationRepository.searchListeningDiary(
+            query: journalServerQuery,
+            beforePlayedAt: beforePlayedAt,
+            beforeID: beforeID,
+            limit: limit
+        )
     }
 
     func recordCurrentTrackInHistory() async {
@@ -5046,7 +5116,10 @@ final class HarmonySessionStore: ObservableObject {
         listeningShareHeartbeatTask?.cancel()
         listeningShareHeartbeatTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                // Fifteen seconds remains comfortably inside the server's
+                // 30-second freshness window while cutting idle share writes
+                // by one third compared with the original ten-second loop.
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
                 guard !Task.isCancelled, let self, self.isEavesdropping else { return }
                 if !(await self.publishCurrentLiveListeningState(trackChanged: false)) {
                     self.collaborationMessage = "Live sharing is reconnecting to playback"
@@ -6065,6 +6138,7 @@ final class HarmonySessionStore: ObservableObject {
     private func detachSocialSubscription() async {
         pendingSocialRefreshTask?.cancel()
         pendingSocialRefreshTask = nil
+        pendingSocialRefreshTables.removeAll()
         await liveSocialSubscription?.channel.unsubscribe()
         liveSocialSubscription = nil
     }

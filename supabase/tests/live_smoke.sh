@@ -2032,6 +2032,39 @@ rpc "$conductor_token" add_music_list_comment \
   "{\"p_list_id\":\"$music_list_id\",\"p_body\":\"Great sequence.\"}" \
   "$smoke_tmp/list-comment.json"
 music_list_comment_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/list-comment.json")"
+
+stage="production safety reports, notification registration, and Diary filters"
+rpc "$collaborator_token" submit_abuse_report \
+  "{\"p_target_kind\":\"music_list_comment\",\"p_target_id\":\"$music_list_comment_id\",\"p_reason\":\"spam\",\"p_details\":\"Automated smoke report\"}" \
+  "$smoke_tmp/abuse-report.json"
+jq -e --arg target "$music_list_comment_id" \
+  '(if type == "array" then .[0] else . end) | .target_kind == "music_list_comment" and .target_id == $target and .status == "open" and .target_snapshot.body == "Great sequence."' \
+  "$smoke_tmp/abuse-report.json" >/dev/null
+duplicate_report_status="$(rpc_status "$collaborator_token" submit_abuse_report \
+  "{\"p_target_kind\":\"music_list_comment\",\"p_target_id\":\"$music_list_comment_id\",\"p_reason\":\"spam\",\"p_details\":\"Duplicate\"}" \
+  "$smoke_tmp/duplicate-abuse-report.json")"
+[[ "$duplicate_report_status" == "409" ]]
+
+rpc "$conductor_token" set_my_notification_preferences \
+  '{"p_follows_enabled":true,"p_comments_enabled":false,"p_reactions_enabled":true,"p_sessions_enabled":true,"p_eavesdrop_enabled":false,"p_marketing_enabled":false}' \
+  "$smoke_tmp/notification-preferences.json"
+jq -e '(if type == "array" then .[0] else . end) | .comments_enabled == false and .eavesdrop_enabled == false and .marketing_enabled == false' \
+  "$smoke_tmp/notification-preferences.json" >/dev/null
+rpc "$conductor_token" register_notification_device \
+  '{"p_device_token":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","p_apns_environment":"sandbox","p_app_bundle_id":"com.harmony.Harmony","p_device_label":"Smoke iPhone"}' \
+  "$smoke_tmp/notification-device.json"
+notification_device_id="$(jq -er 'if type == "array" then .[0] else . end' "$smoke_tmp/notification-device.json")"
+private_device_status="$(rest_get_status "$conductor_token" "notification_devices?select=id" "$smoke_tmp/private-notification-devices.json")"
+[[ "$private_device_status" == "401" || "$private_device_status" == "403" ]]
+rpc "$conductor_token" unregister_notification_device \
+  "{\"p_device_id\":\"$notification_device_id\"}" \
+  "$smoke_tmp/notification-device-unregister.json"
+[[ "$(jq -er 'if type == "array" then .[0] else . end' "$smoke_tmp/notification-device-unregister.json")" == "true" ]]
+
+rpc "$conductor_token" search_listening_diary \
+  '{"p_profile_id":null,"p_query":null,"p_played_from":null,"p_played_through":null,"p_min_rating":null,"p_max_rating":null,"p_is_relisten":null,"p_tags":null,"p_provider":null,"p_before_played_at":null,"p_before_id":null,"p_limit":10}' \
+  "$smoke_tmp/filtered-diary.json"
+jq -e 'type == "array" and length <= 10' "$smoke_tmp/filtered-diary.json" >/dev/null
 rest_get "$collaborator_token" \
   "social_notifications?select=kind,actor_id,music_list_id,music_list_comment_id&actor_id=eq.$conductor_id&music_list_id=eq.$music_list_id&order=created_at.asc" \
   "$smoke_tmp/list-notifications.json"

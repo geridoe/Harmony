@@ -26,12 +26,57 @@ struct ContentView: View {
                 .tabItem { Label("Reviews", systemImage: "text.book.closed") }
         }
         .tint(.indigo)
+        .onChange(of: store.pendingNotificationDestination) { destination in
+            if case .session? = destination {
+                selection = 0
+                store.clearNotificationDestination()
+            }
+        }
+        .sheet(item: Binding(
+            get: { store.pendingNotificationDestination },
+            set: { if $0 == nil { store.clearNotificationDestination() } }
+        )) { destination in
+            NavigationStack { NotificationRouteView(destination: destination) }
+                .environmentObject(store)
+        }
         .onAppear {
 #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ui-test-social-activity") {
                 store.seedSocialActivityUITestFixture()
             }
 #endif
+        }
+    }
+}
+
+private struct NotificationRouteView: View {
+    @EnvironmentObject private var store: HarmonySessionStore
+    let destination: HarmonyNotificationDestination
+
+    @ViewBuilder var body: some View {
+        switch destination {
+        case .review(let id):
+            ReviewByIDDestination(reviewID: id)
+        case .musicList(let id):
+            MusicListDetailView(listID: id)
+        case .broadcast(let id):
+            ExactNotificationDestination(
+                notificationID: nil,
+                unavailableTitle: "Listening activity unavailable",
+                unavailableMessage: "This share ended or is no longer visible to you.",
+                resolver: { try await store.resolveNotificationBroadcast(id) },
+                destination: { EavesdropBroadcastDetailView(broadcast: $0) }
+            )
+        case .profile(let id):
+            ExactNotificationDestination(
+                notificationID: nil,
+                unavailableTitle: "Profile unavailable",
+                unavailableMessage: "This listener is no longer visible to you.",
+                resolver: { try await store.resolveNotificationActor(id) },
+                destination: { MemberProfileView(profileID: id, displayName: $0.displayName) }
+            )
+        case .session:
+            SessionView()
         }
     }
 }
@@ -558,6 +603,11 @@ private struct ListeningDiaryView: View {
             await store.refreshAccountSettings()
             await store.refreshListeningHistory()
             await store.refreshJournalEntries()
+        }
+        .task(id: browseFilter.query) {
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            await store.updateJournalSearch(query: browseFilter.query)
         }
         .refreshable {
             await store.refreshListeningHistory()
@@ -2412,6 +2462,13 @@ struct MemberProfileView: View {
         .accessibilityIdentifier("member-profile-page-\(profileID.uuidString)")
         .task { await refreshOverviewContent() }
         .refreshable { await refreshOverviewContent() }
+        .toolbar {
+            if overview?.isSelf != true {
+                ToolbarItem(placement: .primaryAction) {
+                    HarmonyReportButton(targetKind: .profile, targetID: profileID)
+                }
+            }
+        }
     }
 
     private var profileGraphCounts: some View {
@@ -4111,6 +4168,11 @@ struct ReviewCard: View {
                     } label: { Image(systemName: "ellipsis.circle") }
                     .accessibilityLabel("Review options")
                 }
+            } else {
+                HStack {
+                    Spacer()
+                    HarmonyReportButton(targetKind: .review, targetID: review.id)
+                }
             }
         }
         .disabled(store.mutatingReviewIDs.contains(review.id))
@@ -4447,6 +4509,12 @@ private struct ReviewDetailView: View {
                                         : "Remove comment from your review"
                                 )
                                 .accessibilityIdentifier("review-comment-delete-\(comment.id.uuidString)")
+                            } else {
+                                HarmonyReportButton(
+                                    targetKind: .reviewComment,
+                                    targetID: comment.id
+                                )
+                                .labelStyle(.iconOnly)
                             }
                         }
                     }

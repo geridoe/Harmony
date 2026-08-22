@@ -1,5 +1,9 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { resolveSpotifyCanonicalTrack } from "../_shared/canonical-track.ts";
+import {
+  getSpotifyAccessToken,
+  spotifyTokenErrorResponse,
+} from "../_shared/spotify-token.ts";
 
 type SearchRequest = { query: string };
 type SpotifyTrack = {
@@ -19,10 +23,14 @@ type SpotifyTrack = {
   external_urls?: { spotify?: string };
 };
 
-const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
-  status,
-  headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
-});
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+    },
+  });
 
 function required(name: string): string {
   const value = Deno.env.get(name);
@@ -30,84 +38,58 @@ function required(name: string): string {
   return value;
 }
 
-function decodeBase64(value: string): Uint8Array {
-  return Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
-}
-
-async function decrypt(encrypted: string): Promise<string> {
-  const [version, encodedIV, encodedCiphertext] = encrypted.split(":");
-  if (version !== "v1" || !encodedIV || !encodedCiphertext) throw new Error("Unsupported encrypted token format");
-  const rawKey = decodeBase64(required("SPOTIFY_TOKEN_ENCRYPTION_KEY"));
-  if (rawKey.byteLength !== 32) throw new Error("SPOTIFY_TOKEN_ENCRYPTION_KEY must be a base64-encoded 32-byte key");
-  const key = await crypto.subtle.importKey("raw", rawKey, "AES-GCM", false, ["decrypt"]);
-  const cleartext = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: decodeBase64(encodedIV) },
-    key,
-    decodeBase64(encodedCiphertext),
-  );
-  return new TextDecoder().decode(cleartext);
-}
-
 Deno.serve(async (request) => {
-  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  if (request.method !== "POST") {
+    return json({ error: "method_not_allowed" }, 405);
+  }
   try {
     const authorization = request.headers.get("Authorization");
-    if (!authorization?.startsWith("Bearer ")) return json({ error: "unauthorized" }, 401);
+    if (!authorization?.startsWith("Bearer ")) {
+      return json({ error: "unauthorized" }, 401);
+    }
     const input = await request.json() as SearchRequest;
     const query = input.query?.trim();
-    if (!query || query.length > 100) return json({ error: "invalid_query" }, 400);
+    if (!query || query.length > 100) {
+      return json({ error: "invalid_query" }, 400);
+    }
 
     const secretKeys = JSON.parse(required("SUPABASE_SECRET_KEYS"));
     const admin = createClient(required("SUPABASE_URL"), secretKeys.default);
-    const { data: user, error: userError } = await admin.auth.getUser(authorization.slice(7));
+    const { data: user, error: userError } = await admin.auth.getUser(
+      authorization.slice(7),
+    );
     if (userError || !user.user) return json({ error: "unauthorized" }, 401);
 
-    const { data: connection, error: connectionError } = await admin
-      .from("provider_connections")
-      .select("encrypted_refresh_token")
-      .eq("profile_id", user.user.id)
-      .eq("provider", "spotify")
-      .maybeSingle();
-    if (connectionError) throw connectionError;
-    if (!connection?.encrypted_refresh_token) return json({ error: "spotify_not_connected" }, 404);
-
-    const clientID = required("SPOTIFY_CLIENT_ID");
-    const clientSecret = required("SPOTIFY_CLIENT_SECRET");
-    const tokenResponse = await fetch("https://accounts.spotify.com/api/token", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Authorization: `Basic ${btoa(`${clientID}:${clientSecret}`)}`,
-      },
-      body: new URLSearchParams({
-        grant_type: "refresh_token",
-        refresh_token: await decrypt(connection.encrypted_refresh_token),
-      }),
-    });
-    if (!tokenResponse.ok) {
-      console.error("spotify token refresh rejected", tokenResponse.status, await tokenResponse.text());
-      return json({ error: "spotify_refresh_failed", upstreamStatus: tokenResponse.status }, 502);
-    }
-    const tokens = await tokenResponse.json();
-    if (!tokens.access_token) return json({ error: "spotify_access_token_missing" }, 502);
+    const token = await getSpotifyAccessToken(admin, user.user.id);
 
     const spotifyResponse = await fetch(
-      `https://api.spotify.com/v1/search?${new URLSearchParams({ q: query, type: "track", limit: "10" })}`,
-      { headers: { Authorization: `Bearer ${tokens.access_token}` } },
+      `https://api.spotify.com/v1/search?${new URLSearchParams({
+        q: query,
+        type: "track",
+        limit: "10",
+      })}`,
+      { headers: { Authorization: `Bearer ${token.accessToken}` } },
     );
     if (!spotifyResponse.ok) {
-      console.error("spotify catalog search rejected", spotifyResponse.status, await spotifyResponse.text());
-      const status = spotifyResponse.status === 403 || spotifyResponse.status === 429
-        ? spotifyResponse.status
-        : 502;
-      return json({ error: "spotify_search_failed", upstreamStatus: spotifyResponse.status }, status);
+      console.error("spotify catalog search rejected", spotifyResponse.status);
+      const status =
+        spotifyResponse.status === 403 || spotifyResponse.status === 429
+          ? spotifyResponse.status
+          : 502;
+      return json({
+        error: "spotify_search_failed",
+        upstreamStatus: spotifyResponse.status,
+      }, status);
     }
     const spotify = await spotifyResponse.json();
     const tracks = (spotify.tracks?.items ?? []) as SpotifyTrack[];
 
     const canonicalIDs = new Map<string, string>();
     for (const track of tracks) {
-      canonicalIDs.set(track.uri, await resolveSpotifyCanonicalTrack(admin, track));
+      canonicalIDs.set(
+        track.uri,
+        await resolveSpotifyCanonicalTrack(admin, track),
+      );
     }
 
     return json({
@@ -124,12 +106,19 @@ Deno.serve(async (request) => {
         isrc: track.external_ids?.isrc?.toUpperCase() ?? null,
         canonicalTrackID: canonicalIDs.get(track.uri) ?? null,
         albumProviderID: track.album.uri,
-        albumArtist: track.album.artists.map((artist) => artist.name).join(", "),
+        albumArtist: track.album.artists.map((artist) => artist.name).join(
+          ", ",
+        ),
         albumDeepLinkURL: track.album.external_urls?.spotify ?? null,
       })),
     });
   } catch (error) {
-    console.error("spotify search failed", error instanceof Error ? error.message : "unknown error");
+    const tokenError = spotifyTokenErrorResponse(error);
+    if (tokenError) return tokenError;
+    console.error(
+      "spotify search failed",
+      error instanceof Error ? error.message : "unknown error",
+    );
     return json({ error: "spotify_search_failed" }, 500);
   }
 });

@@ -1,5 +1,9 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { resolveSpotifyCanonicalTrack } from "../_shared/canonical-track.ts";
+import {
+  getSpotifyAccessToken,
+  spotifyTokenErrorResponse,
+} from "../_shared/spotify-token.ts";
 
 type SpotifyTrack = {
   type?: string;
@@ -13,10 +17,14 @@ type SpotifyTrack = {
   external_urls?: { spotify?: string };
 };
 
-const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
-  status,
-  headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
-});
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+    },
+  });
 
 function required(name: string): string {
   const value = Deno.env.get(name);
@@ -24,32 +32,20 @@ function required(name: string): string {
   return value;
 }
 
-function decodeBase64(value: string): Uint8Array {
-  return Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
-}
-
-async function decrypt(encrypted: string): Promise<string> {
-  const [version, encodedIV, encodedCiphertext] = encrypted.split(":");
-  if (version !== "v1" || !encodedIV || !encodedCiphertext) throw new Error("Unsupported encrypted token format");
-  const rawKey = decodeBase64(required("SPOTIFY_TOKEN_ENCRYPTION_KEY"));
-  if (rawKey.byteLength !== 32) throw new Error("SPOTIFY_TOKEN_ENCRYPTION_KEY must be a base64-encoded 32-byte key");
-  const key = await crypto.subtle.importKey("raw", rawKey, "AES-GCM", false, ["decrypt"]);
-  const cleartext = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: decodeBase64(encodedIV) },
-    key,
-    decodeBase64(encodedCiphertext),
-  );
-  return new TextDecoder().decode(cleartext);
-}
-
 Deno.serve(async (request) => {
-  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  if (request.method !== "POST") {
+    return json({ error: "method_not_allowed" }, 405);
+  }
   try {
     const authorization = request.headers.get("Authorization");
-    if (!authorization?.startsWith("Bearer ")) return json({ error: "unauthorized" }, 401);
+    if (!authorization?.startsWith("Bearer ")) {
+      return json({ error: "unauthorized" }, 401);
+    }
     const secretKeys = JSON.parse(required("SUPABASE_SECRET_KEYS"));
     const admin = createClient(required("SUPABASE_URL"), secretKeys.default);
-    const { data: user, error: userError } = await admin.auth.getUser(authorization.slice(7));
+    const { data: user, error: userError } = await admin.auth.getUser(
+      authorization.slice(7),
+    );
     if (userError || !user.user) return json({ error: "unauthorized" }, 401);
 
     const { data: connection, error: connectionError } = await admin
@@ -59,7 +55,9 @@ Deno.serve(async (request) => {
       .eq("provider", "spotify")
       .maybeSingle();
     if (connectionError) throw connectionError;
-    if (!connection?.encrypted_refresh_token) return json({ error: "spotify_not_connected" }, 404);
+    if (!connection?.encrypted_refresh_token) {
+      return json({ error: "spotify_not_connected" }, 404);
+    }
     if (!(connection.scopes ?? []).includes("user-read-playback-state")) {
       return json({ error: "spotify_playback_scope_missing" }, 409);
     }
@@ -71,28 +69,26 @@ Deno.serve(async (request) => {
       .single();
     if (settingsError) throw settingsError;
 
-    const tokenResponse = await fetch("https://accounts.spotify.com/api/token", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Authorization: `Basic ${btoa(`${required("SPOTIFY_CLIENT_ID")}:${required("SPOTIFY_CLIENT_SECRET")}`)}`,
-      },
-      body: new URLSearchParams({
-        grant_type: "refresh_token",
-        refresh_token: await decrypt(connection.encrypted_refresh_token),
-      }),
-    });
-    if (!tokenResponse.ok) return json({ error: "spotify_refresh_failed", upstreamStatus: tokenResponse.status }, 502);
-    const tokens = await tokenResponse.json();
-    if (!tokens.access_token) return json({ error: "spotify_access_token_missing" }, 502);
+    const token = await getSpotifyAccessToken(admin, user.user.id);
 
-    const playbackResponse = await fetch("https://api.spotify.com/v1/me/player/currently-playing?additional_types=track", {
-      headers: { Authorization: `Bearer ${tokens.access_token}` },
-    });
-    if (playbackResponse.status === 204) return json({ published: false, reason: "nothing_playing" });
+    const playbackResponse = await fetch(
+      "https://api.spotify.com/v1/me/player/currently-playing?additional_types=track",
+      {
+        headers: { Authorization: `Bearer ${token.accessToken}` },
+      },
+    );
+    if (playbackResponse.status === 204) {
+      return json({ published: false, reason: "nothing_playing" });
+    }
     if (!playbackResponse.ok) {
-      console.error("spotify current playback rejected", playbackResponse.status, await playbackResponse.text());
-      return json({ error: "spotify_playback_failed", upstreamStatus: playbackResponse.status }, playbackResponse.status === 429 ? 429 : 502);
+      console.error(
+        "spotify current playback rejected",
+        playbackResponse.status,
+      );
+      return json({
+        error: "spotify_playback_failed",
+        upstreamStatus: playbackResponse.status,
+      }, playbackResponse.status === 429 ? 429 : 502);
     }
     const playback = await playbackResponse.json();
     if (playback.currently_playing_type !== "track" || !playback.item) {
@@ -104,17 +100,18 @@ Deno.serve(async (request) => {
 
     const startedAt = new Date();
     const expiresAt = new Date(startedAt.getTime() + 5 * 60 * 1000);
-    const { error: presenceError } = await admin.from("listening_presence").upsert({
-      profile_id: user.user.id,
-      canonical_track_id: canonicalID,
-      provider: "spotify",
-      provider_track_id: track.uri,
-      provider_deep_link: track.external_urls?.spotify ?? null,
-      status: playback.is_playing ? "listening" : "paused",
-      visibility: settings.live_visibility,
-      started_at: startedAt.toISOString(),
-      expires_at: expiresAt.toISOString(),
-    }, { onConflict: "profile_id" });
+    const { error: presenceError } = await admin.from("listening_presence")
+      .upsert({
+        profile_id: user.user.id,
+        canonical_track_id: canonicalID,
+        provider: "spotify",
+        provider_track_id: track.uri,
+        provider_deep_link: track.external_urls?.spotify ?? null,
+        status: playback.is_playing ? "listening" : "paused",
+        visibility: settings.live_visibility,
+        started_at: startedAt.toISOString(),
+        expires_at: expiresAt.toISOString(),
+      }, { onConflict: "profile_id" });
     if (presenceError) throw presenceError;
 
     return json({
@@ -124,7 +121,12 @@ Deno.serve(async (request) => {
       isPlaying: Boolean(playback.is_playing),
     });
   } catch (error) {
-    console.error("spotify now-listening publish failed", error instanceof Error ? error.message : "unknown error");
+    const tokenError = spotifyTokenErrorResponse(error);
+    if (tokenError) return tokenError;
+    console.error(
+      "spotify now-listening publish failed",
+      error instanceof Error ? error.message : "unknown error",
+    );
     return json({ error: "spotify_now_listening_failed" }, 500);
   }
 });

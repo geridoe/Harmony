@@ -5,6 +5,7 @@ struct ResolvableCanonicalAlbumView: View {
     let album: ReviewableAlbum
     @State private var resolvedAlbum: RemoteCanonicalAlbum?
     @State private var attempted = false
+    @State private var isResolving = false
 
     var body: some View {
         Group {
@@ -22,16 +23,28 @@ struct ResolvableCanonicalAlbumView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
+                    Button("Try again") { Task { await resolve() } }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("canonical-album-resolve-retry")
                 }
                 .padding()
+                .accessibilityElement(children: .contain)
             } else {
                 ProgressView("Opening album…")
             }
         }
         .task {
-            resolvedAlbum = await store.resolveCanonicalAlbum(album)
-            attempted = true
+            await resolve()
         }
+    }
+
+    private func resolve() async {
+        guard !isResolving else { return }
+        isResolving = true
+        attempted = false
+        resolvedAlbum = await store.resolveCanonicalAlbum(album)
+        attempted = true
+        isResolving = false
     }
 }
 
@@ -194,6 +207,16 @@ struct CanonicalAlbumDetailView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+
+                if album.providerAlbums.count > 1 {
+                    Label(
+                        "Matched across \(album.providerAlbums.count) services",
+                        systemImage: "link"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("canonical-album-provider-match-count")
+                }
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 8)
@@ -253,8 +276,14 @@ struct CanonicalAlbumDetailView: View {
         Section("Listen") {
             let playableMappings = album.providerAlbums.filter { $0.deepLink != nil }
             if playableMappings.isEmpty {
-                Text("No provider link is available for this release.")
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("No listening link", systemImage: "music.note.slash")
+                        .font(.headline)
+                    Text("This exact release is not currently mapped to Apple Music or Spotify in your storefront.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityIdentifier("canonical-album-provider-empty")
             } else {
                 ForEach(playableMappings) { mapping in
                     if let deepLink = mapping.deepLink {
@@ -265,10 +294,11 @@ struct CanonicalAlbumDetailView: View {
                             )
                         }
                         .accessibilityIdentifier("canonical-album-provider-\(mapping.provider)")
+                        .accessibilityHint("Leaves Harmony and opens the exact mapped release")
                     }
                 }
             }
-            Text("Provider links open this exact mapped release. Harmony does not stream or rebroadcast audio.")
+            Text("Links preserve the mapped release edition and storefront. Harmony does not stream or rebroadcast audio.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }

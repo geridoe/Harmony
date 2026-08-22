@@ -3,6 +3,122 @@ import XCTest
 
 @MainActor
 final class HarmonyTests: XCTestCase {
+    func testAppleCatalogAlbumMatchingPrefersExactArtistAndNormalizesPunctuation() throws {
+        let exact = AppleCatalogAlbumEvidence(
+            providerID: "album-exact",
+            title: "Áfter Hours (Deluxe)",
+            artist: "The Weeknd",
+            storefront: "ca",
+            artworkURL: nil,
+            deepLinkURL: nil,
+            upc: "123456789012",
+            releaseDate: nil,
+            trackCount: 18,
+            isSingle: false
+        )
+        let sameTitleWrongArtist = AppleCatalogAlbumEvidence(
+            providerID: "album-other",
+            title: "After Hours Deluxe",
+            artist: "Cover Artist",
+            storefront: "us",
+            artworkURL: nil,
+            deepLinkURL: nil,
+            upc: nil,
+            releaseDate: nil,
+            trackCount: 18,
+            isSingle: false
+        )
+
+        let matched = try XCTUnwrap(matchingAppleAlbum(
+            title: "After Hours — Deluxe",
+            artist: "the weeknd",
+            candidates: [sameTitleWrongArtist, exact]
+        ))
+
+        XCTAssertEqual(matched.providerID, "album-exact")
+        XCTAssertEqual(matched.storefront, "ca")
+        XCTAssertEqual(matched.upc, "123456789012")
+    }
+
+    func testAppleCatalogAlbumMatchingFallsBackToTitleForFeaturedArtistCredits() {
+        let candidate = AppleCatalogAlbumEvidence(
+            providerID: "album-featured",
+            title: "Shared Record",
+            artist: "Primary Artist",
+            storefront: "gb",
+            artworkURL: nil,
+            deepLinkURL: nil,
+            upc: nil,
+            releaseDate: nil,
+            trackCount: 10,
+            isSingle: false
+        )
+
+        XCTAssertEqual(
+            matchingAppleAlbum(
+                title: "Shared Record",
+                artist: "Primary Artist feat. Guest",
+                candidates: [candidate]
+            )?.providerID,
+            "album-featured"
+        )
+        XCTAssertNil(matchingAppleAlbum(title: nil, artist: "Artist", candidates: [candidate]))
+    }
+
+    func testAppleNonceHashMatchesKnownSHA256Vector() {
+        XCTAssertEqual(
+            HarmonyAccountController.sha256("harmony"),
+            "2be663431f0072506a04499c2ac99c3232e7adbe3fc679c139a0609aace61bf7"
+        )
+        XCTAssertEqual(HarmonyAccountController.makeNonce().count, 32)
+    }
+
+    func testNotificationPayloadRoutesOnlyTypedSafeIdentifiers() throws {
+        let id = UUID()
+        let destination = try XCTUnwrap(HarmonyNotificationDestination(userInfo: [
+            "kind": "review_comment",
+            "review_id": id.uuidString,
+            "title": "untrusted display text"
+        ]))
+        XCTAssertEqual(destination, .review(id))
+        XCTAssertEqual(destination.url?.absoluteString, "harmony://notification/review/\(id.uuidString)")
+        XCTAssertEqual(HarmonyNotificationDestination(url: try XCTUnwrap(destination.url)), destination)
+        XCTAssertNil(HarmonyNotificationDestination(userInfo: ["kind": "review", "review_id": "not-a-uuid"]))
+        XCTAssertNil(HarmonyNotificationDestination(userInfo: ["kind": "unknown", "review_id": id.uuidString]))
+        XCTAssertEqual(
+            HarmonyNotificationDestination(userInfo: [
+                "kind": "music_list_comment",
+                "music_list_id": id.uuidString,
+            ]),
+            .musicList(id)
+        )
+    }
+
+    func testNotificationPreferencesRoundTrip() throws {
+        let original = HarmonyNotificationPreferences(
+            follows: false,
+            socialActivity: true,
+            sessions: false,
+            liveListening: true
+        )
+        let decoded = try JSONDecoder().decode(
+            HarmonyNotificationPreferences.self,
+            from: JSONEncoder().encode(original)
+        )
+        XCTAssertEqual(decoded, original)
+    }
+
+    func testSafeFailureDoesNotExposeLocalizedDescriptionOrUserInfo() {
+        let error = NSError(
+            domain: "HarmonyTransport",
+            code: 401,
+            userInfo: [NSLocalizedDescriptionKey: "secret bearer token"]
+        )
+        let diagnostic = HarmonyLog.safeFailure(error)
+        XCTAssertEqual(diagnostic, "HarmonyTransport:401")
+        XCTAssertFalse(diagnostic.contains("secret"))
+    }
+
     func testCanonicalAlbumRPCPayloadEncodesOptionalEvidenceAsExplicitNulls() throws {
         let payload = ResolveCanonicalAlbumParameters(
             p_provider: "apple_music",
@@ -11,6 +127,10 @@ final class HarmonyTests: XCTestCase {
             p_artist: "Artist",
             p_artwork_url: nil,
             p_deep_link: nil,
+            p_upc: nil,
+            p_release_date: nil,
+            p_total_tracks: nil,
+            p_album_type: nil,
             p_storefront: "us"
         )
 

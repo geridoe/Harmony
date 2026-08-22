@@ -1034,6 +1034,13 @@ receive masked review links when they cannot open the review.
   data/store/repository integration; Spotify OAuth/App Remote integration;
   Spotify search, now-playing share, and user-triggered history import.
 - Automated unit/UI and backend live/Realtime smoke-test artifacts.
+- Native Sign in with Apple and anonymous identity linking; APNs registration,
+  preferences, and private device-token RPCs; privacy-safe structured logging;
+  abuse reports; atomic throttles; bounded cleanup; and exhaustive Diary search.
+- Apple catalog enrichment carries album ID, storefront, UPC, release date,
+  track count, release type, artwork, and deep link into canonical resolution.
+- Realtime cost controls refresh only affected caches, fetch one preferred
+  listening projection, and heartbeat every 15 seconds.
 
 ### Requires user action or external entitlement
 
@@ -1066,14 +1073,12 @@ receive masked review links when they cannot open the review.
 3. Review detail, spoiler conceal/reveal, owner thread moderation, and exact
    notification-to-review routing are implemented; extend that surface with
    additional reaction choices and reporting controls.
-4. Decide whether loaded-page journal search is sufficient or exhaustive
-   server-side filtering is required.
-5. Enroll/configure the Apple developer assets, enable MusicKit, and implement
-   the equivalent Apple catalog resolution, playback, and opted-in history
-   source. Keep its adapter local and submit only canonical/provider metadata
-   to the backend.
-6. Add server-owned APNs delivery from `social_notifications`; retain the
-   database row as the source of truth and provide notification preference UI.
+4. Validate exhaustive server-side Diary filters and stable keyset pagination
+   against a large hosted account fixture.
+5. Validate implemented MusicKit authorization, catalog resolution, playback,
+   background behavior, and opted-in history on a signed physical device.
+6. Configure the deployed APNs worker with an Apple `.p8` key and a Vault-backed
+   scheduler secret, then validate sandbox and production delivery on hardware.
 7. Add production operational work: error reporting, scheduled cleanup of
    expired presence, rate limiting/abuse reporting, privacy-policy copy,
    TestFlight build settings, and device-pair collaboration tests.

@@ -246,7 +246,7 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(addToDiary.exists)
         for _ in 0..<3 where !addToDiary.isHittable { app.swipeUp() }
         XCTAssertTrue(addToDiary.isHittable)
-        addToDiary.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        addToDiary.tap()
         XCTAssertEqual(addToDiary.value as? String, "1")
         for _ in 0..<2 where !app.staticTexts["Listened on"].exists { app.swipeUp() }
         XCTAssertTrue(app.staticTexts["Listened on"].waitForExistence(timeout: 5))

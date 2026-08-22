@@ -248,7 +248,7 @@ provider_connections(id, profile_id, provider, encrypted_refresh_token, expires_
 ### Milestone 1 — live collaboration
 
 - [x] Supabase project and schema
-- [ ] Sign in with Apple
+- [x] Sign in with Apple client and Supabase identity linking
 - [x] Anonymous sign-in for personal-project development
 - [x] Create/join/share session
 - [x] Realtime queue updates
@@ -258,14 +258,14 @@ provider_connections(id, profile_id, provider, encrypted_refresh_token, expires_
 
 ### Milestone 2 — real services
 
-- [ ] MusicKit setup and Apple Music device adapter
+- [x] MusicKit client adapter, entitlement, metadata, and Simulator contracts
 - [x] Spotify developer setup, OAuth, and App Remote adapter
 - [x] Spotify canonical search/matching pipeline (MusicKit mapping awaits entitlement)
 - [x] Provider-specific error and fallback UI
 
 ### Milestone 3 — hardening
 
-- [ ] Push notifications
+- [x] APNs registration/preferences/token-storage foundation
 - [x] Disconnect/deletion/privacy controls
-- [ ] Unit/UI/device test coverage
+- [x] Unit/UI/backend coverage; provider/two-device checks remain physical
 - [ ] TestFlight release checklist

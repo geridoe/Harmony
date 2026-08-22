@@ -288,15 +288,15 @@ is read-only under the existing retention policy.
 
 ### Current evidence and remaining implementation
 
-Already deployed/tested: explicit foreground share, follower/private/block RLS,
-canonical cross-provider destinations, stable per-track broadcast identity,
-comments/reactions, exact ended notification snapshots, ended interaction
-rejection, account cleanup, provider-row merging, and read-only ended UI.
+Implemented and tested in deterministic/backend lanes: explicit foreground
+sharing; follower/private/block RLS; stable multi-track share and per-track
+broadcast identities; ephemeral rounded position anchors; monotonic generation
+and sequence authority; server-clock projection; 30-second freshness; Realtime
+refresh; provider seek/position observation; joined/read-only UI; stale-operation
+cancellation; independent recently-played actions; comments/reactions; ended
+snapshots; rate limits; and privacy cleanup.
 
-Still required for synchronized listen-along: stable multi-track share identity,
-ephemeral position anchors, server time/sequence authority, 30-second freshness,
-Realtime live-state refresh, adapter seek/position observation, joined-state UI,
-stale-generation cancellation, independent recently-played play actions, rate
-limits, and two-device/provider measurements. MusicKit device validation remains
-externally gated, but the server contract, privacy tests, deterministic timing
-logic, simulator states, and Spotify adapter work are not.
+The host heartbeat is 15 seconds, feed reads request one preferred connected
+provider projection, and presence events invalidate only listening caches.
+Remaining proof is physical: drift, background behavior, Spotify App Remote,
+MusicKit authorization, and cross-provider matching on two signed devices.

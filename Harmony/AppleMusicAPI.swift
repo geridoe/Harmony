@@ -3,16 +3,61 @@ import MusicKit
 
 enum AppleMusicProviderError: LocalizedError {
     case permissionDenied
+    case permissionRestricted
     case subscriptionRequired
     case trackUnavailable
+    case emptySearch
+    case catalogUnavailable
 
     var errorDescription: String? {
         switch self {
         case .permissionDenied: return "Allow Harmony to access Apple Music in Settings."
+        case .permissionRestricted: return "Apple Music access is restricted on this device. Check Screen Time or device-management settings."
         case .subscriptionRequired: return "An active Apple Music subscription is required for catalog playback."
         case .trackUnavailable: return "This track is unavailable in the current Apple Music storefront."
+        case .emptySearch: return "Enter a song, artist, or album to search Apple Music."
+        case .catalogUnavailable: return "Apple Music could not load the catalog. Check your connection and try again."
         }
     }
+}
+
+/// Small, provider-independent evidence record used to associate a song result
+/// with the exact album result returned in the same catalog request. Keeping
+/// this matching deterministic also makes it testable without MusicKit access.
+struct AppleCatalogAlbumEvidence: Equatable {
+    let providerID: String
+    let title: String
+    let artist: String
+    let storefront: String?
+    let artworkURL: URL?
+    let deepLinkURL: URL?
+    let upc: String?
+    let releaseDate: Date?
+    let trackCount: Int
+    let isSingle: Bool?
+}
+
+func matchingAppleAlbum(
+    title: String?,
+    artist: String,
+    candidates: [AppleCatalogAlbumEvidence]
+) -> AppleCatalogAlbumEvidence? {
+    guard let title, !title.isEmpty else { return nil }
+    let normalizedTitle = normalizedAppleCatalogText(title)
+    let normalizedArtist = normalizedAppleCatalogText(artist)
+    return candidates.first {
+        normalizedAppleCatalogText($0.title) == normalizedTitle
+            && normalizedAppleCatalogText($0.artist) == normalizedArtist
+    } ?? candidates.first {
+        normalizedAppleCatalogText($0.title) == normalizedTitle
+    }
+}
+
+private func normalizedAppleCatalogText(_ value: String) -> String {
+    value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        .components(separatedBy: CharacterSet.alphanumerics.inverted)
+        .filter { !$0.isEmpty }
+        .joined(separator: " ")
 }
 
 @MainActor
@@ -31,7 +76,12 @@ final class AppleMusicProvider: AppleMusicProviding {
 
     func authorize() async throws {
         connectionState = .authorizing
-        guard await MusicAuthorization.request() == .authorized else {
+        let status = await MusicAuthorization.request()
+        guard status == .authorized else {
+            if status == .restricted {
+                connectionState = .unavailable(reason: AppleMusicProviderError.permissionRestricted.localizedDescription)
+                throw AppleMusicProviderError.permissionRestricted
+            }
             connectionState = .unavailable(reason: AppleMusicProviderError.permissionDenied.localizedDescription)
             throw AppleMusicProviderError.permissionDenied
         }
@@ -45,11 +95,28 @@ final class AppleMusicProvider: AppleMusicProviding {
 
     func search(query: String) async throws -> [HarmonyTrack] {
         guard connectionState.isConnected else { throw ProviderAdapterError.notConnected(provider) }
-        var request = MusicCatalogSearchRequest(term: query, types: [MusicKit.Song.self])
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { throw AppleMusicProviderError.emptySearch }
+        var request = MusicCatalogSearchRequest(
+            term: term,
+            types: [MusicKit.Song.self, MusicKit.Album.self]
+        )
         request.limit = 20
-        let response = try await request.response()
+        let response: MusicCatalogSearchResponse
+        do {
+            response = try await request.response()
+        } catch {
+            throw AppleMusicProviderError.catalogUnavailable
+        }
+        let albumEvidence = response.albums.map(Self.albumEvidence)
         return response.songs.map { song in
             songsByID[song.id.rawValue] = song
+            let album = matchingAppleAlbum(
+                title: song.albumTitle,
+                artist: song.artistName,
+                candidates: albumEvidence
+            )
+            let mappingStorefront = Self.storefront(from: song.url)
             return HarmonyTrack(
                 title: song.title,
                 artist: song.artistName,
@@ -62,10 +129,25 @@ final class AppleMusicProvider: AppleMusicProviding {
                 mappings: [ProviderTrackMapping(
                     provider: .appleMusic,
                     providerID: song.id.rawValue,
-                    storefront: Self.storefront(from: song.url),
+                    storefront: mappingStorefront,
                     availability: .playable,
                     deepLinkURL: song.url
-                )]
+                )],
+                reviewableAlbum: album.map {
+                    ReviewableAlbum(
+                        provider: .appleMusic,
+                        providerID: $0.providerID,
+                        storefront: $0.storefront ?? mappingStorefront,
+                        title: $0.title,
+                        artist: $0.artist,
+                        artworkURL: $0.artworkURL,
+                        deepLinkURL: $0.deepLinkURL,
+                        upc: $0.upc,
+                        releaseDate: $0.releaseDate,
+                        totalTracks: $0.trackCount,
+                        albumType: $0.isSingle.map { $0 ? "single" : "album" }
+                    )
+                }
             )
         }
     }
@@ -127,10 +209,25 @@ final class AppleMusicProvider: AppleMusicProviding {
         return song
     }
 
-    private static func storefront(from url: URL?) -> String {
+    private static func storefront(from url: URL?) -> String? {
         guard let component = url?.pathComponents.dropFirst().first?.lowercased(),
               component.count == 2,
-              component.allSatisfy({ $0.isASCII && $0.isLetter }) else { return "us" }
+              component.allSatisfy({ $0.isASCII && $0.isLetter }) else { return nil }
         return component
+    }
+
+    private static func albumEvidence(_ album: MusicKit.Album) -> AppleCatalogAlbumEvidence {
+        AppleCatalogAlbumEvidence(
+            providerID: album.id.rawValue,
+            title: album.title,
+            artist: album.artistName,
+            storefront: storefront(from: album.url),
+            artworkURL: album.artwork?.url(width: 600, height: 600),
+            deepLinkURL: album.url,
+            upc: album.upc,
+            releaseDate: album.releaseDate,
+            trackCount: album.trackCount,
+            isSingle: album.isSingle
+        )
     }
 }

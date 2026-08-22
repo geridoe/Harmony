@@ -253,6 +253,20 @@ private struct ListeningDiaryPageParameters: Encodable {
     let p_before_id: UUID?
     let p_limit: Int
 }
+private struct ListeningDiarySearchParameters: Encodable {
+    let p_profile_id: UUID?
+    let p_query: String?
+    let p_played_from: Date?
+    let p_played_through: Date?
+    let p_min_rating: Double?
+    let p_max_rating: Double?
+    let p_is_relisten: Bool?
+    let p_tags: [String]?
+    let p_provider: String?
+    let p_before_played_at: Date?
+    let p_before_id: UUID?
+    let p_limit: Int
+}
 private struct TrackSubjectStatePageParameters: Encodable {
     let p_before_updated_at: Date?
     let p_before_canonical_track_id: UUID?
@@ -318,6 +332,26 @@ private struct SocialProfileDiscoveryParameters: Encodable {
     let p_after_id: UUID?
     let p_limit: Int
 }
+private struct NotificationPreferenceParameters: Encodable {
+    let p_follows_enabled: Bool
+    let p_comments_enabled: Bool
+    let p_reactions_enabled: Bool
+    let p_sessions_enabled: Bool
+    let p_eavesdrop_enabled: Bool
+    let p_marketing_enabled: Bool
+}
+private struct NotificationDeviceParameters: Encodable {
+    let p_device_token: String
+    let p_apns_environment: String
+    let p_app_bundle_id: String
+    let p_device_label: String
+}
+private struct AbuseReportParameters: Encodable {
+    let p_target_kind: String
+    let p_target_id: UUID
+    let p_reason: String
+    let p_details: String
+}
 struct ResolveCanonicalAlbumParameters: Encodable {
     let p_provider: String
     let p_provider_id: String
@@ -325,10 +359,10 @@ struct ResolveCanonicalAlbumParameters: Encodable {
     let p_artist: String
     let p_artwork_url: String?
     let p_deep_link: String?
-    let p_upc: String? = nil
-    let p_release_date: String? = nil
-    let p_total_tracks: Int? = nil
-    let p_album_type: String? = nil
+    let p_upc: String?
+    let p_release_date: String?
+    let p_total_tracks: Int?
+    let p_album_type: String?
     let p_storefront: String
 
     private enum CodingKeys: String, CodingKey {
@@ -2237,6 +2271,34 @@ final class HarmonyCollaborationRepository {
         .execute().value
     }
 
+    func searchListeningDiary(
+        query: String,
+        beforePlayedAt: Date? = nil,
+        beforeID: UUID? = nil,
+        limit: Int = 51
+    ) async throws -> [RemoteListeningHistoryEntry] {
+        try await authenticate()
+        return try await client.rpc(
+            "search_listening_diary",
+            params: ListeningDiarySearchParameters(
+                p_profile_id: nil,
+                p_query: query,
+                p_played_from: nil,
+                p_played_through: nil,
+                p_min_rating: nil,
+                p_max_rating: nil,
+                p_is_relisten: nil,
+                p_tags: nil,
+                p_provider: nil,
+                p_before_played_at: beforePlayedAt,
+                p_before_id: beforeID,
+                p_limit: limit
+            )
+        )
+        .select("id,profile_id,played_at,source,visibility,is_relisten,tags,review_id,rating,canonical_tracks,profiles")
+        .execute().value
+    }
+
     func trackSubjectState(canonicalTrackID: UUID) async throws -> RemoteTrackSubjectState? {
         try await authenticate()
         let states: [RemoteTrackSubjectState] = try await client
@@ -2292,6 +2354,10 @@ final class HarmonyCollaborationRepository {
                     p_artist: album.artist,
                     p_artwork_url: album.artworkURL?.absoluteString,
                     p_deep_link: album.deepLinkURL?.absoluteString,
+                    p_upc: album.upc,
+                    p_release_date: album.releaseDate.map(Self.postgresDate),
+                    p_total_tracks: album.totalTracks,
+                    p_album_type: album.albumType,
                     p_storefront: album.storefront
                 )
             ).execute().value
@@ -2306,6 +2372,19 @@ final class HarmonyCollaborationRepository {
             throw HarmonyRepositoryError.canonicalAlbumUnavailable
         }
         return resolved
+    }
+
+    private static func postgresDate(_ date: Date) -> String {
+        let components = Calendar(identifier: .gregorian).dateComponents(
+            in: TimeZone(secondsFromGMT: 0)!,
+            from: date
+        )
+        return String(
+            format: "%04d-%02d-%02d",
+            components.year ?? 0,
+            components.month ?? 0,
+            components.day ?? 0
+        )
     }
 
     func albumSubjectStatePage(
@@ -3031,6 +3110,57 @@ final class HarmonyCollaborationRepository {
         return try await client.auth.session.user.id
     }
 
+    func setNotificationPreferences(_ preferences: HarmonyNotificationPreferences) async throws {
+        try await authenticate()
+        _ = try await client.rpc(
+            "set_my_notification_preferences",
+            params: NotificationPreferenceParameters(
+                p_follows_enabled: preferences.follows,
+                p_comments_enabled: preferences.socialActivity,
+                p_reactions_enabled: preferences.socialActivity,
+                p_sessions_enabled: preferences.sessions,
+                p_eavesdrop_enabled: preferences.liveListening,
+                p_marketing_enabled: false
+            )
+        ).execute()
+    }
+
+    func registerNotificationDevice(
+        token: String,
+        environment: String,
+        bundleID: String,
+        label: String
+    ) async throws -> UUID {
+        try await authenticate()
+        return try await client.rpc(
+            "register_notification_device",
+            params: NotificationDeviceParameters(
+                p_device_token: token,
+                p_apns_environment: environment,
+                p_app_bundle_id: bundleID,
+                p_device_label: label
+            )
+        ).execute().value
+    }
+
+    func submitAbuseReport(
+        targetKind: String,
+        targetID: UUID,
+        reason: String,
+        details: String
+    ) async throws {
+        try await authenticate()
+        _ = try await client.rpc(
+            "submit_abuse_report",
+            params: AbuseReportParameters(
+                p_target_kind: targetKind,
+                p_target_id: targetID,
+                p_reason: reason,
+                p_details: String(details.prefix(1_000))
+            )
+        ).execute()
+    }
+
     func add(
         track: HarmonyTrack,
         to sessionID: UUID,
@@ -3625,7 +3755,7 @@ final class HarmonyCollaborationRepository {
         return LiveSessionSubscription(channel: channel, token: token)
     }
 
-    func observeSocialActivity(onChange: @escaping @Sendable () -> Void) async throws -> LiveSocialSubscription {
+    func observeSocialActivity(onChange: @escaping @Sendable (String) -> Void) async throws -> LiveSocialSubscription {
         try await authenticate()
         let profileID = try await currentUserID()
         let channel = client.channel("social-\(profileID.uuidString)")
@@ -3647,7 +3777,7 @@ final class HarmonyCollaborationRepository {
         ]
         let tokens = tables.map { table in
             channel.onPostgresChange(AnyAction.self, schema: "public", table: table) { _ in
-                onChange()
+                onChange(table)
             }
         }
         try await channel.subscribeWithError()

@@ -9,7 +9,10 @@ import SwiftUI
 
 @main
 struct HarmonyApp: App {
+    @UIApplicationDelegateAdaptor(HarmonyAppDelegate.self) private var appDelegate
     @StateObject private var sessionStore: HarmonySessionStore
+    @StateObject private var accountController = HarmonyAccountController()
+    @StateObject private var notificationController = HarmonyNotificationController.shared
 
     init() {
         let store = HarmonySessionStore(seedSampleData: false)
@@ -30,8 +33,20 @@ struct HarmonyApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(sessionStore)
-                .task { await sessionStore.bootstrap() }
+                .environmentObject(accountController)
+                .environmentObject(notificationController)
+                .task {
+                    async let storeBootstrap: Void = sessionStore.bootstrap()
+                    async let accountBootstrap: Void = accountController.bootstrap()
+                    async let notificationBootstrap: Void = notificationController.refreshAuthorization()
+                    _ = await (storeBootstrap, accountBootstrap, notificationBootstrap)
+                }
                 .onOpenURL { url in
+                    sessionStore.handleOpenURL(url)
+                }
+                .onReceive(NotificationCenter.default.publisher(for: HarmonyNotificationController.destinationNotification)) { event in
+                    guard let destination = event.object as? HarmonyNotificationDestination,
+                          let url = destination.url else { return }
                     sessionStore.handleOpenURL(url)
                 }
         }

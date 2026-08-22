@@ -64,17 +64,22 @@ preserve the requested change.
 The project currently uses the Xcode installation at:
 
 ```text
-/Users/geridoe/Downloads/Xcode.app/Contents/Developer
+/Applications/Xcode.app/Contents/Developer
 ```
 
 Simulator unit tests:
 
 ```sh
-DEVELOPER_DIR='/Users/geridoe/Downloads/Xcode.app/Contents/Developer' \
+DEVELOPER_DIR='/Applications/Xcode.app/Contents/Developer' \
   xcodebuild test \
   -project Harmony.xcodeproj \
   -scheme Harmony \
   -destination 'platform=iOS Simulator,id=A509714B-2C46-4429-84C3-E3EA8A681554' \
+  -parallel-testing-enabled NO \
+  -maximum-parallel-testing-workers 1 \
+  ASSETCATALOG_FILTER_FOR_DEVICE_MODEL= \
+  ASSETCATALOG_FILTER_FOR_DEVICE_OS_VERSION= \
+  ENABLE_ON_DEMAND_RESOURCES=NO \
   -only-testing:HarmonyTests \
   CODE_SIGNING_ALLOWED=NO
 ```
@@ -100,6 +105,20 @@ Premium account. Apple Music authorization/playback requires the Apple
 Developer Program, a MusicKit-enabled App ID, signing entitlements, and a real
 device/account. That gate does not block Supabase, social, queue, Reviews,
 Ratings, Lists, Spotify, or simulator work.
+
+Sign in with Apple, APNs registration, owner notification preferences, private
+device-token storage, and typed notification routing are implemented.
+Production delivery still requires enabling Sign in with Apple and Push
+Notifications for the App ID, configuring Supabase's Apple provider/manual
+identity linking, and installing an APNs key for the deployed trusted worker.
+
+Production safety includes durable abuse reports, per-account write throttles,
+bounded service-role cleanup, and exhaustive server-side Diary filtering. Live
+listening uses a 15-second heartbeat, one preferred-provider feed projection,
+and table-specific Realtime cache invalidation to contain operating costs.
+Spotify Edge Functions also share an encrypted, short-lived access-token cache
+and a database refresh lease, preventing simultaneous searches/history/live
+polling from repeatedly refreshing the same account token.
 
 ## Design references
 

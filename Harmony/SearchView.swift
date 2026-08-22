@@ -227,7 +227,10 @@ struct SearchView: View {
 
 struct ConnectionsView: View {
     @EnvironmentObject private var store: HarmonySessionStore
+    @EnvironmentObject private var accountController: HarmonyAccountController
+    @EnvironmentObject private var notificationController: HarmonyNotificationController
     @State private var showingDeleteAccountConfirmation = false
+    @State private var showingAccountSettings = false
     @State private var displayName = ""
     @State private var discoverySearch = ""
     var body: some View {
@@ -461,6 +464,25 @@ struct ConnectionsView: View {
                 }
             }
             .navigationTitle("Connections")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showingAccountSettings = true
+                    } label: {
+                        Image(systemName: accountController.state == .apple
+                            ? "person.crop.circle.fill"
+                            : "person.crop.circle.badge.exclamationmark")
+                    }
+                    .accessibilityLabel("Account and notification settings")
+                    .accessibilityIdentifier("account-notification-settings")
+                }
+            }
+            .sheet(isPresented: $showingAccountSettings) {
+                HarmonyAccountSheet(
+                    account: accountController,
+                    notifications: notificationController
+                )
+            }
             .task {
                 await store.refreshAccountSettings()
                 displayName = store.accountProfile?.displayName ?? ""

@@ -319,6 +319,17 @@ private struct MusicListIndexRow: View {
             }
         }
         .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilitySummary)
+    }
+
+    private var accessibilitySummary: String {
+        var details = [list.title]
+        if list.isRanked { details.append("ranked list") }
+        details.append(list.visibility == .privateOnly ? "private" : list.visibility.title)
+        if !list.description.isEmpty { details.append(list.description) }
+        if !list.tags.isEmpty { details.append("tags \(list.tags.joined(separator: ", "))") }
+        return details.joined(separator: ", ")
     }
 }
 
@@ -374,6 +385,10 @@ struct MusicListDetailView: View {
                     .accessibilityLabel("List options")
                     .accessibilityIdentifier("music-list-options")
                 }
+            } else if let list {
+                ToolbarItem(placement: .primaryAction) {
+                    HarmonyReportButton(targetKind: .musicList, targetID: list.id)
+                }
             }
         }
         .sheet(item: $editingList, onDismiss: {
@@ -426,6 +441,8 @@ struct MusicListDetailView: View {
                         systemImage: "arrow.triangle.2.circlepath"
                     )
                 }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(listMetadataAccessibilityLabel(list))
 
                 if !list.tags.isEmpty {
                     Text(list.tags.map { "#\($0)" }.joined(separator: "  "))
@@ -435,6 +452,12 @@ struct MusicListDetailView: View {
             }
             .padding(.vertical, 6)
         }
+    }
+
+    private func listMetadataAccessibilityLabel(_ list: RemoteMusicList) -> String {
+        var values = [list.isRanked ? "Ranked" : "Unranked", list.visibility.title]
+        values.append("revision \(list.entriesRevision)")
+        return values.joined(separator: ", ")
     }
 
     @ViewBuilder
@@ -906,6 +929,11 @@ private struct MusicListCommentRow: View {
                     Task { _ = await store.deleteMusicListComment(comment) }
                 }
                 .disabled(store.deletingMusicListCommentIDs.contains(comment.id))
+            } else {
+                HarmonyReportButton(
+                    targetKind: .musicListComment,
+                    targetID: comment.id
+                )
             }
         }
         .accessibilityIdentifier("music-list-comment-\(comment.id.uuidString)")

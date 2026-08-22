@@ -26,6 +26,10 @@
 		F2000006289E162C00624552 /* HarmonyCollaborationRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2000007289E162C00624552 /* HarmonyCollaborationRepository.swift */; };
 		F4000001289E162C00624552 /* MusicListsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4000000289E162C00624552 /* MusicListsView.swift */; };
 		F5000001289E162C00624552 /* CanonicalAlbumDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5000000289E162C00624552 /* CanonicalAlbumDetailView.swift */; };
+		FA000001289E162C00624552 /* AccountAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000011289E162C00624552 /* AccountAccess.swift */; };
+		FA000002289E162C00624552 /* NotificationFoundation.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000012289E162C00624552 /* NotificationFoundation.swift */; };
+		FA000003289E162C00624552 /* PrivacySafeLogging.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000013289E162C00624552 /* PrivacySafeLogging.swift */; };
+		FA000004289E162C00624552 /* ReportingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000015289E162C00624552 /* ReportingView.swift */; };
 		EBDD9631289E166100624552 /* Song.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBDD9630289E166100624552 /* Song.swift */; };
 		EBDD9633289E22ED00624552 /* SwiftyJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBDD9632289E22ED00624552 /* SwiftyJSON.swift */; };
 /* End PBXBuildFile section */
@@ -68,6 +72,11 @@
 		F2000007289E162C00624552 /* HarmonyCollaborationRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarmonyCollaborationRepository.swift; sourceTree = "<group>"; };
 		F4000000289E162C00624552 /* MusicListsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicListsView.swift; sourceTree = "<group>"; };
 		F5000000289E162C00624552 /* CanonicalAlbumDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanonicalAlbumDetailView.swift; sourceTree = "<group>"; };
+		FA000011289E162C00624552 /* AccountAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountAccess.swift; sourceTree = "<group>"; };
+		FA000012289E162C00624552 /* NotificationFoundation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationFoundation.swift; sourceTree = "<group>"; };
+		FA000013289E162C00624552 /* PrivacySafeLogging.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacySafeLogging.swift; sourceTree = "<group>"; };
+		FA000014289E162C00624552 /* Harmony.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Harmony.entitlements; sourceTree = "<group>"; };
+		FA000015289E162C00624552 /* ReportingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportingView.swift; sourceTree = "<group>"; };
 		EBDD9630289E166100624552 /* Song.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Song.swift; sourceTree = "<group>"; };
 		EBDD9632289E22ED00624552 /* SwiftyJSON.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SwiftyJSON.swift; sourceTree = "<group>"; };
 		EBDD9634289E3E7400624552 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -123,6 +132,11 @@
 		EB708AFF288F4ACB007B6E1A /* Harmony */ = {
 			isa = PBXGroup;
 			children = (
+				FA000014289E162C00624552 /* Harmony.entitlements */,
+				FA000011289E162C00624552 /* AccountAccess.swift */,
+				FA000012289E162C00624552 /* NotificationFoundation.swift */,
+				FA000013289E162C00624552 /* PrivacySafeLogging.swift */,
+				FA000015289E162C00624552 /* ReportingView.swift */,
 				EBDD9634289E3E7400624552 /* Info.plist */,
 				EBDD9632289E22ED00624552 /* SwiftyJSON.swift */,
 				EB708B00288F4ACB007B6E1A /* HarmonyApp.swift */,
@@ -339,6 +353,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FA000001289E162C00624552 /* AccountAccess.swift in Sources */,
+				FA000002289E162C00624552 /* NotificationFoundation.swift in Sources */,
+				FA000003289E162C00624552 /* PrivacySafeLogging.swift in Sources */,
+				FA000004289E162C00624552 /* ReportingView.swift in Sources */,
 				F2000006289E162C00624552 /* HarmonyCollaborationRepository.swift in Sources */,
 				F2000004289E162C00624552 /* SupabaseConfiguration.swift in Sources */,
 				EBDD9631289E166100624552 /* Song.swift in Sources */,
@@ -506,6 +524,7 @@
 		EB708B22288F4AD2007B6E1A /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Harmony/Harmony.entitlements;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "Apple Development";
@@ -543,6 +562,7 @@
 		EB708B23288F4AD2007B6E1A /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Harmony/Harmony.entitlements;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
