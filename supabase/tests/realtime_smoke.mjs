@@ -95,7 +95,6 @@ socket.addEventListener("message", async (event) => {
         p_canonical_track_id: null,
         p_provider: null,
         p_provider_track_id: null,
-        p_played_at: new Date().toISOString(),
         p_source: "manual",
         p_visibility: "public",
         p_is_relisten: false,

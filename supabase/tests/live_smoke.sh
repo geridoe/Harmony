@@ -813,7 +813,7 @@ rpc "$collaborator_token" get_live_listen_along_state \
 stage="follower listening visibility"
 presence_expires_at="$(date -u -v+5M '+%Y-%m-%dT%H:%M:%SZ')"
 rpc "$collaborator_token" publish_listening_presence \
-  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-cross-isrc-apple\",\"p_provider_deep_link\":\"https://music.apple.com/us/song/harmony-cross-isrc/90101\",\"p_status\":\"listening\",\"p_visibility\":\"followers\",\"p_started_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_expires_at\":\"$presence_expires_at\"}" \
+  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-cross-isrc-apple\",\"p_provider_deep_link\":\"https://music.apple.com/us/song/harmony-cross-isrc/90101\",\"p_status\":\"listening\",\"p_visibility\":\"followers\",\"p_started_at\":\"$(date -u -v-2M '+%Y-%m-%dT%H:%M:%SZ')\",\"p_expires_at\":\"$presence_expires_at\"}" \
   "$smoke_tmp/presence.json"
 rest_get "$conductor_token" \
   "listening_presence?select=profile_id,broadcast_id,canonical_track_id,status&profile_id=eq.$collaborator_id" \
@@ -859,7 +859,7 @@ rpc "$conductor_token" get_listening_broadcast_snapshot \
 # Reusing the same provider identity may change live consent without replacing
 # the immutable track snapshot or notification target.
 rpc "$collaborator_token" publish_listening_presence \
-  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-cross-isrc-apple\",\"p_provider_deep_link\":\"https://music.apple.com/us/song/harmony-cross-isrc/90101\",\"p_status\":\"paused\",\"p_visibility\":\"private\",\"p_started_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_expires_at\":\"$presence_expires_at\"}" \
+  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-cross-isrc-apple\",\"p_provider_deep_link\":\"https://music.apple.com/us/song/harmony-cross-isrc/90101\",\"p_status\":\"paused\",\"p_visibility\":\"private\",\"p_started_at\":\"$(date -u -v-2M '+%Y-%m-%dT%H:%M:%SZ')\",\"p_expires_at\":\"$presence_expires_at\"}" \
   "$smoke_tmp/private-refreshed-presence.json"
 [[ "$(jq -er 'if type == "array" then .[0].broadcast_id else .broadcast_id end' "$smoke_tmp/private-refreshed-presence.json")" == "$listening_broadcast_id" ]]
 rpc "$conductor_token" get_listening_broadcast_snapshot \
@@ -875,7 +875,7 @@ jq -e --arg broadcast "$listening_broadcast_id" '
   and .[0].track_title == "Cross Provider Recording"
 ' "$smoke_tmp/private-eavesdrop-snapshot-owner.json" >/dev/null
 rpc "$collaborator_token" publish_listening_presence \
-  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-cross-isrc-apple\",\"p_provider_deep_link\":\"https://music.apple.com/us/song/harmony-cross-isrc/90101\",\"p_status\":\"listening\",\"p_visibility\":\"followers\",\"p_started_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_expires_at\":\"$presence_expires_at\"}" \
+  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-cross-isrc-apple\",\"p_provider_deep_link\":\"https://music.apple.com/us/song/harmony-cross-isrc/90101\",\"p_status\":\"listening\",\"p_visibility\":\"followers\",\"p_started_at\":\"$(date -u -v-2M '+%Y-%m-%dT%H:%M:%SZ')\",\"p_expires_at\":\"$presence_expires_at\"}" \
   "$smoke_tmp/restored-follower-presence.json"
 [[ "$(jq -er 'if type == "array" then .[0].broadcast_id else .broadcast_id end' "$smoke_tmp/restored-follower-presence.json")" == "$listening_broadcast_id" ]]
 rpc "$conductor_token" add_listening_broadcast_comment \
@@ -895,14 +895,14 @@ jq -e --arg comment "$listening_comment_id" '
 ' "$smoke_tmp/eavesdrop-notifications.json" >/dev/null
 presence_refresh_expires_at="$(date -u -v+6M '+%Y-%m-%dT%H:%M:%SZ')"
 rpc "$collaborator_token" publish_listening_presence \
-  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-cross-isrc-apple\",\"p_provider_deep_link\":\"https://music.apple.com/us/song/harmony-cross-isrc/90101\",\"p_status\":\"listening\",\"p_visibility\":\"followers\",\"p_started_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_expires_at\":\"$presence_refresh_expires_at\"}" \
+  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-cross-isrc-apple\",\"p_provider_deep_link\":\"https://music.apple.com/us/song/harmony-cross-isrc/90101\",\"p_status\":\"listening\",\"p_visibility\":\"followers\",\"p_started_at\":\"$(date -u -v-2M '+%Y-%m-%dT%H:%M:%SZ')\",\"p_expires_at\":\"$presence_refresh_expires_at\"}" \
   "$smoke_tmp/refreshed-presence.json"
 rest_get "$collaborator_token" \
   "listening_presence?select=broadcast_id&profile_id=eq.$collaborator_id" \
   "$smoke_tmp/refreshed-presence-id.json"
 [[ "$(jq -er '.[0].broadcast_id' "$smoke_tmp/refreshed-presence-id.json")" == "$listening_broadcast_id" ]]
 rpc "$collaborator_token" record_listening_history \
-  "{\"p_canonical_track_id\":\"$canonical_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-smoke-apple-track\",\"p_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_source\":\"manual\",\"p_visibility\":\"followers\",\"p_rating\":4.0}" \
+  "{\"p_canonical_track_id\":\"$canonical_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-smoke-apple-track\",\"p_played_at\":\"2020-01-01T12:00:00Z\",\"p_source\":\"manual\",\"p_visibility\":\"followers\",\"p_rating\":4.0}" \
   "$smoke_tmp/history.json"
 history_entry_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/history.json")"
 history_played_at="$(jq -er 'if type == "array" then .[0].played_at else .played_at end' "$smoke_tmp/history.json")"
@@ -928,7 +928,7 @@ jq -e --arg actor "$collaborator_id" --arg entry "$history_entry_id" 'length == 
   exit 1
 }
 rpc "$collaborator_token" record_listening_history \
-  "{\"p_canonical_track_id\":\"$canonical_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-smoke-apple-track\",\"p_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_source\":\"harmony_room\",\"p_visibility\":\"followers\"}" \
+  "{\"p_canonical_track_id\":\"$canonical_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-smoke-apple-track\",\"p_played_at\":\"$history_played_at\",\"p_source\":\"harmony_room\",\"p_visibility\":\"followers\"}" \
   "$smoke_tmp/harmony-room-history.json"
 harmony_room_history_id="$(jq -er 'if type == "array" then .[0].id else .id end' "$smoke_tmp/harmony-room-history.json")"
 rest_get "$conductor_token" \
@@ -1026,7 +1026,7 @@ rest_get "$collaborator_token" \
   "$smoke_tmp/duplicate-review-diary-before.json"
 duplicate_review_diary_count="$(jq 'length' "$smoke_tmp/duplicate-review-diary-before.json")"
 duplicate_track_review_status="$(rpc_status "$collaborator_token" create_track_review_with_optional_diary \
-  "{\"p_canonical_track_id\":\"$canonical_track_id\",\"p_rating\":4.0,\"p_body\":\"A duplicate current opinion.\",\"p_review_visibility\":\"private\",\"p_diary_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_diary_visibility\":\"private\",\"p_is_relisten\":true,\"p_tags\":[\"duplicate-attempt\"],\"p_diary_rating\":4.0}" \
+  "{\"p_canonical_track_id\":\"$canonical_track_id\",\"p_rating\":4.0,\"p_body\":\"A duplicate current opinion.\",\"p_review_visibility\":\"private\",\"p_diary_played_at\":\"$history_played_at\",\"p_diary_visibility\":\"private\",\"p_is_relisten\":true,\"p_tags\":[\"duplicate-attempt\"],\"p_diary_rating\":4.0}" \
   "$smoke_tmp/duplicate-track-review.json")"
 [[ "$duplicate_track_review_status" == "409" ]]
 jq -e '.details == "music_review_already_exists"' "$smoke_tmp/duplicate-track-review.json" >/dev/null
@@ -1079,11 +1079,11 @@ jq -e --arg event "$activity_first_id" 'length == 1 and .[0].id == $event' "$smo
 
 stage="owner diary editing and review linkage"
 unauthorized_diary_update_status="$(rpc_status "$conductor_token" update_listening_diary_entry \
-  "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_visibility\":\"private\",\"p_is_relisten\":false,\"p_tags\":[],\"p_review_id\":null}" \
+  "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$history_played_at\",\"p_visibility\":\"private\",\"p_is_relisten\":false,\"p_tags\":[],\"p_review_id\":null}" \
   "$smoke_tmp/unauthorized-diary-update.json")"
 [[ "$unauthorized_diary_update_status" == "400" || "$unauthorized_diary_update_status" == "404" ]]
 rpc "$collaborator_token" update_listening_diary_entry \
-  "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_visibility\":\"followers\",\"p_is_relisten\":true,\"p_tags\":[\" Road Trip \",\"road trip\",\"NIGHT\"],\"p_review_id\":\"$review_id\"}" \
+  "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$history_played_at\",\"p_visibility\":\"followers\",\"p_is_relisten\":true,\"p_tags\":[\" Road Trip \",\"road trip\",\"NIGHT\"],\"p_review_id\":\"$review_id\"}" \
   "$smoke_tmp/diary-update.json"
 rpc "$collaborator_token" list_my_listening_diary \
   '{"p_before_played_at":null,"p_before_id":null,"p_limit":100}' \
@@ -1122,15 +1122,15 @@ rpc "$collaborator_token" update_music_review \
   "{\"p_review_id\":\"$review_id\",\"p_rating\":4.5,\"p_body\":\"A great Harmony smoke review.\",\"p_visibility\":\"followers\",\"p_contains_spoilers\":true,\"p_is_loved\":true}" \
   "$smoke_tmp/restored-linked-review.json"
 unauthorized_atomic_diary_update_status="$(rpc_status "$conductor_token" update_listening_diary_entry_with_rating \
-  "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_visibility\":\"private\",\"p_is_relisten\":false,\"p_tags\":[],\"p_review_id\":null,\"p_rating\":1.0}" \
+  "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$history_played_at\",\"p_visibility\":\"private\",\"p_is_relisten\":false,\"p_tags\":[],\"p_review_id\":null,\"p_rating\":1.0}" \
   "$smoke_tmp/unauthorized-atomic-diary-update.json")"
 [[ "$unauthorized_atomic_diary_update_status" == "400" || "$unauthorized_atomic_diary_update_status" == "404" ]]
 invalid_atomic_diary_rating_status="$(rpc_status "$collaborator_token" update_listening_diary_entry_with_rating \
-  "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_visibility\":\"followers\",\"p_is_relisten\":false,\"p_tags\":[\"atomic\"],\"p_review_id\":\"$review_id\",\"p_rating\":4.2}" \
+  "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$history_played_at\",\"p_visibility\":\"followers\",\"p_is_relisten\":false,\"p_tags\":[\"atomic\"],\"p_review_id\":\"$review_id\",\"p_rating\":4.2}" \
   "$smoke_tmp/invalid-atomic-diary-rating.json")"
 [[ "$invalid_atomic_diary_rating_status" == "400" ]]
 rpc "$collaborator_token" update_listening_diary_entry_with_rating \
-  "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_visibility\":\"followers\",\"p_is_relisten\":false,\"p_tags\":[\" Atomic \",\"atomic\",\"LIVE\"],\"p_review_id\":\"$review_id\",\"p_rating\":null}" \
+  "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$history_played_at\",\"p_visibility\":\"followers\",\"p_is_relisten\":false,\"p_tags\":[\" Atomic \",\"atomic\",\"LIVE\"],\"p_review_id\":\"$review_id\",\"p_rating\":null}" \
   "$smoke_tmp/atomic-diary-rating-clear.json"
 rpc "$collaborator_token" list_my_listening_diary \
   '{"p_before_played_at":null,"p_before_id":null,"p_limit":100}' \
@@ -1141,7 +1141,7 @@ rest_get "$collaborator_token" \
   "$smoke_tmp/atomic-default-rating-cleared.json"
 jq -e 'length == 1 and .[0].default_rating == null' "$smoke_tmp/atomic-default-rating-cleared.json" >/dev/null
 rpc "$collaborator_token" update_listening_diary_entry_with_rating \
-  "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_visibility\":\"followers\",\"p_is_relisten\":true,\"p_tags\":[\"Atomic\",\"NIGHT\"],\"p_review_id\":\"$review_id\",\"p_rating\":2.5}" \
+  "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$history_played_at\",\"p_visibility\":\"followers\",\"p_is_relisten\":true,\"p_tags\":[\"Atomic\",\"NIGHT\"],\"p_review_id\":\"$review_id\",\"p_rating\":2.5}" \
   "$smoke_tmp/atomic-diary-update.json"
 rpc "$collaborator_token" list_my_listening_diary \
   '{"p_before_played_at":null,"p_before_id":null,"p_limit":100}' \
@@ -1398,7 +1398,7 @@ rest_get "$collaborator_token" \
 [[ "$(jq 'length' "$smoke_tmp/removed-empty-album-state.json")" -eq 0 ]]
 
 album_diary_link_status="$(rpc_status "$collaborator_token" update_listening_diary_entry_with_rating \
-  "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_visibility\":\"followers\",\"p_is_relisten\":true,\"p_tags\":[\"atomic\",\"night\"],\"p_review_id\":\"$album_review_id\",\"p_rating\":2.5}" \
+  "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$history_played_at\",\"p_visibility\":\"followers\",\"p_is_relisten\":true,\"p_tags\":[\"atomic\",\"night\"],\"p_review_id\":\"$album_review_id\",\"p_rating\":2.5}" \
   "$smoke_tmp/album-diary-link.json")"
 [[ "$album_diary_link_status" == "400" ]]
 
@@ -2181,7 +2181,7 @@ rest_get "$collaborator_token" \
 [[ "$(jq 'length' "$smoke_tmp/rating-diary-activity-after.json")" -eq "$(( $(jq 'length' "$smoke_tmp/rating-diary-activity-before.json") + 1 ))" ]]
 
 stage="atomic review and optional Diary authoring"
-atomic_played_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+atomic_played_at="$history_played_at"
 rpc "$collaborator_token" create_track_review_with_optional_diary \
   "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_body\":\"Atomic written-only review.\",\"p_review_visibility\":\"private\",\"p_diary_played_at\":\"$atomic_played_at\",\"p_diary_visibility\":\"private\",\"p_diary_rating\":1.5}" \
   "$smoke_tmp/atomic-unrated-review.json"
@@ -2753,7 +2753,7 @@ rpc "$conductor_token" unblock_social_profile \
 
 stage="public profile records without a follow edge"
 rpc "$collaborator_token" update_listening_diary_entry_with_rating \
-  "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_visibility\":\"public\",\"p_is_relisten\":true,\"p_tags\":[\"public\"],\"p_review_id\":\"$review_id\",\"p_rating\":2.5}" \
+  "{\"p_entry_id\":\"$history_entry_id\",\"p_played_at\":\"$history_played_at\",\"p_visibility\":\"public\",\"p_is_relisten\":true,\"p_tags\":[\"public\"],\"p_review_id\":\"$review_id\",\"p_rating\":2.5}" \
   "$smoke_tmp/public-profile-diary-update.json"
 rpc "$conductor_token" list_profile_listening_diary \
   "{\"p_profile_id\":\"$collaborator_id\",\"p_before_played_at\":null,\"p_before_id\":null,\"p_limit\":100}" \
@@ -2876,7 +2876,7 @@ stopped_eavesdrop_comment_status="$(rpc_status "$conductor_token" add_listening_
 stage="settings-driven live consent stop"
 settings_stop_expires_at="$(date -u -v+5M '+%Y-%m-%dT%H:%M:%SZ')"
 rpc "$conductor_token" publish_listening_presence \
-  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_provider\":\"spotify\",\"p_provider_track_id\":\"spotify:track:harmony-cross-isrc\",\"p_provider_deep_link\":\"https://open.spotify.com/track/harmony-cross-isrc\",\"p_status\":\"listening\",\"p_visibility\":\"private\",\"p_started_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_expires_at\":\"$settings_stop_expires_at\"}" \
+  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_provider\":\"spotify\",\"p_provider_track_id\":\"spotify:track:harmony-cross-isrc\",\"p_provider_deep_link\":\"https://open.spotify.com/track/harmony-cross-isrc\",\"p_status\":\"listening\",\"p_visibility\":\"private\",\"p_started_at\":\"$(date -u -v-2M '+%Y-%m-%dT%H:%M:%SZ')\",\"p_expires_at\":\"$settings_stop_expires_at\"}" \
   "$smoke_tmp/settings-stop-presence.json"
 settings_stop_broadcast_id="$(jq -er 'if type == "array" then .[0].broadcast_id else .broadcast_id end' "$smoke_tmp/settings-stop-presence.json")"
 rest_patch "$conductor_token" \
@@ -2899,7 +2899,7 @@ jq -e --arg broadcast "$settings_stop_broadcast_id" '
 stage="materialized expired eavesdrop snapshot"
 expiry_presence_expires_at="$(date -u -v+6S '+%Y-%m-%dT%H:%M:%SZ')"
 rpc "$collaborator_token" publish_listening_presence \
-  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-cross-isrc-apple\",\"p_provider_deep_link\":\"https://music.apple.com/us/song/harmony-cross-isrc/90101\",\"p_status\":\"paused\",\"p_visibility\":\"private\",\"p_started_at\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",\"p_expires_at\":\"$expiry_presence_expires_at\"}" \
+  "{\"p_canonical_track_id\":\"$cross_isrc_track_id\",\"p_provider\":\"apple_music\",\"p_provider_track_id\":\"harmony-cross-isrc-apple\",\"p_provider_deep_link\":\"https://music.apple.com/us/song/harmony-cross-isrc/90101\",\"p_status\":\"paused\",\"p_visibility\":\"private\",\"p_started_at\":\"$(date -u -v-2M '+%Y-%m-%dT%H:%M:%SZ')\",\"p_expires_at\":\"$expiry_presence_expires_at\"}" \
   "$smoke_tmp/expiring-eavesdrop-presence.json"
 expired_listening_broadcast_id="$(jq -er 'if type == "array" then .[0].broadcast_id else .broadcast_id end' "$smoke_tmp/expiring-eavesdrop-presence.json")"
 sleep 7

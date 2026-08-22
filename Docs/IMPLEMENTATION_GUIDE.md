@@ -1037,10 +1037,19 @@ receive masked review links when they cannot open the review.
 - Native Sign in with Apple and anonymous identity linking; APNs registration,
   preferences, and private device-token RPCs; privacy-safe structured logging;
   abuse reports; atomic throttles; bounded cleanup; and exhaustive Diary search.
+- The first native Apple authorization immediately stores its one-time name in
+  private Auth metadata (never authorization claims). Public profile naming
+  remains an explicit user-controlled setting.
+- Supabase advisor hardening makes provider connection status reads
+  security-invoker, removes unauthenticated execution from privileged RPCs,
+  and keeps trigger/maintenance entry points unavailable as client RPCs.
 - Apple catalog enrichment carries album ID, storefront, UPC, release date,
   track count, release type, artwork, and deep link into canonical resolution.
 - Realtime cost controls refresh only affected caches, fetch one preferred
   listening projection, and heartbeat every 15 seconds.
+- RLS identity checks use statement-level init plans rather than re-evaluating
+  `auth.uid()` for every candidate row; the hosted performance advisor reports
+  no remaining warning-or-higher findings.
 
 ### Requires user action or external entitlement
 

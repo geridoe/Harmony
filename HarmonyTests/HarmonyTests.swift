@@ -73,6 +73,19 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(HarmonyAccountController.makeNonce().count, 32)
     }
 
+    func testAppleFirstAuthorizationNameMetadataIsTrimmedAndOptional() {
+        var components = PersonNameComponents()
+        components.givenName = "  Janelle "
+        components.familyName = " Monáe  "
+
+        let metadata = HarmonyAccountController.appleNameMetadata(from: components)
+
+        XCTAssertEqual(metadata?["full_name"]?.stringValue, "Janelle Monáe")
+        XCTAssertEqual(metadata?["given_name"]?.stringValue, "Janelle")
+        XCTAssertEqual(metadata?["family_name"]?.stringValue, "Monáe")
+        XCTAssertNil(HarmonyAccountController.appleNameMetadata(from: nil))
+    }
+
     func testNotificationPayloadRoutesOnlyTypedSafeIdentifiers() throws {
         let id = UUID()
         let destination = try XCTUnwrap(HarmonyNotificationDestination(userInfo: [

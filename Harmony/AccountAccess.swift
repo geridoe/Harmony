@@ -77,6 +77,7 @@ final class HarmonyAccountController: NSObject, ObservableObject {
                 session = try await client.auth.signInWithIdToken(credentials: credentials)
                 HarmonyLog.authentication.info("Apple authentication completed")
             }
+            await persistAppleNameIfPresent(credential.fullName)
             apply(session: session)
         } catch let error as ASAuthorizationError where error.code == .canceled {
             HarmonyLog.authentication.info("Apple authentication cancelled")
@@ -126,6 +127,32 @@ final class HarmonyAccountController: NSObject, ObservableObject {
         } catch {
             HarmonyLog.authentication.error("Apple credential verification failed: \(HarmonyLog.safeFailure(error), privacy: .public)")
         }
+    }
+
+    private func persistAppleNameIfPresent(_ components: PersonNameComponents?) async {
+        guard let metadata = Self.appleNameMetadata(from: components) else { return }
+        do {
+            _ = try await client.auth.update(user: UserAttributes(data: metadata))
+            HarmonyLog.authentication.info("Stored first-authorization Apple name metadata")
+        } catch {
+            // Authentication already succeeded. Do not strand the account if
+            // this one-time, presentation-only metadata write fails.
+            HarmonyLog.authentication.error(
+                "Apple name metadata update failed: \(HarmonyLog.safeFailure(error), privacy: .public)"
+            )
+        }
+    }
+
+    static func appleNameMetadata(from components: PersonNameComponents?) -> [String: AnyJSON]? {
+        guard let components else { return nil }
+        let given = components.givenName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let family = components.familyName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let fullName = [given, family].filter { !$0.isEmpty }.joined(separator: " ")
+        guard !fullName.isEmpty else { return nil }
+        var metadata: [String: AnyJSON] = ["full_name": .string(fullName)]
+        if !given.isEmpty { metadata["given_name"] = .string(given) }
+        if !family.isEmpty { metadata["family_name"] = .string(family) }
+        return metadata
     }
 
     static func sha256(_ input: String) -> String {
