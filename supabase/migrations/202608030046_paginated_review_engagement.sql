@@ -3,6 +3,11 @@
 -- with a stable two-part cursor, and expose only bounded engagement summary
 -- data until the detail screen explicitly loads the conversation.
 
+-- LOCK TABLE is only valid inside an explicit transaction. Keep this migration
+-- atomic so the child-table locks remain held through trigger installation and
+-- no engagement change can land between the backfill and counter maintenance.
+begin;
+
 alter table public.music_reviews
   add column heart_count bigint not null default 0,
   add column comment_count bigint not null default 0,
@@ -231,3 +236,5 @@ comment on function public.list_review_comments(
 
 comment on function public.get_review_engagement(uuid) is
   'Transactionally maintained heart/comment totals and the authenticated caller heart state for one visible review.';
+
+commit;

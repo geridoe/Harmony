@@ -970,12 +970,33 @@ of an all-empty row.
 
 ```bash
 # From /Users/geridoe/App Development/Harmony/Harmony
+
+# Fast schema validation on lower-memory development Macs. This starts only
+# Postgres, applies every migration, and preserves its Docker volume on stop.
+supabase db start
+supabase db reset --local --no-seed
+supabase db lint --local --fail-on error
+supabase stop
+
+# Local Auth, REST, Realtime, and Edge Function integration. The exclusions
+# avoid services Harmony does not use and keep the stack within a 4 GB Docker VM.
+supabase start --exclude studio,postgres-meta,storage-api,imgproxy,mailpit,logflare,vector,supavisor
+
+# Linked-project deployment and hosted verification.
 supabase link --project-ref YOUR_PROJECT_REF
 supabase db push
 supabase secrets set --env-file supabase/functions/.env
 supabase functions deploy spotify-token-exchange
 ./supabase/tests/live_smoke.sh
 ```
+
+The checked-in `supabase/config.toml` matches Harmony's local requirements:
+Postgres 17, anonymous bootstrap accounts, manual Apple identity linking, and
+no Studio, SMTP, Storage, Vector, or Analytics containers. Use `supabase db
+start` for routine migration work; the reduced integration stack is only
+needed for Auth, REST, Realtime, or local Edge Function testing. Do not use
+`--ignore-health-check` except while diagnosing a service that has already
+failed its health check.
 
 Deploy every changed Edge Function explicitly. Use the checked-in
 `supabase/functions/.env.example` only as a shape reference; never commit a
