@@ -2383,6 +2383,7 @@ struct MemberProfileView: View {
     @State private var ratingScope = MemberMusicScope.all
     @State private var lovedScope = MemberMusicScope.all
     @State private var profileGraphDestination: MemberProfileGraphDirection?
+    @State private var confirmsBlocking = false
 
     private var shelfState: PublicProfileShelfState? { store.publicProfileShelves[profileID] }
     private var overview: RemoteMemberProfileOverview? { shelfState?.overview }
@@ -2468,6 +2469,19 @@ struct MemberProfileView: View {
                     HarmonyReportButton(targetKind: .profile, targetID: profileID)
                 }
             }
+        }
+        .confirmationDialog(
+            "Block \(resolvedDisplayName)?",
+            isPresented: $confirmsBlocking,
+            titleVisibility: .visible
+        ) {
+            Button("Block listener", role: .destructive) {
+                Task { await store.blockSocialProfile(profileID) }
+            }
+            .accessibilityIdentifier("confirm-block-listener")
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You will stop following each other. They will not be able to view your shared listening activity or interact with you.")
         }
     }
 
@@ -2589,7 +2603,7 @@ struct MemberProfileView: View {
                 Spacer()
                 Menu {
                     Button("Block listener", role: .destructive) {
-                        Task { await store.blockSocialProfile(profileID) }
+                        confirmsBlocking = true
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")

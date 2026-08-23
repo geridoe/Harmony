@@ -127,6 +127,22 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Follow"].exists)
     }
 
+    func testBlockingListenerRequiresExplicitConfirmation() throws {
+        let app = XCUIApplication()
+        app.launchArguments.append("--ui-test-social-activity")
+        app.launch()
+
+        app.tabBars.buttons["Connections"].tap()
+        XCTAssertTrue(app.navigationBars["Connections"].waitForExistence(timeout: 5))
+        let respond = app.buttons["Respond"]
+        XCTAssertTrue(respond.waitForExistence(timeout: 5))
+        respond.tap()
+        app.buttons["Block"].tap()
+
+        XCTAssertTrue(app.buttons["confirm-block-listener"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Pending Listener"].exists)
+    }
+
     func testListenTabLoadsSocialSections() throws {
         let app = XCUIApplication()
         app.launch()

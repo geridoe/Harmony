@@ -191,7 +191,12 @@ struct HarmonyAccountSheet: View {
                         .frame(height: 48)
                         .disabled(account.isWorking)
                     } else {
-                        Button("Sign out", role: .destructive) { Task { await account.signOut() } }
+                        Button("Sign out", role: .destructive) {
+                            Task {
+                                _ = await notifications.unregisterCurrentDevice()
+                                await account.signOut()
+                            }
+                        }
                         Button("Delete account", role: .destructive) { confirmsDeletion = true }
                     }
                 }
@@ -211,7 +216,10 @@ struct HarmonyAccountSheet: View {
                 titleVisibility: .visible
             ) {
                 Button("Delete account", role: .destructive) {
-                    Task { await account.deleteAccount() }
+                    Task {
+                        _ = await notifications.unregisterCurrentDevice()
+                        await account.deleteAccount()
+                    }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {

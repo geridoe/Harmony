@@ -102,8 +102,11 @@ list privacy, notification/activity shapes, and Realtime delivery.
 Spotify catalog search, OAuth, App Remote playback, live sharing, and manual
 history import can be developed and tested now with a Spotify developer app and
 Premium account. Apple Music authorization/playback requires the Apple
-Developer Program, a MusicKit-enabled App ID, signing entitlements, and a real
-device/account. That gate does not block Supabase, social, queue, Reviews,
+Developer Program, a MusicKit-enabled App ID, the usage-description string,
+and a real device/account. MusicKit is an App ID runtime service and does not add a
+`com.apple.developer.musickit` code-signing entitlement; keeping that invalid
+key prevents current Xcode provisioning. That gate does not block Supabase,
+social, queue, Reviews,
 Ratings, Lists, Spotify, or simulator work.
 
 Sign in with Apple, APNs registration, owner notification preferences, private

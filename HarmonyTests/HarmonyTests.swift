@@ -105,6 +105,13 @@ final class HarmonyTests: XCTestCase {
             ]),
             .musicList(id)
         )
+        XCTAssertEqual(
+            HarmonyNotificationDestination(userInfo: [
+                "kind": "listening_broadcast_reaction",
+                "broadcast_id": id.uuidString,
+            ]),
+            .broadcast(id)
+        )
     }
 
     func testNotificationPreferencesRoundTrip() throws {

@@ -231,6 +231,7 @@ struct ConnectionsView: View {
     @EnvironmentObject private var notificationController: HarmonyNotificationController
     @State private var showingDeleteAccountConfirmation = false
     @State private var showingAccountSettings = false
+    @State private var profilePendingBlock: RemoteSocialProfile?
     @State private var displayName = ""
     @State private var discoverySearch = ""
     var body: some View {
@@ -528,6 +529,24 @@ struct ConnectionsView: View {
             } message: {
                 Text("This cannot be undone. Sessions you conduct will end and all Harmony account data will be removed.")
             }
+            .confirmationDialog(
+                "Block \(profilePendingBlock?.displayName ?? "this listener")?",
+                isPresented: Binding(
+                    get: { profilePendingBlock != nil },
+                    set: { if !$0 { profilePendingBlock = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Block listener", role: .destructive) {
+                    guard let profileID = profilePendingBlock?.id else { return }
+                    profilePendingBlock = nil
+                    Task { await store.blockSocialProfile(profileID) }
+                }
+                .accessibilityIdentifier("confirm-block-listener")
+                Button("Cancel", role: .cancel) { profilePendingBlock = nil }
+            } message: {
+                Text("You will stop following each other. They will not be able to view your shared listening activity or interact with you.")
+            }
         }
     }
 
@@ -588,7 +607,7 @@ struct ConnectionsView: View {
                     Button("Decline", role: .destructive) {
                         Task { await store.respondToSocialFollow(from: profile.id, accept: false) }
                     }
-                    blockButton(profile.id)
+                    blockButton(profile)
                 }
                 .buttonStyle(.borderedProminent)
             case .outgoingRequest:
@@ -596,14 +615,14 @@ struct ConnectionsView: View {
                     Button("Cancel request", role: .destructive) {
                         Task { await store.removeSocialFollow(profile.id) }
                     }
-                    blockButton(profile.id)
+                    blockButton(profile)
                 }
             case .following:
                 Menu("Following") {
                     Button("Unfollow", role: .destructive) {
                         Task { await store.removeSocialFollow(profile.id) }
                     }
-                    blockButton(profile.id)
+                    blockButton(profile)
                 }
             case .follower:
                 Menu("Follows you") {
@@ -613,7 +632,7 @@ struct ConnectionsView: View {
                     Button("Remove follower", role: .destructive) {
                         Task { await store.removeSocialFollower(profile.id) }
                     }
-                    blockButton(profile.id)
+                    blockButton(profile)
                 }
             case .discovery:
                 discoveryControl(profile)
@@ -636,7 +655,7 @@ struct ConnectionsView: View {
                         Task { await store.removeSocialFollow(profile.id) }
                     }
                 }
-                blockButton(profile.id)
+                blockButton(profile)
             }
             .buttonStyle(.borderedProminent)
         } else if outgoing == "requested" {
@@ -644,14 +663,14 @@ struct ConnectionsView: View {
                 Button("Cancel request", role: .destructive) {
                     Task { await store.removeSocialFollow(profile.id) }
                 }
-                blockButton(profile.id)
+                blockButton(profile)
             }
         } else if outgoing == "accepted" {
             Menu("Following") {
                 Button("Unfollow", role: .destructive) {
                     Task { await store.removeSocialFollow(profile.id) }
                 }
-                blockButton(profile.id)
+                blockButton(profile)
             }
         } else {
             Button(incoming == "accepted" ? "Follow back" : "Follow") {
@@ -661,9 +680,9 @@ struct ConnectionsView: View {
         }
     }
 
-    private func blockButton(_ profileID: UUID) -> some View {
+    private func blockButton(_ profile: RemoteSocialProfile) -> some View {
         Button("Block", role: .destructive) {
-            Task { await store.blockSocialProfile(profileID) }
+            profilePendingBlock = profile
         }
     }
 

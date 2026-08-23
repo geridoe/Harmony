@@ -29,7 +29,8 @@ enum HarmonyNotificationDestination: Equatable, Identifiable {
         case "review", "review_comment", "review_reaction":
             guard let id = identifier("review_id") else { return nil }
             self = .review(id)
-        case "broadcast", "broadcast_comment", "broadcast_reaction":
+        case "broadcast", "broadcast_comment", "broadcast_reaction",
+             "listening_broadcast_comment", "listening_broadcast_reaction":
             guard let id = identifier("broadcast_id") else { return nil }
             self = .broadcast(id)
         case "music_list_comment", "music_list_like":
@@ -95,6 +96,7 @@ final class HarmonyNotificationController: NSObject, ObservableObject, UNUserNot
     private let registeredDeviceKey = "harmony.notification-device-id.v1"
     private let repository = HarmonyCollaborationRepository()
     private var preferenceSyncTask: Task<Void, Never>?
+    private var isApplyingRemotePreferences = false
 
     override private init() {
         if let data = UserDefaults.standard.data(forKey: preferencesKey),
@@ -109,6 +111,28 @@ final class HarmonyNotificationController: NSObject, ObservableObject, UNUserNot
 
     func refreshAuthorization() async {
         authorizationStatus = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+        if authorizationStatus == .authorized || authorizationStatus == .provisional {
+            // APNs tokens can change. Apple recommends registering on every
+            // launch instead of treating a previously stored token as durable.
+            UIApplication.shared.registerForRemoteNotifications()
+        }
+    }
+
+    func synchronizePreferences() async {
+        do {
+            if let remote = try await repository.notificationPreferences() {
+                isApplyingRemotePreferences = true
+                preferences = remote
+                isApplyingRemotePreferences = false
+            } else {
+                // A new account has no preference row until its first write.
+                // Preserve any locally chosen settings when upgrading a guest
+                // account or reinstalling while signed into the same account.
+                try await repository.setNotificationPreferences(preferences)
+            }
+        } catch {
+            HarmonyLog.notifications.error("Notification preference refresh failed: \(HarmonyLog.safeFailure(error), privacy: .public)")
+        }
     }
 
     func requestAuthorizationAndRegister() async {
@@ -145,6 +169,26 @@ final class HarmonyNotificationController: NSObject, ObservableObject, UNUserNot
         }
     }
 
+    @discardableResult
+    func unregisterCurrentDevice() async -> Bool {
+        guard let rawID = UserDefaults.standard.string(forKey: registeredDeviceKey),
+              let deviceID = UUID(uuidString: rawID) else {
+            UserDefaults.standard.removeObject(forKey: registeredDeviceKey)
+            return true
+        }
+        do {
+            let unregistered = try await repository.unregisterNotificationDevice(id: deviceID)
+            if unregistered {
+                UserDefaults.standard.removeObject(forKey: registeredDeviceKey)
+                HarmonyLog.notifications.info("APNs device registration removed")
+            }
+            return unregistered
+        } catch {
+            HarmonyLog.notifications.error("APNs device removal failed: \(HarmonyLog.safeFailure(error), privacy: .public)")
+            return false
+        }
+    }
+
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
@@ -169,6 +213,7 @@ final class HarmonyNotificationController: NSObject, ObservableObject, UNUserNot
     private func persistPreferences() {
         guard let data = try? JSONEncoder().encode(preferences) else { return }
         UserDefaults.standard.set(data, forKey: preferencesKey)
+        guard !isApplyingRemotePreferences else { return }
         preferenceSyncTask?.cancel()
         let snapshot = preferences
         preferenceSyncTask = Task { [weak self] in

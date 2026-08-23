@@ -346,6 +346,33 @@ private struct NotificationDeviceParameters: Encodable {
     let p_app_bundle_id: String
     let p_device_label: String
 }
+private struct UnregisterNotificationDeviceParameters: Encodable {
+    let p_device_id: UUID
+}
+private struct RemoteNotificationPreferences: Decodable {
+    let followsEnabled: Bool
+    let commentsEnabled: Bool
+    let reactionsEnabled: Bool
+    let sessionsEnabled: Bool
+    let eavesdropEnabled: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case followsEnabled = "follows_enabled"
+        case commentsEnabled = "comments_enabled"
+        case reactionsEnabled = "reactions_enabled"
+        case sessionsEnabled = "sessions_enabled"
+        case eavesdropEnabled = "eavesdrop_enabled"
+    }
+
+    var clientPreferences: HarmonyNotificationPreferences {
+        HarmonyNotificationPreferences(
+            follows: followsEnabled,
+            socialActivity: commentsEnabled && reactionsEnabled,
+            sessions: sessionsEnabled,
+            liveListening: eavesdropEnabled
+        )
+    }
+}
 private struct AbuseReportParameters: Encodable {
     let p_target_kind: String
     let p_target_id: UUID
@@ -3125,6 +3152,17 @@ final class HarmonyCollaborationRepository {
         ).execute()
     }
 
+    func notificationPreferences() async throws -> HarmonyNotificationPreferences? {
+        try await authenticate()
+        let rows: [RemoteNotificationPreferences] = try await client
+            .from("notification_preferences")
+            .select("follows_enabled,comments_enabled,reactions_enabled,sessions_enabled,eavesdrop_enabled")
+            .limit(1)
+            .execute()
+            .value
+        return rows.first?.clientPreferences
+    }
+
     func registerNotificationDevice(
         token: String,
         environment: String,
@@ -3140,6 +3178,14 @@ final class HarmonyCollaborationRepository {
                 p_app_bundle_id: bundleID,
                 p_device_label: label
             )
+        ).execute().value
+    }
+
+    func unregisterNotificationDevice(id: UUID) async throws -> Bool {
+        try await authenticate()
+        return try await client.rpc(
+            "unregister_notification_device",
+            params: UnregisterNotificationDeviceParameters(p_device_id: id)
         ).execute().value
     }
 

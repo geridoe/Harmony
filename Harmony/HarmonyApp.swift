@@ -40,6 +40,7 @@ struct HarmonyApp: App {
                     async let accountBootstrap: Void = accountController.bootstrap()
                     async let notificationBootstrap: Void = notificationController.refreshAuthorization()
                     _ = await (storeBootstrap, accountBootstrap, notificationBootstrap)
+                    await notificationController.synchronizePreferences()
                 }
                 .onOpenURL { url in
                     sessionStore.handleOpenURL(url)
