@@ -464,6 +464,36 @@ final class HarmonyTests: XCTestCase {
         XCTAssertEqual(store.catalogSearchResults?.map(\.title), ["Afterglow"], "The Add music compatibility accessor must stay purpose-scoped")
     }
 
+    func testNoProviderCatalogSearchExposesConnectionGuidance() async {
+        let store = HarmonySessionStore()
+
+        await store.searchCatalog(query: "Neon Coast", purpose: .reviews)
+
+        let state = store.catalogSearchState(for: .reviews)
+        XCTAssertTrue(state.needsProviderConnection)
+        XCTAssertEqual(state.failures.first?.provider, nil)
+    }
+
+    func testProviderSearchFailureKeepsProviderAttribution() async throws {
+        let appleMusic = RecordingAppleMusicProvider()
+        let store = HarmonySessionStore(
+            spotifyRemote: RecordingSpotifyProvider(),
+            appleMusicProvider: appleMusic
+        )
+        await store.connectAppleMusic()
+        store.debugForceProviderConnection(.spotify)
+        store.spotifyCatalogSearchProvider = { _ in
+            throw SpotifyCatalogError.reconnectRequired
+        }
+
+        await store.searchCatalog(query: "Neon Coast", purpose: .reviews)
+
+        let state = store.catalogSearchState(for: .reviews)
+        XCTAssertFalse(state.needsProviderConnection)
+        XCTAssertEqual(state.failures.first?.provider, .spotify)
+        XCTAssertEqual(state.message, "Spotify: Reconnect Spotify, then try the search again.")
+    }
+
     func testResettingReviewSearchDoesNotClearAddMusicResults() async {
         let store = HarmonySessionStore()
 

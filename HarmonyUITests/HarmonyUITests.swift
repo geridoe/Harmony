@@ -143,6 +143,30 @@ class HarmonyUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Pending Listener"].exists)
     }
 
+    func testReviewSubjectPickerShowsRetryAfterProviderFailure() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        app.tabBars.buttons["Reviews"].tap()
+        let write = app.buttons["reviews-write-review"]
+        XCTAssertTrue(write.waitForExistence(timeout: 10))
+        write.tap()
+
+        let chooseSubject = app.buttons["Choose a song or album"]
+        XCTAssertTrue(chooseSubject.waitForExistence(timeout: 10))
+        chooseSubject.tap()
+
+        let search = app.navigationBars["Choose music"].searchFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 10))
+        search.tap()
+        search.typeText("Neon Coast")
+
+        let retry = app.buttons["review-subject-retry"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 10))
+        retry.tap()
+        XCTAssertTrue(retry.waitForExistence(timeout: 10))
+    }
+
     func testListenTabLoadsSocialSections() throws {
         let app = XCUIApplication()
         app.launch()

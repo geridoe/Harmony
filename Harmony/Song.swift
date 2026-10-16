@@ -1168,8 +1168,15 @@ struct CatalogSearchState: Equatable {
     var results: [HarmonyTrack]?
     var isSearching = false
     var message: String?
+    var failures: [CatalogSearchFailure] = []
+    var needsProviderConnection = false
 
     static let idle = CatalogSearchState()
+}
+
+struct CatalogSearchFailure: Hashable {
+    let provider: MusicProvider?
+    let message: String
 }
 
 @MainActor
@@ -1711,16 +1718,18 @@ final class HarmonySessionStore: ObservableObject {
             catalogSearchStates[purpose] = CatalogSearchState(
                 query: term,
                 results: results,
-                message: "Connect Spotify or Apple Music to search its full catalog."
+                message: "Connect Spotify or Apple Music to search its full catalog.",
+                failures: [CatalogSearchFailure(provider: nil, message: "No music service is connected.")],
+                needsProviderConnection: true
             )
             return
         }
         catalogSearchStates[purpose] = CatalogSearchState(query: term, isSearching: true)
         var results: [HarmonyTrack] = []
-        var failures: [String] = []
+        var failures: [(provider: MusicProvider?, message: String)] = []
         if canSearchAppleMusic {
             do { results += try await appleMusicProvider.search(query: term) }
-            catch { failures.append("Apple Music: \(error.localizedDescription)") }
+            catch { failures.append((.appleMusic, error.localizedDescription)) }
         }
         guard !Task.isCancelled else {
             finishCancelledCatalogSearch(requestID, term: term, purpose: purpose)
@@ -1728,9 +1737,15 @@ final class HarmonySessionStore: ObservableObject {
         }
         if canSearchSpotify {
             do {
-                results += try await collaborationRepository.searchSpotify(query: term).map(Self.harmonyTrack)
+                let spotifyTracks: [SpotifySearchTrack]
+                if let provider = spotifyCatalogSearchProvider {
+                    spotifyTracks = try await provider(term)
+                } else {
+                    spotifyTracks = try await collaborationRepository.searchSpotify(query: term)
+                }
+                results += spotifyTracks.map(Self.harmonyTrack)
             } catch {
-                failures.append("Spotify: \(error.localizedDescription)")
+                failures.append((.spotify, error.localizedDescription))
             }
         }
         guard !Task.isCancelled else {
@@ -1739,10 +1754,17 @@ final class HarmonySessionStore: ObservableObject {
         }
         guard isCurrentCatalogSearch(requestID, for: purpose) else { return }
         let mergedResults = Self.mergeCatalogResults(results)
+        let structuredFailures = failures.map {
+            CatalogSearchFailure(provider: $0.provider, message: $0.message)
+        }
         catalogSearchStates[purpose] = CatalogSearchState(
             query: term,
             results: mergedResults,
-            message: Self.catalogSearchMessage(results: mergedResults, failures: failures)
+            message: Self.catalogSearchMessage(
+                results: mergedResults,
+                failures: failures.map { "\($0.provider.map { $0.name + ": " } ?? "")\($0.message)" }
+            ),
+            failures: structuredFailures
         )
     }
 
@@ -1765,6 +1787,14 @@ final class HarmonySessionStore: ObservableObject {
     func handleSpotifyOpenURL(_ url: URL) {
         _ = spotifyRemote.handleAuthorizationCallback(url)
     }
+
+    var spotifyCatalogSearchProvider: ((String) async throws -> [SpotifySearchTrack])?
+
+#if DEBUG
+    func debugForceProviderConnection(_ provider: MusicProvider) {
+        providerStates[provider] = .connected
+    }
+#endif
 
     func handleOpenURL(_ url: URL) {
         guard url.scheme?.lowercased() == "harmony" else { return }

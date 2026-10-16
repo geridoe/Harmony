@@ -26,6 +26,9 @@ struct ContentView: View {
                 .tabItem { Label("Reviews", systemImage: "text.book.closed") }
         }
         .tint(.indigo)
+        .onReceive(NotificationCenter.default.publisher(for: .harmonyOpenConnectionsRequested)) { _ in
+            selection = 2
+        }
         .onChange(of: store.pendingNotificationDestination) { destination in
             if case .session? = destination {
                 selection = 0
@@ -3764,6 +3767,34 @@ private struct ReviewSubjectPicker: View {
 
                 if searchState.isSearching {
                     ProgressView("Searching connected catalogs…")
+                } else if searchState.needsProviderConnection {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(searchState.message ?? "Connect a music service to search its full catalog.")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                        Button("Open Connections") {
+                            dismiss()
+                            NotificationCenter.default.post(
+                                name: .harmonyOpenConnectionsRequested,
+                                object: nil
+                            )
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("review-subject-open-connections")
+                    }
+                } else if !searchState.failures.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(searchState.failures, id: \.self) { failure in
+                            Text(failure.provider.map { "\($0.name): \(failure.message)" } ?? failure.message)
+                                .font(.footnote)
+                                .foregroundColor(.red)
+                        }
+                        Button("Try again") {
+                            Task { await store.searchCatalog(query: query, purpose: .reviews) }
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("review-subject-retry")
+                    }
                 } else if let message = searchState.message {
                     Text(message).font(.footnote).foregroundColor(.secondary)
                 }

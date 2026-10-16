@@ -75,6 +75,10 @@ enum HarmonyNotificationDestination: Equatable, Identifiable {
     }
 }
 
+extension Notification.Name {
+    static let harmonyOpenConnectionsRequested = Notification.Name("HarmonyOpenConnections")
+}
+
 struct HarmonyNotificationPreferences: Codable, Equatable {
     var follows = true
     var socialActivity = true
